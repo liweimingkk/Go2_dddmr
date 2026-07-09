@@ -1,0 +1,17 @@
+<launch>
+
+  <!--name argument is not required, because it will overwrite all node name in the exec-->
+  <node pkg="lego_loam_bor" exec="lego_loam" output="screen" respawn="false">
+    <param from="$(find-pkg-share dddmr_beginner_guide)/config/airy_tilt45_mapping.yaml" />
+    <remap from="/lslidar_point_cloud" to="/airy_points"/>
+  </node>
+
+  <!--- TF -->
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="baselink2footprint"  args="0.0 0 -0.24 0.0 0.0 0 base_link base_footprint" />
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="baselink2c16"  args="0.2 0 0.22 0.0 0.78539815 0 base_link airy" />
+
+  <!--- Rviz -->
+  <node pkg="rviz2" exec="rviz2" output="screen" respawn="false" args="-d $(find-pkg-share dddmr_beginner_guide)/rviz/airy_tilt45_mapping.rviz">
+  </node>
+
+</launch>

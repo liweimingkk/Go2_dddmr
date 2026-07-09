@@ -1,0 +1,12 @@
+FROM dddmr:x64
+
+ENV HTTP_PROXY= \
+    HTTPS_PROXY= \
+    http_proxy= \
+    https_proxy= \
+    ALL_PROXY= \
+    all_proxy=
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ros-humble-rmw-cyclonedds-cpp \
+  && rm -rf /var/lib/apt/lists/*

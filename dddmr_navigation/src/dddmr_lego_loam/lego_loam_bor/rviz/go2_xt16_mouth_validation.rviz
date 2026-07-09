@@ -1,0 +1,359 @@
+Panels:
+  - Class: rviz_common/Displays
+    Help Height: 78
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /Global Options1
+        - /1 Dual Radar Alignment1
+        - /1 Dual Radar Alignment1/Roof XT16 - lidar_points1/Topic1
+        - /1 Dual Radar Alignment1/Mouth Raw - cloud_base1/Topic1
+        - /2 Mouth Ground Filter1
+        - /2 Mouth Ground Filter1/Mouth Ground - mouth_ground_cloud1/Topic1
+        - /3 DDDMR Ground Supplement1
+        - /3 DDDMR Ground Supplement1/DDDMR Ground - ground_cloud1/Topic1
+        - /3 DDDMR Ground Supplement1/Segmented Pure - segmented_cloud_pure1/Topic1
+      Splitter Ratio: 0.5
+    Tree Height: 720
+  - Class: rviz_common/Views
+    Expanded:
+      - /Current View1
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Cell Size: 0.5
+      Color: 160; 160; 160
+      Enabled: true
+      Line Style:
+        Line Width: 0.03
+        Value: Lines
+      Name: Grid
+      Plane: XY
+      Plane Cell Count: 20
+      Reference Frame: <Fixed Frame>
+      Value: true
+    - Class: rviz_common/Group
+      Displays:
+        - Alpha: 0.72
+          Autocompute Intensity Bounds: true
+          Autocompute Value Bounds:
+            Max Value: 10
+            Min Value: -10
+            Value: true
+          Axis: Z
+          Channel Name: intensity
+          Class: rviz_default_plugins/PointCloud2
+          Color: 60; 140; 255
+          Color Transformer: FlatColor
+          Decay Time: 0
+          Enabled: true
+          Invert Rainbow: false
+          Max Color: 255; 255; 255
+          Max Intensity: 255
+          Min Color: 0; 0; 0
+          Min Intensity: 0
+          Name: Roof XT16 - lidar_points
+          Position Transformer: XYZ
+          Selectable: true
+          Size (Pixels): 2
+          Size (m): 0.025
+          Style: Points
+          Topic:
+            Depth: 5
+            Durability Policy: Volatile
+            Filter size: 1
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /lidar_points
+          Use Fixed Frame: true
+          Use rainbow: true
+          Value: true
+        - Alpha: 0.65
+          Autocompute Intensity Bounds: true
+          Autocompute Value Bounds:
+            Max Value: 10
+            Min Value: -10
+            Value: true
+          Axis: Z
+          Channel Name: intensity
+          Class: rviz_default_plugins/PointCloud2
+          Color: 235; 235; 235
+          Color Transformer: FlatColor
+          Decay Time: 0
+          Enabled: true
+          Invert Rainbow: false
+          Max Color: 255; 255; 255
+          Max Intensity: 255
+          Min Color: 0; 0; 0
+          Min Intensity: 0
+          Name: Mouth Raw - cloud_base
+          Position Transformer: XYZ
+          Selectable: true
+          Size (Pixels): 3
+          Size (m): 0.03
+          Style: Points
+          Topic:
+            Depth: 5
+            Durability Policy: Volatile
+            Filter size: 1
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /utlidar/cloud_base
+          Use Fixed Frame: true
+          Use rainbow: true
+          Value: true
+        - Class: rviz_default_plugins/TF
+          Enabled: true
+          Frame Timeout: 15
+          Frames:
+            All Enabled: true
+          Marker Scale: 0.35
+          Name: TF
+          Show Arrows: true
+          Show Axes: true
+          Show Names: false
+          Tree:
+            {}
+          Update Interval: 0
+          Value: true
+        - Alpha: 1
+          Class: rviz_default_plugins/RobotModel
+          Collision Enabled: false
+          Description File: ""
+          Description Source: Topic
+          Description Topic:
+            Depth: 1
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /robot_description
+          Enabled: true
+          Name: RobotModel
+          TF Prefix: ""
+          Update Interval: 0
+          Value: true
+          Visual Enabled: true
+      Enabled: true
+      Name: 1 Dual Radar Alignment
+      Value: true
+    - Class: rviz_common/Group
+      Displays:
+        - Alpha: 0.35
+          Autocompute Intensity Bounds: true
+          Autocompute Value Bounds:
+            Max Value: 10
+            Min Value: -10
+            Value: true
+          Axis: Z
+          Channel Name: intensity
+          Class: rviz_default_plugins/PointCloud2
+          Color: 210; 210; 210
+          Color Transformer: FlatColor
+          Decay Time: 0
+          Enabled: true
+          Invert Rainbow: false
+          Max Color: 255; 255; 255
+          Max Intensity: 255
+          Min Color: 0; 0; 0
+          Min Intensity: 0
+          Name: Mouth Raw - cloud_base
+          Position Transformer: XYZ
+          Selectable: true
+          Size (Pixels): 3
+          Size (m): 0.025
+          Style: Points
+          Topic:
+            Depth: 5
+            Durability Policy: Volatile
+            Filter size: 1
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /utlidar/cloud_base
+          Use Fixed Frame: true
+          Use rainbow: true
+          Value: true
+        - Alpha: 1
+          Autocompute Intensity Bounds: true
+          Autocompute Value Bounds:
+            Max Value: 10
+            Min Value: -10
+            Value: true
+          Axis: Z
+          Channel Name: z
+          Class: rviz_default_plugins/PointCloud2
+          Color: 50; 230; 90
+          Color Transformer: FlatColor
+          Decay Time: 0
+          Enabled: true
+          Invert Rainbow: false
+          Max Color: 255; 255; 255
+          Max Intensity: 255
+          Min Color: 0; 0; 0
+          Min Intensity: 0
+          Name: Mouth Ground - mouth_ground_cloud
+          Position Transformer: XYZ
+          Selectable: true
+          Size (Pixels): 5
+          Size (m): 0.045
+          Style: Points
+          Topic:
+            Depth: 5
+            Durability Policy: Volatile
+            Filter size: 1
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /mouth_ground_cloud
+          Use Fixed Frame: true
+          Use rainbow: true
+          Value: true
+      Enabled: true
+      Name: 2 Mouth Ground Filter
+      Value: true
+    - Class: rviz_common/Group
+      Displays:
+        - Alpha: 0.9
+          Autocompute Intensity Bounds: true
+          Autocompute Value Bounds:
+            Max Value: 10
+            Min Value: -10
+            Value: true
+          Axis: Z
+          Channel Name: z
+          Class: rviz_default_plugins/PointCloud2
+          Color: 50; 230; 90
+          Color Transformer: FlatColor
+          Decay Time: 0
+          Enabled: true
+          Invert Rainbow: false
+          Max Color: 255; 255; 255
+          Max Intensity: 255
+          Min Color: 0; 0; 0
+          Min Intensity: 0
+          Name: Mouth Ground - mouth_ground_cloud
+          Position Transformer: XYZ
+          Selectable: true
+          Size (Pixels): 5
+          Size (m): 0.045
+          Style: Points
+          Topic:
+            Depth: 5
+            Durability Policy: Volatile
+            Filter size: 1
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /mouth_ground_cloud
+          Use Fixed Frame: true
+          Use rainbow: true
+          Value: true
+        - Alpha: 0.75
+          Autocompute Intensity Bounds: true
+          Autocompute Value Bounds:
+            Max Value: 10
+            Min Value: -10
+            Value: true
+          Axis: Z
+          Channel Name: intensity
+          Class: rviz_default_plugins/PointCloud2
+          Color: 250; 205; 55
+          Color Transformer: FlatColor
+          Decay Time: 0
+          Enabled: true
+          Invert Rainbow: false
+          Max Color: 255; 255; 255
+          Max Intensity: 255
+          Min Color: 0; 0; 0
+          Min Intensity: 0
+          Name: DDDMR Ground - ground_cloud
+          Position Transformer: XYZ
+          Selectable: true
+          Size (Pixels): 4
+          Size (m): 0.04
+          Style: Points
+          Topic:
+            Depth: 5
+            Durability Policy: Volatile
+            Filter size: 1
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /ground_cloud
+          Use Fixed Frame: true
+          Use rainbow: true
+          Value: true
+        - Alpha: 0.65
+          Autocompute Intensity Bounds: true
+          Autocompute Value Bounds:
+            Max Value: 10
+            Min Value: -10
+            Value: true
+          Axis: Z
+          Channel Name: intensity
+          Class: rviz_default_plugins/PointCloud2
+          Color: 235; 85; 75
+          Color Transformer: FlatColor
+          Decay Time: 0
+          Enabled: true
+          Invert Rainbow: false
+          Max Color: 255; 255; 255
+          Max Intensity: 255
+          Min Color: 0; 0; 0
+          Min Intensity: 0
+          Name: Segmented Pure - segmented_cloud_pure
+          Position Transformer: XYZ
+          Selectable: true
+          Size (Pixels): 3
+          Size (m): 0.03
+          Style: Points
+          Topic:
+            Depth: 5
+            Durability Policy: Volatile
+            Filter size: 1
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /segmented_cloud_pure
+          Use Fixed Frame: true
+          Use rainbow: true
+          Value: true
+      Enabled: true
+      Name: 3 DDDMR Ground Supplement
+      Value: true
+  Enabled: true
+  Global Options:
+    Background Color: 35; 35; 35
+    Fixed Frame: base_link
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+  Transformation:
+    Current:
+      Class: rviz_default_plugins/TF
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 4
+      Focal Point:
+        X: 1.2
+        Y: 0
+        Z: -0.2
+      Name: Current View
+      Pitch: 0.55
+      Target Frame: base_link
+      Yaw: 3.14
+    Saved: ~
+Window Geometry:
+  Displays:
+    collapsed: false
+  Height: 900
+  Hide Left Dock: false
+  Hide Right Dock: false
+  Views:
+    collapsed: false
+  Width: 1280
+  X: 80
+  Y: 60

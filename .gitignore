@@ -1,0 +1,35 @@
+# Runtime data and generated artifacts
+bags/
+offline_maps/
+report_packages/
+go2_xt16_navigation_*/
+live_rviz_test_*/
+.current_*
+
+# Large data, logs, and archives
+*.bag
+*.db3
+*.mcap
+*.tar.gz
+*.xwd
+*.log
+*.env.bak.*
+
+# Nested repository metadata backup
+dddmr_navigation/.git/
+dddmr_navigation/.git_backup_do_not_commit/
+
+# ROS/colcon build outputs inside dddmr_navigation
+dddmr_navigation/build/
+dddmr_navigation/install/
+dddmr_navigation/log/
+dddmr_navigation/.docker_go2_xt16_build/
+dddmr_navigation/.docker_go2_xt16_install/
+dddmr_navigation/.docker_go2_xt16_log/
+dddmr_navigation/.unitree_msg_ws/
+dddmr_navigation/build_codex_mapping/
+dddmr_navigation/install_codex_mapping/
+dddmr_navigation/log_codex_mapping/
+dddmr_navigation/run_logs/
+dddmr_navigation/report_packages/
+dddmr_navigation/review_packets/

@@ -1,0 +1,85 @@
+<launch>
+  <arg name="rviz" default="false"/>
+  <arg name="rviz_config" default="$(find-pkg-share lego_loam_bor)/rviz/lego_loam.rviz"/>
+  <arg name="publish_static_tf" default="false"/>
+  <arg name="config_file" default="$(find-pkg-share lego_loam_bor)/config/loam_go2_xt16_mouth_config.yaml"/>
+  <arg name="xt16_topic" default="/lidar_points"/>
+  <arg name="lidar_x" default="0.1710"/>
+  <arg name="lidar_y" default="0.0"/>
+  <arg name="lidar_z" default="0.0908"/>
+  <arg name="lidar_roll" default="0.0"/>
+  <arg name="lidar_pitch" default="0.0"/>
+  <arg name="lidar_yaw" default="1.57079632679"/>
+  <arg name="mouth_x" default="0.28945"/>
+  <arg name="mouth_y" default="0.0"/>
+  <arg name="mouth_z" default="-0.046825"/>
+  <arg name="mouth_roll" default="0.0"/>
+  <arg name="mouth_pitch" default="2.8782"/>
+  <arg name="mouth_yaw" default="0.0"/>
+  <arg name="mouth_cloud_topic" default="/utlidar/cloud_base"/>
+  <arg name="mouth_frame_override" default=""/>
+  <arg name="mouth_filter_frame" default="base_link"/>
+  <arg name="mouth_max_time_diff" default="0.08"/>
+  <arg name="mouth_time_offset_sec" default="0.0"/>
+  <arg name="mouth_ground_z_min" default="-0.42"/>
+  <arg name="mouth_ground_z_max" default="-0.18"/>
+  <arg name="mouth_x_min" default="0.05"/>
+  <arg name="mouth_x_max" default="3.0"/>
+  <arg name="mouth_y_abs" default="1.2"/>
+  <arg name="standardize_odom" default="false"/>
+  <arg name="raw_odom_topic" default="/utlidar/robot_odom"/>
+  <arg name="standardized_odom_topic" default="/dddmr_go2/robot_odom_standard"/>
+  <arg name="odom_topic" default="/utlidar/robot_odom"/>
+  <arg name="raw_to_standard_yaw" default="0.0"/>
+  <arg name="rotate_odom_parent_frame" default="false"/>
+  <arg name="rotate_odom_twist" default="false"/>
+
+  <!-- Keep disabled until x-forward, yaw, and twist signs are validated separately.
+       If standardize_odom:=true, also set odom_topic:=/dddmr_go2/robot_odom_standard
+       so DDDMR consumes the standardized stream instead of the raw odom. -->
+  <node pkg="lego_loam_bor" exec="go2_odom_standardizer" name="go2_odom_standardizer"
+        output="screen" respawn="false" if="$(var standardize_odom)">
+    <param name="input_topic" value="$(var raw_odom_topic)"/>
+    <param name="output_topic" value="$(var standardized_odom_topic)"/>
+    <param name="output_parent_frame" value="odom"/>
+    <param name="output_child_frame" value="base_link"/>
+    <param name="raw_to_standard_yaw" value="$(var raw_to_standard_yaw)" type="float"/>
+    <param name="rotate_parent_frame" value="$(var rotate_odom_parent_frame)" type="bool"/>
+    <param name="rotate_twist" value="$(var rotate_odom_twist)" type="bool"/>
+    <param name="use_sim_time" value="false"/>
+  </node>
+
+  <node pkg="lego_loam_bor" exec="lego_loam" output="screen" respawn="false">
+    <param from="$(var config_file)" />
+    <param name="imageProjection.mouth_cloud_topic" value="$(var mouth_cloud_topic)"/>
+    <param name="imageProjection.mouth_frame_override" value="$(var mouth_frame_override)"/>
+    <param name="imageProjection.mouth_filter_frame" value="$(var mouth_filter_frame)"/>
+    <param name="imageProjection.mouth_max_time_diff" value="$(var mouth_max_time_diff)"/>
+    <param name="imageProjection.mouth_time_offset_sec" value="$(var mouth_time_offset_sec)"/>
+    <param name="imageProjection.mouth_ground_z_min" value="$(var mouth_ground_z_min)"/>
+    <param name="imageProjection.mouth_ground_z_max" value="$(var mouth_ground_z_max)"/>
+    <param name="imageProjection.mouth_x_min" value="$(var mouth_x_min)"/>
+    <param name="imageProjection.mouth_x_max" value="$(var mouth_x_max)"/>
+    <param name="imageProjection.mouth_y_abs" value="$(var mouth_y_abs)"/>
+    <remap from="/lslidar_point_cloud" to="$(var xt16_topic)"/>
+    <remap from="/odom" to="$(var odom_topic)"/>
+    <param name="use_sim_time" value="false"/>
+  </node>
+
+  <!-- Set publish_static_tf:=true only for standalone Docker smoke tests without a trusted robot TF source. -->
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="base_link_to_go2_imu"
+        if="$(var publish_static_tf)"
+        args="--x -0.02557 --y 0.0 --z 0.04232 --roll 0.0 --pitch 0.0 --yaw 0.0 --frame-id base_link --child-frame-id go2_imu" />
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="go2_imu_to_hesai_lidar"
+        if="$(var publish_static_tf)"
+        args="--x $(var lidar_x) --y $(var lidar_y) --z $(var lidar_z) --roll $(var lidar_roll) --pitch $(var lidar_pitch) --yaw $(var lidar_yaw) --frame-id go2_imu --child-frame-id hesai_lidar" />
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="base_link_to_radar"
+        if="$(var publish_static_tf)"
+        args="--x $(var mouth_x) --y $(var mouth_y) --z $(var mouth_z) --roll $(var mouth_roll) --pitch $(var mouth_pitch) --yaw $(var mouth_yaw) --frame-id base_link --child-frame-id radar" />
+
+  <node pkg="rviz2" exec="rviz2" output="screen" respawn="false"
+        if="$(var rviz)"
+        args="-d $(var rviz_config)">
+    <param name="use_sim_time" value="false"/>
+  </node>
+</launch>

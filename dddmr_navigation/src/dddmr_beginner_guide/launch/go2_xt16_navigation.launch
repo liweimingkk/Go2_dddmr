@@ -1,0 +1,214 @@
+<launch>
+  <arg name="config_file" default="$(find-pkg-share dddmr_beginner_guide)/config/go2_xt16_navigation.yaml"/>
+  <arg name="rviz" default="true"/>
+  <arg name="rviz_config" default="$(find-pkg-share dddmr_beginner_guide)/rviz/go2_xt16_navigation.rviz"/>
+  <arg name="start_feature" default="true"/>
+  <arg name="start_localization" default="true"/>
+  <arg name="start_move_base" default="true"/>
+
+  <arg name="publish_static_tf" default="true"/>
+  <arg name="lidar_x" default="0.1710"/>
+  <arg name="lidar_y" default="0.0"/>
+  <arg name="lidar_z" default="0.0908"/>
+  <arg name="lidar_roll" default="0.0"/>
+  <arg name="lidar_pitch" default="0.0"/>
+  <arg name="lidar_yaw" default="1.57079632679"/>
+
+  <arg name="standardize_odom" default="true"/>
+  <arg name="raw_odom_topic" default="/utlidar/robot_odom"/>
+  <arg name="odom_topic" default="/dddmr_go2/robot_odom_standard"/>
+  <arg name="raw_to_standard_yaw" default="0.0"/>
+  <arg name="rotate_odom_parent_frame" default="false"/>
+  <arg name="rotate_odom_twist" default="false"/>
+  <arg name="lidar_topic" default="/lidar_points"/>
+  <arg name="start_go2_nav_cmd_gate" default="true"/>
+  <arg name="go2_nav_cmd_gate_input_topic" default="/dddmr_go2/dry_run_cmd_vel"/>
+  <arg name="go2_nav_cmd_gate_output_topic" default="/dddmr_go2/safe_cmd_vel"/>
+  <arg name="go2_nav_cmd_gate_enabled" default="true"/>
+  <arg name="go2_nav_cmd_gate_publish_rate_hz" default="50.0"/>
+  <arg name="go2_nav_cmd_gate_cmd_timeout_sec" default="0.20"/>
+  <arg name="go2_nav_cmd_gate_max_x" default="0.50"/>
+  <arg name="go2_nav_cmd_gate_max_y" default="0.0"/>
+  <arg name="go2_nav_cmd_gate_max_yaw" default="0.50"/>
+  <arg name="go2_nav_cmd_gate_zero_epsilon" default="0.001"/>
+  <arg name="go2_nav_cmd_gate_log_period" default="0.50"/>
+  <arg name="start_sport_dry_run_adapter" default="true"/>
+  <arg name="sport_cmd_vel_topic" default="/dddmr_go2/safe_cmd_vel"/>
+  <arg name="sport_dry_run_axis_mode" default="standard"/>
+  <arg name="sport_dry_run_max_x" default="0.50"/>
+  <arg name="sport_dry_run_max_y" default="0.0"/>
+  <arg name="sport_dry_run_max_yaw" default="0.50"/>
+  <arg name="sport_dry_run_publish_rate_hz" default="50.0"/>
+  <arg name="sport_dry_run_cmd_timeout_sec" default="0.20"/>
+  <arg name="sport_dry_run_zero_epsilon" default="0.001"/>
+  <arg name="sport_dry_run_stop_keepalive_hz" default="2.0"/>
+  <arg name="sport_dry_run_log_period" default="0.50"/>
+  <arg name="sport_dry_run_enable_yaw_arc_shim" default="false"/>
+  <arg name="sport_dry_run_yaw_arc_shim_mode" default="off"/>
+  <arg name="sport_dry_run_yaw_arc_forward_x" default="0.03"/>
+  <arg name="sport_dry_run_yaw_arc_min_abs_yaw" default="0.20"/>
+  <arg name="sport_dry_run_yaw_arc_trigger_abs_yaw" default="0.03"/>
+  <arg name="sport_dry_run_yaw_arc_allowed_decisions" default="d_align_heading"/>
+  <arg name="sport_dry_run_decision_topic" default="/dddmr_go2/p2p_decision"/>
+  <arg name="sport_dry_run_decision_timeout_sec" default="0.30"/>
+  <arg name="sport_dry_run_zero_yaw_only_when_shim_disallowed" default="true"/>
+  <arg name="sport_dry_run_max_continuous_yaw_arc_sec" default="4.0"/>
+  <arg name="start_go2_sport_adapter" default="false"/>
+  <arg name="go2_sport_enable_output" default="false"/>
+  <arg name="go2_sport_allow_real_request_topic" default="false"/>
+  <arg name="go2_sport_request_topic" default="/api/sport/request"/>
+  <arg name="go2_sport_axis_mode" default="standard"/>
+  <arg name="go2_sport_max_x" default="0.50"/>
+  <arg name="go2_sport_max_y" default="0.0"/>
+  <arg name="go2_sport_max_yaw" default="0.50"/>
+  <arg name="go2_sport_publish_rate_hz" default="50.0"/>
+  <arg name="go2_sport_cmd_timeout_sec" default="0.20"/>
+  <arg name="go2_sport_zero_epsilon" default="0.001"/>
+  <arg name="go2_sport_stop_keepalive_hz" default="2.0"/>
+  <arg name="go2_sport_request_id_base" default="0"/>
+  <arg name="go2_sport_log_period" default="0.50"/>
+  <arg name="go2_sport_enable_yaw_arc_shim" default="false"/>
+  <arg name="go2_sport_yaw_arc_shim_mode" default="off"/>
+  <arg name="go2_sport_yaw_arc_forward_x" default="0.03"/>
+  <arg name="go2_sport_yaw_arc_min_abs_yaw" default="0.20"/>
+  <arg name="go2_sport_yaw_arc_trigger_abs_yaw" default="0.03"/>
+  <arg name="go2_sport_yaw_arc_allowed_decisions" default="d_align_heading"/>
+  <arg name="go2_sport_decision_topic" default="/dddmr_go2/p2p_decision"/>
+  <arg name="go2_sport_decision_timeout_sec" default="0.30"/>
+  <arg name="go2_sport_zero_yaw_only_when_shim_disallowed" default="true"/>
+  <arg name="go2_sport_max_continuous_yaw_arc_sec" default="4.0"/>
+
+  <node pkg="lego_loam_bor" exec="go2_odom_standardizer" name="go2_odom_standardizer"
+        output="screen" respawn="false" if="$(var standardize_odom)">
+    <param name="input_topic" value="$(var raw_odom_topic)"/>
+    <param name="output_topic" value="$(var odom_topic)"/>
+    <param name="output_parent_frame" value="odom"/>
+    <param name="output_child_frame" value="base_link"/>
+    <param name="raw_to_standard_yaw" value="$(var raw_to_standard_yaw)" type="float"/>
+    <param name="rotate_parent_frame" value="$(var rotate_odom_parent_frame)" type="bool"/>
+    <param name="rotate_twist" value="$(var rotate_odom_twist)" type="bool"/>
+    <param name="use_sim_time" value="false"/>
+  </node>
+
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="base_link_to_base_footprint"
+        if="$(var publish_static_tf)"
+        args="--x 0.0 --y 0.0 --z -0.24 --roll 0.0 --pitch 0.0 --yaw 0.0 --frame-id base_link --child-frame-id base_footprint" />
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="base_link_to_go2_imu"
+        if="$(var publish_static_tf)"
+        args="--x -0.02557 --y 0.0 --z 0.04232 --roll 0.0 --pitch 0.0 --yaw 0.0 --frame-id base_link --child-frame-id go2_imu" />
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="go2_imu_to_hesai_lidar"
+        if="$(var publish_static_tf)"
+        args="--x $(var lidar_x) --y $(var lidar_y) --z $(var lidar_z) --roll $(var lidar_roll) --pitch $(var lidar_pitch) --yaw $(var lidar_yaw) --frame-id go2_imu --child-frame-id hesai_lidar" />
+
+  <node pkg="lego_loam_bor" exec="mcl_feature" output="screen" respawn="false" if="$(var start_feature)">
+    <param from="$(var config_file)" />
+    <remap from="/lslidar_point_cloud" to="$(var lidar_topic)"/>
+    <remap from="/odom" to="$(var odom_topic)"/>
+    <param name="use_sim_time" value="false"/>
+  </node>
+
+  <node pkg="dddmr_pg_map_server" exec="dddmr_pg_map_server_node" output="screen" respawn="false">
+    <param from="$(var config_file)" />
+    <param name="use_sim_time" value="false"/>
+  </node>
+
+  <node pkg="mcl_3dl" exec="mcl_3dl" output="screen" respawn="false" if="$(var start_localization)">
+    <param from="$(var config_file)" />
+    <remap from="/odom" to="$(var odom_topic)"/>
+    <param name="use_sim_time" value="false"/>
+  </node>
+
+  <node pkg="global_planner" exec="global_planner_node" output="screen" respawn="false" if="$(var start_move_base)">
+    <param from="$(var config_file)" />
+    <param name="use_sim_time" value="false"/>
+  </node>
+
+  <!-- No-motion test path: DDDMR velocity output is intentionally isolated. -->
+  <node pkg="p2p_move_base" exec="p2p_move_base_node" output="screen" respawn="false" if="$(var start_move_base)">
+    <param from="$(var config_file)" />
+    <remap from="/cmd_vel" to="/dddmr_go2/dry_run_cmd_vel"/>
+    <remap from="/cmd_vel_stamped" to="/dddmr_go2/dry_run_cmd_vel_stamped"/>
+    <param name="use_sim_time" value="false"/>
+  </node>
+
+  <node pkg="dddmr_beginner_guide" exec="go2_nav_cmd_gate.py"
+        name="go2_nav_cmd_gate" output="screen" respawn="false"
+        if="$(var start_go2_nav_cmd_gate)">
+    <param name="input_topic" value="$(var go2_nav_cmd_gate_input_topic)" type="str"/>
+    <param name="output_topic" value="$(var go2_nav_cmd_gate_output_topic)" type="str"/>
+    <param name="enabled" value="$(var go2_nav_cmd_gate_enabled)" type="bool"/>
+    <param name="publish_rate_hz" value="$(var go2_nav_cmd_gate_publish_rate_hz)" type="float"/>
+    <param name="cmd_timeout_sec" value="$(var go2_nav_cmd_gate_cmd_timeout_sec)" type="float"/>
+    <param name="max_x" value="$(var go2_nav_cmd_gate_max_x)" type="float"/>
+    <param name="max_y" value="$(var go2_nav_cmd_gate_max_y)" type="float"/>
+    <param name="max_yaw" value="$(var go2_nav_cmd_gate_max_yaw)" type="float"/>
+    <param name="zero_epsilon" value="$(var go2_nav_cmd_gate_zero_epsilon)" type="float"/>
+    <param name="log_period_sec" value="$(var go2_nav_cmd_gate_log_period)" type="float"/>
+    <param name="use_sim_time" value="false"/>
+  </node>
+
+  <node pkg="dddmr_beginner_guide" exec="go2_sport_cmd_vel_dry_run.py"
+        name="go2_sport_cmd_vel_dry_run" output="screen" respawn="false"
+        if="$(var start_sport_dry_run_adapter)">
+    <param name="cmd_vel_topic" value="$(var sport_cmd_vel_topic)"/>
+    <param name="axis_mode" value="$(var sport_dry_run_axis_mode)" type="str"/>
+    <param name="max_x" value="$(var sport_dry_run_max_x)" type="float"/>
+    <param name="max_y" value="$(var sport_dry_run_max_y)" type="float"/>
+    <param name="max_yaw" value="$(var sport_dry_run_max_yaw)" type="float"/>
+    <param name="publish_rate_hz" value="$(var sport_dry_run_publish_rate_hz)" type="float"/>
+    <param name="cmd_timeout_sec" value="$(var sport_dry_run_cmd_timeout_sec)" type="float"/>
+    <param name="zero_epsilon" value="$(var sport_dry_run_zero_epsilon)" type="float"/>
+    <param name="stop_keepalive_hz" value="$(var sport_dry_run_stop_keepalive_hz)" type="float"/>
+    <param name="log_period_sec" value="$(var sport_dry_run_log_period)" type="float"/>
+    <param name="enable_yaw_arc_shim" value="$(var sport_dry_run_enable_yaw_arc_shim)" type="bool"/>
+    <param name="yaw_arc_shim_mode" value="$(var sport_dry_run_yaw_arc_shim_mode)" type="str"/>
+    <param name="yaw_arc_forward_x" value="$(var sport_dry_run_yaw_arc_forward_x)" type="float"/>
+    <param name="yaw_arc_min_abs_yaw" value="$(var sport_dry_run_yaw_arc_min_abs_yaw)" type="float"/>
+    <param name="yaw_arc_trigger_abs_yaw" value="$(var sport_dry_run_yaw_arc_trigger_abs_yaw)" type="float"/>
+    <param name="yaw_arc_allowed_decisions" value="$(var sport_dry_run_yaw_arc_allowed_decisions)" type="str"/>
+    <param name="decision_topic" value="$(var sport_dry_run_decision_topic)" type="str"/>
+    <param name="decision_timeout_sec" value="$(var sport_dry_run_decision_timeout_sec)" type="float"/>
+    <param name="zero_yaw_only_when_shim_disallowed" value="$(var sport_dry_run_zero_yaw_only_when_shim_disallowed)" type="bool"/>
+    <param name="max_continuous_yaw_arc_sec" value="$(var sport_dry_run_max_continuous_yaw_arc_sec)" type="float"/>
+    <param name="use_sim_time" value="false"/>
+  </node>
+
+  <node pkg="dddmr_beginner_guide" exec="go2_sport_cmd_vel_adapter.py"
+        name="go2_sport_cmd_vel_adapter" output="screen" respawn="false"
+        if="$(var start_go2_sport_adapter)">
+    <param name="cmd_vel_topic" value="$(var sport_cmd_vel_topic)"/>
+    <param name="request_topic" value="$(var go2_sport_request_topic)"/>
+    <param name="enable_sport_output" value="$(var go2_sport_enable_output)" type="bool"/>
+    <param name="allow_real_request_topic" value="$(var go2_sport_allow_real_request_topic)" type="bool"/>
+    <param name="axis_mode" value="$(var go2_sport_axis_mode)" type="str"/>
+    <param name="max_x" value="$(var go2_sport_max_x)" type="float"/>
+    <param name="max_y" value="$(var go2_sport_max_y)" type="float"/>
+    <param name="max_yaw" value="$(var go2_sport_max_yaw)" type="float"/>
+    <param name="publish_rate_hz" value="$(var go2_sport_publish_rate_hz)" type="float"/>
+    <param name="cmd_timeout_sec" value="$(var go2_sport_cmd_timeout_sec)" type="float"/>
+    <param name="zero_epsilon" value="$(var go2_sport_zero_epsilon)" type="float"/>
+    <param name="stop_keepalive_hz" value="$(var go2_sport_stop_keepalive_hz)" type="float"/>
+    <param name="request_id_base" value="$(var go2_sport_request_id_base)" type="int"/>
+    <param name="log_period_sec" value="$(var go2_sport_log_period)" type="float"/>
+    <param name="enable_yaw_arc_shim" value="$(var go2_sport_enable_yaw_arc_shim)" type="bool"/>
+    <param name="yaw_arc_shim_mode" value="$(var go2_sport_yaw_arc_shim_mode)" type="str"/>
+    <param name="yaw_arc_forward_x" value="$(var go2_sport_yaw_arc_forward_x)" type="float"/>
+    <param name="yaw_arc_min_abs_yaw" value="$(var go2_sport_yaw_arc_min_abs_yaw)" type="float"/>
+    <param name="yaw_arc_trigger_abs_yaw" value="$(var go2_sport_yaw_arc_trigger_abs_yaw)" type="float"/>
+    <param name="yaw_arc_allowed_decisions" value="$(var go2_sport_yaw_arc_allowed_decisions)" type="str"/>
+    <param name="decision_topic" value="$(var go2_sport_decision_topic)" type="str"/>
+    <param name="decision_timeout_sec" value="$(var go2_sport_decision_timeout_sec)" type="float"/>
+    <param name="zero_yaw_only_when_shim_disallowed" value="$(var go2_sport_zero_yaw_only_when_shim_disallowed)" type="bool"/>
+    <param name="max_continuous_yaw_arc_sec" value="$(var go2_sport_max_continuous_yaw_arc_sec)" type="float"/>
+    <param name="use_sim_time" value="false"/>
+  </node>
+
+  <node pkg="p2p_move_base" exec="clicked2goal.py" output="screen" respawn="false" if="$(var start_move_base)">
+    <param name="use_sim_time" value="false"/>
+  </node>
+
+  <node name="rviz2" pkg="rviz2" exec="rviz2" output="screen" respawn="false"
+        if="$(var rviz)" args="-d $(var rviz_config)">
+    <param name="use_sim_time" value="false"/>
+  </node>
+</launch>
