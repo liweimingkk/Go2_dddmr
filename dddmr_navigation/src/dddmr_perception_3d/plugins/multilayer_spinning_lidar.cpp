@@ -30,6 +30,8 @@
 */
 #include <perception_3d/multilayer_spinning_lidar.h>
 
+#include <stdexcept>
+
 PLUGINLIB_EXPORT_CLASS(perception_3d::MultiLayerSpinningLidar, perception_3d::Sensor)
 
 namespace perception_3d
@@ -116,6 +118,13 @@ void MultiLayerSpinningLidar::onInitialize()
   node_->declare_parameter(name_ + ".height_resolution", rclcpp::ParameterValue(0.0));
   node_->get_parameter(name_ + ".height_resolution", height_resolution_);
   RCLCPP_INFO(node_->get_logger().get_child(name_), "height_resolution: %.2f", height_resolution_);
+
+  if(resolution_ <= 0.0 || height_resolution_ <= 0.0){
+    RCLCPP_FATAL(node_->get_logger().get_child(name_),
+      "xy_resolution and height_resolution must be positive (xy=%.3f height=%.3f)",
+      resolution_, height_resolution_);
+    throw std::invalid_argument("LiDAR voxel resolutions must be positive");
+  }
 
   node_->declare_parameter(name_ + ".marking_height", rclcpp::ParameterValue(0.0));
   node_->get_parameter(name_ + ".marking_height", marking_height_);

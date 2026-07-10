@@ -137,7 +137,7 @@ colcon --log-base \"\${DDDMR_LOG_BASE}\" build --symlink-install --packages-up-t
 
   build-navigation)
     run_docker "${IMAGE}" bash -lc "${source_prefix}
-colcon --log-base \"\${DDDMR_LOG_BASE}\" build --symlink-install --packages-up-to lego_loam_bor dddmr_pg_map_server mcl_3dl global_planner p2p_move_base dddmr_beginner_guide dddmr_rviz_default_plugins --build-base \"\${DDDMR_BUILD_BASE}\" --install-base \"\${DDDMR_INSTALL_BASE}\" --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPython3_EXECUTABLE=/usr/bin/python3"
+colcon --log-base \"\${DDDMR_LOG_BASE}\" build --symlink-install --packages-up-to lego_loam_bor dddmr_pg_map_server mcl_3dl global_planner p2p_move_base perception_3d dddmr_beginner_guide dddmr_rviz_default_plugins --build-base \"\${DDDMR_BUILD_BASE}\" --install-base \"\${DDDMR_INSTALL_BASE}\" --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPython3_EXECUTABLE=/usr/bin/python3"
     ;;
 
   mapping)
