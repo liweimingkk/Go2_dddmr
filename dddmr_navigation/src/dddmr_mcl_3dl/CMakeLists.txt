@@ -184,6 +184,14 @@ endif()
 
 # --- Everything CI/CD test finish here ---
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_localization_state_machine
+    test/test_localization_state_machine.cpp
+  )
+  target_include_directories(test_localization_state_machine PRIVATE include)
+endif()
+
 ament_export_include_directories(include)
 ament_export_dependencies(${dependencies})
 ament_package()

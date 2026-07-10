@@ -1,0 +1,40 @@
+mcl_3dl:
+  ros__parameters:
+    # Search the complete pose-graph map at startup and whenever tracking is lost.
+    auto_global_localization: true
+    global_localization_grid: 0.25
+    global_localization_div_yaw: 36
+    global_localization_max_candidates: 4096
+    global_localization_top_candidates: 8
+    global_localization_num_particles: 240
+    global_localization_max_observation_points: 256
+    global_localization_min_match_ratio: 0.08
+    global_localization_retry_sec: 2.0
+
+    # Gaussian refinement around each accepted coarse candidate.
+    global_localization_seed_std_x: 0.35
+    global_localization_seed_std_y: 0.35
+    global_localization_seed_std_z: 0.15
+    global_localization_seed_std_roll: 0.03
+    global_localization_seed_std_pitch: 0.03
+    global_localization_seed_std_yaw: 0.12
+
+    # TRACKING requires several consecutive, converged observations. LOST uses
+    # lower quality thresholds to provide hysteresis and avoid state flapping.
+    localization_tracking_match_ratio: 0.15
+    localization_lost_match_ratio: 0.08
+    localization_tracking_max_xy_std: 0.75
+    localization_tracking_max_yaw_std: 0.35
+    localization_lost_max_xy_std: 1.50
+    localization_lost_max_yaw_std: 0.80
+    localization_tracking_good_frames: 5
+    localization_lost_bad_frames: 3
+    localization_measure_interval_sec: 0.50
+    localization_sensor_timeout_sec: 1.0
+    localization_timeout_sec: 30.0
+
+go2_nav_cmd_gate:
+  ros__parameters:
+    require_localization_tracking: true
+    localization_status_topic: "/localization_status"
+    localization_status_timeout_sec: 0.75
