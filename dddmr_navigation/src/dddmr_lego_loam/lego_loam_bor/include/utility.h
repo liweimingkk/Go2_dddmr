@@ -92,6 +92,10 @@ struct AssociationOut
   geometry_msgs::msg::TransformStamped trans_m2ci;
   nav_msgs::msg::Odometry decisive_odometry; //in the lego_loam definition frame
   nav_msgs::msg::Odometry external_odometry; //external odom, odom->baselink frame
+  bool external_odometry_valid = false;
+  bool external_odometry_interpolated = false;
+  double external_odometry_sync_error_sec = 0.0;
+  double external_odometry_bracket_span_sec = 0.0;
   bool broadcast_odom_tf;
 };
 

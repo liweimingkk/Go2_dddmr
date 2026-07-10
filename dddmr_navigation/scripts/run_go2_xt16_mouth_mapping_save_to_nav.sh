@@ -23,6 +23,7 @@ Common environment overrides:
   GO2_NET_IFACE=enp46s0      Network interface used for Go2 DDS.
   MOUTH_MAX_TIME_DIFF=0.15
   MOUTH_TIME_OFFSET_SEC=0.03424
+  ODOM_TIME_OFFSET_SEC=0.0    Correct /utlidar/robot_odom stamps into the XT16 clock.
   NAV_CONFIG=...             Navigation YAML to update.
 
 Safety:
@@ -57,6 +58,9 @@ PUBLISH_STATIC_TF_VALUE="${PUBLISH_STATIC_TF:-true}"
 MAPPING_SECONDS_VALUE="${MAPPING_SECONDS:-}"
 MOUTH_MAX_TIME_DIFF_VALUE="${MOUTH_MAX_TIME_DIFF:-0.15}"
 MOUTH_TIME_OFFSET_SEC_VALUE="${MOUTH_TIME_OFFSET_SEC:-0.03424}"
+ODOM_TIME_OFFSET_SEC_VALUE="${ODOM_TIME_OFFSET_SEC:-0.0}"
+ODOM_SYNC_TOLERANCE_SEC_VALUE="${ODOM_SYNC_TOLERANCE_SEC:-0.05}"
+ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE="${ODOM_SYNC_WAIT_TIMEOUT_SEC:-0.1}"
 NAV_CONFIG="${NAV_CONFIG:-${WS_ROOT}/src/dddmr_beginner_guide/config/go2_xt16_navigation.yaml}"
 NAV_MAP_ROOT="${NAV_MAP_ROOT:-/root/dddmr_bags}"
 MAP_PREFIX="${MAP_PREFIX:-go2_xt16_mouth_mapping}"
@@ -362,6 +366,7 @@ source /root/dddmr_navigation/${INSTALL_BASE_VALUE}/setup.bash
 set -u
 echo 'MOUTH_MAPPING_CONTRACT mouth_cloud_topic=/utlidar/cloud_base mouth_filter_frame=base_link'
 echo 'MOUTH_MAPPING_TIMING mouth_max_time_diff=${MOUTH_MAX_TIME_DIFF_VALUE} mouth_time_offset_sec=${MOUTH_TIME_OFFSET_SEC_VALUE}'
+echo 'ODOM_MAPPING_TIMING odom_sync_tolerance_sec=${ODOM_SYNC_TOLERANCE_SEC_VALUE} odom_sync_wait_timeout_sec=${ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE} odom_time_offset_sec=${ODOM_TIME_OFFSET_SEC_VALUE}'
 exec ros2 launch lego_loam_bor lego_loam_go2_xt16_mouth.launch \
   rviz:=${RVIZ_VALUE} \
   rviz_config:=/root/dddmr_navigation/src/dddmr_lego_loam/lego_loam_bor/rviz/go2_xt16_mouth_validation.rviz \
@@ -369,7 +374,10 @@ exec ros2 launch lego_loam_bor lego_loam_go2_xt16_mouth.launch \
   mouth_cloud_topic:=/utlidar/cloud_base \
   mouth_filter_frame:=base_link \
   mouth_max_time_diff:=${MOUTH_MAX_TIME_DIFF_VALUE} \
-  mouth_time_offset_sec:=${MOUTH_TIME_OFFSET_SEC_VALUE}" >/dev/null
+  mouth_time_offset_sec:=${MOUTH_TIME_OFFSET_SEC_VALUE} \
+  odom_sync_tolerance_sec:=${ODOM_SYNC_TOLERANCE_SEC_VALUE} \
+  odom_sync_wait_timeout_sec:=${ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE} \
+  odom_time_offset_sec:=${ODOM_TIME_OFFSET_SEC_VALUE}" >/dev/null
 }
 
 main() {

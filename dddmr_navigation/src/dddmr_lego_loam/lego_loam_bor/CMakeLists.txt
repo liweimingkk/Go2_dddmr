@@ -15,6 +15,7 @@ find_package(std_srvs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(diagnostic_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(builtin_interfaces REQUIRED)
 find_package(tf2_ros REQUIRED)
@@ -50,6 +51,7 @@ set(dependencies
   visualization_msgs
   nav_msgs
   geometry_msgs
+  diagnostic_msgs
   builtin_interfaces
   tf2_ros
   tf2
@@ -478,6 +480,18 @@ if(TEST_ENABLED)
     RUNTIME DESTINATION lib/${PROJECT_NAME}
   )
 
+endif()
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_mapping_math
+    test/test_mapping_math.cpp
+  )
+  ament_target_dependencies(test_mapping_math
+    nav_msgs
+    tf2
+    tf2_geometry_msgs
+  )
 endif()
 
 # --- Everything CI/CD test finish here ---

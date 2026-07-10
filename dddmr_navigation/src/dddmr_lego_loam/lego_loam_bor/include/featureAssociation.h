@@ -3,6 +3,9 @@
 
 #include "utility.h"
 #include "channel.h"
+#include "odom_sync_utils.h"
+#include <condition_variable>
+#include <deque>
 #include <pcl/kdtree/kdtree_flann.h>
 #include <Eigen/Eigenvalues>
 #include <Eigen/QR>
@@ -12,6 +15,7 @@
 #include "tf2_ros/buffer.h"
 #include <tf2_ros/transform_listener.h>
 #include "tf2_ros/create_timer_ros.h"
+#include <diagnostic_msgs/msg/diagnostic_array.hpp>
 
 // omp voxel
 #include "dddmr_pcl/voxel_omp/voxel_grid_omp.h"
@@ -56,6 +60,8 @@ class FeatureAssociation : public rclcpp::Node
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr _pub_cloud_surf_last;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr _pub_outlier_cloudLast;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubLaserOdometry;
+  rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr
+      pubOdomSyncDiagnostics;
   
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr subOdom;
 
@@ -71,10 +77,18 @@ class FeatureAssociation : public rclcpp::Node
   tf2::Transform tf2_trans_b2s_, tf2_first_odom2b_, tf2_first_odom2s_, tf2_first_odom2s_inverse_, tf2_trans_c2s_;
   bool to_map_optimization_;
   bool odom_sanity_check_;
+  bool odom_sync_enabled_;
+  double odom_sync_tolerance_sec_;
+  double odom_buffer_duration_sec_;
+  double odom_interpolation_max_gap_sec_;
+  double odom_sync_wait_timeout_sec_;
+  double odom_time_offset_sec_;
   
   rclcpp::TimerBase::SharedPtr timer_;
   rclcpp::Clock::SharedPtr clock_;
-  std::mutex _odom_mutex; //look like one thread is not enough, we use mutually cb and lock it
+  std::mutex odom_buffer_mutex_;
+  std::condition_variable odom_buffer_cv_;
+  std::deque<nav_msgs::msg::Odometry> odom_buffer_;
   rclcpp::CallbackGroup::SharedPtr odom_cb_group_;
   rclcpp::CallbackGroup::SharedPtr timer_cb_group_;
 
@@ -180,6 +194,17 @@ class FeatureAssociation : public rclcpp::Node
   bool odom_topic_alive_;
   bool odom_tf_alive_;
   int odom_tf_detect_number_;
+
+  using OdomSyncResult = lego_loam_bor::OdomSelectionResult;
+
+  OdomSyncResult selectOdometryForCloud(
+      const builtin_interfaces::msg::Time & cloud_stamp);
+  bool prepareExternalOdometryForCloud(
+      const builtin_interfaces::msg::Time & cloud_stamp,
+      OdomSyncResult & sync_result);
+  void publishOdomSyncDiagnostic(
+      const builtin_interfaces::msg::Time & cloud_stamp,
+      const OdomSyncResult & result, const std::string & message);
   
 };
 
