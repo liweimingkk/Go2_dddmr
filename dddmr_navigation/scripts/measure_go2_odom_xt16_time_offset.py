@@ -12,6 +12,7 @@ content itself has no transport or estimator latency.
 from __future__ import annotations
 
 import argparse
+import math
 import statistics
 import time
 from dataclasses import dataclass
@@ -48,14 +49,20 @@ class OffsetSampler(Node):
         )
 
     def _odom_callback(self, msg: Odometry) -> None:
+        header_stamp_sec = stamp_to_sec(msg.header.stamp)
+        if not math.isfinite(header_stamp_sec) or header_stamp_sec <= 0.0:
+            return
         self.odom.append(
-            TimedSample(time.monotonic(), stamp_to_sec(msg.header.stamp))
+            TimedSample(time.monotonic(), header_stamp_sec)
         )
         self.last_odom_frames = (msg.header.frame_id, msg.child_frame_id)
 
     def _xt16_callback(self, msg: PointCloud2) -> None:
+        header_stamp_sec = stamp_to_sec(msg.header.stamp)
+        if not math.isfinite(header_stamp_sec) or header_stamp_sec <= 0.0:
+            return
         self.xt16.append(
-            TimedSample(time.monotonic(), stamp_to_sec(msg.header.stamp))
+            TimedSample(time.monotonic(), header_stamp_sec)
         )
         self.last_xt16_frame = msg.header.frame_id
 
@@ -70,6 +77,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--arrival-window", type=float, default=0.03)
     parser.add_argument("--stable-stdev", type=float, default=0.02)
     parser.add_argument("--stable-range", type=float, default=0.08)
+    parser.add_argument("--min-pairs", type=int, default=20)
     return parser.parse_args()
 
 
@@ -77,6 +85,14 @@ def main() -> int:
     args = parse_args()
     if args.duration <= 0.0:
         raise SystemExit("--duration must be > 0")
+    if args.arrival_window <= 0.0:
+        raise SystemExit("--arrival-window must be > 0")
+    if args.stable_stdev < 0.0:
+        raise SystemExit("--stable-stdev must be >= 0")
+    if args.stable_range < 0.0:
+        raise SystemExit("--stable-range must be >= 0")
+    if args.min_pairs <= 0:
+        raise SystemExit("--min-pairs must be > 0")
 
     rclpy.init()
     node = OffsetSampler(args.odom_topic, args.xt16_topic)
@@ -105,14 +121,14 @@ def main() -> int:
         )
         print(
             f"odom_count={len(node.odom)} xt16_count={len(node.xt16)} "
-            f"paired_by_arrival={len(pairs)}"
+            f"paired_by_arrival={len(pairs)} required_pairs={args.min_pairs}"
         )
         print(
             f"odom_parent_frame={node.last_odom_frames[0]} "
             f"odom_child_frame={node.last_odom_frames[1]} "
             f"xt16_frame={node.last_xt16_frame}"
         )
-        if not pairs:
+        if len(pairs) < args.min_pairs:
             print("OFFSET_STABLE_FOR_MAPPING=False")
             print("recommended_odom_time_offset_sec=UNAVAILABLE")
             return 2
