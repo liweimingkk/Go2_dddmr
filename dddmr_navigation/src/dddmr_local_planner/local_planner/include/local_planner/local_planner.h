@@ -46,6 +46,8 @@
 /*For trajectory generators plugin*/
 #include <trajectory_generators/trajectory_generators_ros.h>
 
+#include <local_planner/in_place_rotation_hysteresis.h>
+
 /*For edge markers*/
 #include <visualization_msgs/msg/marker.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
@@ -167,6 +169,10 @@ class Local_Planner : public rclcpp::Node {
       double xy_goal_tolerance_, yaw_goal_tolerance_;
       double controller_frequency_;
       bool debug_rejection_report_;
+
+      bool in_place_direction_hysteresis_enabled_;
+      std::string in_place_direction_hysteresis_generator_;
+      InPlaceRotationHysteresis in_place_rotation_hysteresis_;
 
       rclcpp::Time control_loop_time_;
 

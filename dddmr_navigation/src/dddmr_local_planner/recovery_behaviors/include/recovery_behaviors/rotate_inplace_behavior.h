@@ -48,6 +48,11 @@ class RotateInPlaceBehavior: public RobotBehavior{
     void trans2Pose(geometry_msgs::msg::TransformStamped& trans, geometry_msgs::msg::PoseStamped& pose);
     double frequency_;
     double tolerance_;
+    double transform_timeout_;
+    double odom_timeout_;
+    double future_tolerance_;
+    double progress_timeout_;
+    double progress_angle_;
     pcl::PointCloud<pcl::PointXYZ> cuboid_;
     void trajectory2posearray_cuboids(const base_trajectory::Trajectory& a_traj, 
                                       geometry_msgs::msg::PoseArray& pose_arr, pcl::PointCloud<pcl::PointXYZ>& cuboids_pcl);
@@ -64,6 +69,9 @@ class RotateInPlaceBehavior: public RobotBehavior{
     std::string trajectory_generator_name_;
 
     void pubZeroVelocity();
+    bool isStampFresh(
+      const builtin_interfaces::msg::Time & stamp,
+      double timeout) const;
 
   protected:
 

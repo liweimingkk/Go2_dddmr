@@ -10,19 +10,21 @@ No-motion verifier for the Go2 Sport yaw-arc shim.
 It runs three host-side adapter dry-run probes and checks the adapter logs:
 
   1. d_align_heading transforms yaw-only into the configured small forward arc.
-  2. d_recovery_waitdone blocks yaw-only forward injection and logs StopMove.
-  3. stale d_align_heading blocks yaw-only forward injection and logs StopMove.
+  2. d_recovery_waitdone passes only the original pure yaw, without an arc.
+  3. stale d_align_heading is blocked and logs StopMove.
 
 This script does not publish /api/sport/request and does not require live Go2
 topic discovery. It still sources the local Unitree ROS2 setup so the ROS2
 Python environment matches the real adapter runtime.
 
 Environment:
+  GO2_SETUP=/opt/ros/humble/setup.bash
   GO2_YAW_ARC_NOMOTION_LOG_DIR=/tmp
   GO2_YAW_ARC_NOMOTION_YAW=-0.15
   GO2_YAW_ARC_NOMOTION_FORWARD_X=0.03
   GO2_YAW_ARC_NOMOTION_MIN_ABS_YAW=0.20
   GO2_YAW_ARC_ALLOWED_DECISIONS=d_align_heading
+  GO2_MOTION_ALLOWED_DECISIONS=d_controlling,d_align_heading,d_align_goal_heading,d_recovery_waitdone
   GO2_MAX_CONTINUOUS_YAW_ARC_SEC=4.0
 EOF
 }
@@ -41,10 +43,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PROBE="${WS_ROOT}/scripts/run_go2_sport_adapter_supervised_probe.sh"
 LOG_DIR="${GO2_YAW_ARC_NOMOTION_LOG_DIR:-/tmp}"
+GO2_SETUP_FILE="${GO2_SETUP:-/opt/ros/humble/setup.bash}"
 YAW="${GO2_YAW_ARC_NOMOTION_YAW:--0.15}"
 FORWARD_X="${GO2_YAW_ARC_NOMOTION_FORWARD_X:-0.03}"
 MIN_ABS_YAW="${GO2_YAW_ARC_NOMOTION_MIN_ABS_YAW:-0.20}"
 ALLOWED_DECISIONS="${GO2_YAW_ARC_ALLOWED_DECISIONS:-d_align_heading}"
+MOTION_ALLOWED_DECISIONS="${GO2_MOTION_ALLOWED_DECISIONS:-d_controlling,d_align_heading,d_align_goal_heading,d_recovery_waitdone}"
 MAX_CONTINUOUS_YAW_ARC_SEC="${GO2_MAX_CONTINUOUS_YAW_ARC_SEC:-4.0}"
 STAMP="$(date +%Y%m%d_%H%M%S)"
 REPORT="${LOG_DIR}/go2_yaw_arc_shim_nomotion_${STAMP}.env"
@@ -55,8 +59,15 @@ die() {
 }
 
 validate_settings() {
+  [[ -f "${GO2_SETUP_FILE}" ]] || die "missing ROS setup: ${GO2_SETUP_FILE}"
   [[ ",${ALLOWED_DECISIONS}," == *",d_align_heading,"* ]] || \
     die "GO2_YAW_ARC_ALLOWED_DECISIONS must include d_align_heading for this verifier"
+  [[ ",${ALLOWED_DECISIONS}," != *",d_recovery_waitdone,"* ]] || \
+    die "GO2_YAW_ARC_ALLOWED_DECISIONS must not include d_recovery_waitdone"
+  [[ ",${MOTION_ALLOWED_DECISIONS}," == *",d_recovery_waitdone,"* ]] || \
+    die "GO2_MOTION_ALLOWED_DECISIONS must include d_recovery_waitdone"
+  [[ ",${MOTION_ALLOWED_DECISIONS}," != *",d_recovery_position_control_waitdone,"* ]] || \
+    die "GO2_MOTION_ALLOWED_DECISIONS must not include d_recovery_position_control_waitdone"
 }
 
 expected_payload() {
@@ -103,6 +114,7 @@ run_probe() {
   output_file="${LOG_DIR}/go2_yaw_arc_shim_nomotion_${STAMP}_${label}.out"
 
   echo "=== ${label}"
+  GO2_SETUP="${GO2_SETUP_FILE}" \
   GO2_SPORT_SKIP_LIVE_TOPIC_CHECK=true \
   GO2_ENABLE_YAW_ARC_SHIM=true \
   GO2_YAW_ARC_SHIM_MODE=live \
@@ -110,6 +122,8 @@ run_probe() {
   GO2_YAW_ARC_FORWARD_X="${FORWARD_X}" \
   GO2_YAW_ARC_MIN_ABS_YAW="${MIN_ABS_YAW}" \
   GO2_YAW_ARC_ALLOWED_DECISIONS="${ALLOWED_DECISIONS}" \
+  GO2_REQUIRE_MOTION_DECISION=true \
+  GO2_MOTION_ALLOWED_DECISIONS="${MOTION_ALLOWED_DECISIONS}" \
   GO2_MAX_CONTINUOUS_YAW_ARC_SEC="${MAX_CONTINUOUS_YAW_ARC_SEC}" \
   GO2_SPORT_PROBE_X=0.0 \
   GO2_SPORT_PROBE_Y=0.0 \
@@ -158,13 +172,10 @@ recovery_summary="$(printf '%s\n' "${recovery_summary}" | tail -n 1)"
 source "${recovery_summary}"
 recovery_log="${ADAPTER_LOG}"
 assert_file_contains "${recovery_log}" \
-  "zero cmd_vel decision=d_recovery_waitdone original_sport=${expected_original} transformed_sport={\"x\":0.0,\"y\":0.0,\"z\":0.0}" \
+  "GATED would publish /api/sport/request: api_id=1008 parameter=${expected_original}" \
   "recovery"
 assert_file_contains "${recovery_log}" \
-  'shim=blocked_blocked_state=d_recovery_waitdone' \
-  "recovery"
-assert_file_contains "${recovery_log}" \
-  'api_id=1003 StopMove' \
+  "decision=d_recovery_waitdone original_sport=${expected_original} transformed_sport=${expected_original} shim=recovery_pure_yaw_no_arc" \
   "recovery"
 
 stale_summary="$(run_probe stale d_align_heading 1 0.8)"
@@ -173,10 +184,7 @@ stale_summary="$(printf '%s\n' "${stale_summary}" | tail -n 1)"
 source "${stale_summary}"
 stale_log="${ADAPTER_LOG}"
 assert_file_contains "${stale_log}" \
-  "zero cmd_vel decision=d_align_heading original_sport=${expected_original} transformed_sport={\"x\":0.0,\"y\":0.0,\"z\":0.0}" \
-  "stale"
-assert_file_contains "${stale_log}" \
-  'shim=blocked_stale_decision=d_align_heading' \
+  'motion decision gate blocked stale_decision=d_align_heading' \
   "stale"
 assert_file_contains "${stale_log}" \
   'api_id=1003 StopMove' \
@@ -188,6 +196,7 @@ YAW=${YAW}
 FORWARD_X=${FORWARD_X}
 MIN_ABS_YAW=${MIN_ABS_YAW}
 ALLOWED_DECISIONS=${ALLOWED_DECISIONS}
+MOTION_ALLOWED_DECISIONS=${MOTION_ALLOWED_DECISIONS}
 MAX_CONTINUOUS_YAW_ARC_SEC=${MAX_CONTINUOUS_YAW_ARC_SEC}
 ALLOWED_SUMMARY=${allowed_summary}
 ALLOWED_LOG=${allowed_log}

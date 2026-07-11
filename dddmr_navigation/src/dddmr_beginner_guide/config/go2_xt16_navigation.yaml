@@ -155,6 +155,14 @@ local_planner:
     yaw_goal_tolerance: 0.8
     controller_frequency: 10.0
     debug_rejection_report: true
+    # Hold a collision-accepted in-place turn direction across control cycles.
+    # This prevents nearly symmetric left/right candidates from alternating and
+    # making the robot shake in front of an obstacle.
+    in_place_direction_hysteresis_enabled: true
+    in_place_direction_hysteresis_generator: "differential_drive_simple"
+    in_place_direction_min_hold_sec: 1.0
+    in_place_direction_switch_cost_margin: 0.05
+    in_place_direction_reset_gap_sec: 2.0
     
     # Swept Go2 stance envelope. base_footprint is 0.24 m below base_link;
     # leave 0.04 m ground tolerance while protecting the legs and lower body.
@@ -175,6 +183,11 @@ recovery_behaviors:
       plugin: "recovery_behaviors::RotateInPlaceBehavior"
       frequency: 10.0
       tolerance: 0.3
+      transform_timeout: 2.0
+      odom_timeout: 0.5
+      future_tolerance: 0.1
+      progress_timeout: 3.0
+      progress_angle: 0.05
       trajectory_generator_name: "differential_drive_rotate_inplace"
 
 trajectory_generators:
@@ -198,7 +211,7 @@ trajectory_generators:
     differential_drive_rotate_inplace:
       plugin: "trajectory_generators::DDRotateInplaceTheory"
       controller_frequency: 10.0
-      rotation_speed: 0.40
+      rotation_speed: 0.50
       rotation_forward_x: 0.0
       cuboid:
         flb: [0.42, 0.30, -0.20] #front left bottom
@@ -233,14 +246,16 @@ trajectory_generators:
       # Field replay showed that 0.10-0.15 m/s forward and about 0.05 rad/s
       # in-place Move requests leave the Go2 effectively stationary. Sample
       # only executable motion after odometry confirms a full stop.
-      max_vel_x: 0.30
-      min_vel_x: 0.20
+      max_vel_x: 0.40
+      min_vel_x: 0.30
       max_vel_theta: 0.50
-      min_vel_theta: 0.15
+      min_vel_theta: 0.40
       enable_in_place_rotation: true
       in_place_rotation_max_linear_speed: 0.05
       acc_lim_x: 3.00
-      acc_lim_theta: 2.0
+      # At 10 Hz this makes +/-0.40 rad/s reachable from rest, matching
+      # min_vel_theta instead of silently filtering every rotation sample.
+      acc_lim_theta: 4.0
       deceleration_ratio: 2.0
       max_motor_shaft_rpm: 3000.0
       wheel_diameter: 0.16

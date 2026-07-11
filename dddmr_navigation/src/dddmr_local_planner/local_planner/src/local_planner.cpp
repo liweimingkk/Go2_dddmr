@@ -30,7 +30,10 @@
 */
 #include <local_planner/local_planner.h>
 
+#include <chrono>
+#include <cmath>
 #include <sstream>
+#include <stdexcept>
 
 #include "planner_state_arbitration.h"
 
@@ -100,6 +103,59 @@ void Local_Planner::initial(
   declare_parameter("debug_rejection_report", rclcpp::ParameterValue(false));
   this->get_parameter("debug_rejection_report", debug_rejection_report_);
   RCLCPP_INFO(this->get_logger(), "debug_rejection_report: %d", debug_rejection_report_);
+
+  declare_parameter("in_place_direction_hysteresis_enabled", rclcpp::ParameterValue(true));
+  this->get_parameter(
+    "in_place_direction_hysteresis_enabled", in_place_direction_hysteresis_enabled_);
+  RCLCPP_INFO(
+    this->get_logger(), "in_place_direction_hysteresis_enabled: %d",
+    in_place_direction_hysteresis_enabled_);
+
+  declare_parameter(
+    "in_place_direction_hysteresis_generator",
+    rclcpp::ParameterValue("differential_drive_simple"));
+  this->get_parameter(
+    "in_place_direction_hysteresis_generator", in_place_direction_hysteresis_generator_);
+  RCLCPP_INFO(
+    this->get_logger(), "in_place_direction_hysteresis_generator: %s",
+    in_place_direction_hysteresis_generator_.c_str());
+
+  double in_place_direction_min_hold_sec = 1.0;
+  declare_parameter("in_place_direction_min_hold_sec", rclcpp::ParameterValue(1.0));
+  this->get_parameter("in_place_direction_min_hold_sec", in_place_direction_min_hold_sec);
+
+  double in_place_direction_switch_cost_margin = 0.05;
+  declare_parameter("in_place_direction_switch_cost_margin", rclcpp::ParameterValue(0.05));
+  this->get_parameter(
+    "in_place_direction_switch_cost_margin", in_place_direction_switch_cost_margin);
+
+  double in_place_direction_reset_gap_sec = 2.0;
+  declare_parameter("in_place_direction_reset_gap_sec", rclcpp::ParameterValue(2.0));
+  this->get_parameter("in_place_direction_reset_gap_sec", in_place_direction_reset_gap_sec);
+
+  if(
+    !std::isfinite(in_place_direction_min_hold_sec) ||
+    in_place_direction_min_hold_sec < 0.0 ||
+    !std::isfinite(in_place_direction_switch_cost_margin) ||
+    in_place_direction_switch_cost_margin < 0.0 ||
+    !std::isfinite(in_place_direction_reset_gap_sec) ||
+    in_place_direction_reset_gap_sec <= 0.0 ||
+    in_place_direction_hysteresis_generator_.empty())
+  {
+    throw std::invalid_argument(
+      "in-place direction hysteresis requires a non-empty generator, non-negative "
+      "hold/margin, and a positive reset gap");
+  }
+  in_place_rotation_hysteresis_.configure(
+    in_place_direction_min_hold_sec,
+    in_place_direction_switch_cost_margin,
+    in_place_direction_reset_gap_sec);
+  RCLCPP_INFO(
+    this->get_logger(),
+    "in_place_direction_hysteresis: hold=%.2f cost_margin=%.3f reset_gap=%.2f",
+    in_place_direction_min_hold_sec,
+    in_place_direction_switch_cost_margin,
+    in_place_direction_reset_gap_sec);
 
   //@Initialize transform listener and broadcaster
   tf_listener_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
@@ -508,17 +564,27 @@ void Local_Planner::getBestTrajectory(std::string traj_gen_name, base_trajectory
   best_traj.cost_ = -1;
 
   double minimum_cost = 9999999;
+  std::size_t preferred_index = trajectories_->size();
+  std::vector<InPlaceRotationCandidate> hysteresis_candidates;
+  hysteresis_candidates.reserve(trajectories_->size());
   geometry_msgs::msg::PoseArray accepted_pose_arr;
   pcl::PointCloud<pcl::PointXYZ> cuboids_pcl;
   
   rejected_trajectories_.clear();
 
-  for(auto traj_it=trajectories_->begin();traj_it!=trajectories_->end();traj_it++){
+  std::size_t trajectory_index = 0;
+  for(auto traj_it=trajectories_->begin();traj_it!=trajectories_->end();traj_it++, trajectory_index++){
 
     mpc_critics_ros_->scoreTrajectory(traj_gen_name, (*traj_it));
+
+    InPlaceRotationCandidate hysteresis_candidate;
+    hysteresis_candidate.linear_x = (*traj_it).xv_;
+    hysteresis_candidate.angular_z = (*traj_it).thetav_;
+    hysteresis_candidate.cost = (*traj_it).cost_;
+    hysteresis_candidates.push_back(hysteresis_candidate);
     
     if((*traj_it).cost_>=0 && (*traj_it).cost_<=minimum_cost){
-      best_traj = (*traj_it);
+      preferred_index = trajectory_index;
       minimum_cost = (*traj_it).cost_;
     }
 
@@ -528,6 +594,29 @@ void Local_Planner::getBestTrajectory(std::string traj_gen_name, base_trajectory
 
     rejected_trajectories_[(*traj_it).rejected_by_].push_back(*traj_it);
     
+  }
+
+  std::size_t selected_index = preferred_index;
+  if(
+    in_place_direction_hysteresis_enabled_ &&
+    traj_gen_name == in_place_direction_hysteresis_generator_)
+  {
+    selected_index = in_place_rotation_hysteresis_.select(
+      hysteresis_candidates, preferred_index, std::chrono::steady_clock::now());
+  }else{
+    in_place_rotation_hysteresis_.reset();
+  }
+
+  if(selected_index < trajectories_->size()){
+    best_traj = trajectories_->at(selected_index);
+    if(selected_index != preferred_index && preferred_index < trajectories_->size()){
+      const auto & preferred = trajectories_->at(preferred_index);
+      RCLCPP_INFO_THROTTLE(
+        this->get_logger().get_child(name_), *clock_, 1000,
+        "in_place_direction_hysteresis held yaw sign: preferred=(%.3f,cost=%.3f) "
+        "selected=(%.3f,cost=%.3f)",
+        preferred.thetav_, preferred.cost_, best_traj.thetav_, best_traj.cost_);
+    }
   }
   
   if(best_traj.cost_ < 0 || debug_rejection_report_){

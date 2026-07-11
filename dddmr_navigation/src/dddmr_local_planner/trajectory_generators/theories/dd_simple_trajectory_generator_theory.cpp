@@ -32,6 +32,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <sstream>
 #include <stdexcept>
 
 PLUGINLIB_EXPORT_CLASS(trajectory_generators::DDSimpleTrajectoryGeneratorTheory, trajectory_generators::TrajectoryGeneratorTheory)
@@ -72,8 +73,12 @@ void DDSimpleTrajectoryGeneratorTheory::onInitialize(){
     node_->get_logger().get_child(name_), "in_place_rotation_max_linear_speed: %.2f",
     in_place_rotation_max_linear_speed_);
 
-  if(in_place_rotation_max_linear_speed_ < 0.0){
-    throw std::invalid_argument("in_place_rotation_max_linear_speed must be non-negative");
+  if(
+    !std::isfinite(in_place_rotation_max_linear_speed_) ||
+    in_place_rotation_max_linear_speed_ < 0.0)
+  {
+    throw std::invalid_argument(
+      "in_place_rotation_max_linear_speed must be finite and non-negative");
   }
 
   node_->declare_parameter(name_ + ".max_vel_theta", rclcpp::ParameterValue(0.1));
@@ -144,6 +149,39 @@ void DDSimpleTrajectoryGeneratorTheory::onInitialize(){
   node_->declare_parameter(name_ + ".angular_z_sample", rclcpp::ParameterValue(10.0));
   node_->get_parameter(name_ + ".angular_z_sample", params_->angular_z_sample);
   RCLCPP_INFO(node_->get_logger().get_child(name_), "angular_z_sample: %.2f", params_->angular_z_sample);
+
+  if(
+    !std::isfinite(limits_->max_vel_theta) || limits_->max_vel_theta <= 0.0 ||
+    !std::isfinite(limits_->min_vel_theta) || limits_->min_vel_theta <= 0.0 ||
+    !std::isfinite(limits_->acc_lim_theta) || limits_->acc_lim_theta <= 0.0 ||
+    !std::isfinite(params_->controller_frequency) || params_->controller_frequency <= 0.0)
+  {
+    throw std::invalid_argument(
+      "angular velocity limits, angular acceleration, and controller frequency "
+      "must be finite and positive");
+  }
+  if(limits_->min_vel_theta > limits_->max_vel_theta)
+  {
+    throw std::invalid_argument("min_vel_theta must not exceed max_vel_theta");
+  }
+  if(enable_in_place_rotation_){
+    const double rest_reachable_angular_speed = std::min(
+      limits_->max_vel_theta,
+      limits_->acc_lim_theta / params_->controller_frequency);
+    if(limits_->min_vel_theta > rest_reachable_angular_speed + 1e-4){
+      std::ostringstream error;
+      error
+        << "in-place rotation cannot start from rest: min_vel_theta="
+        << limits_->min_vel_theta
+        << " exceeds the one-cycle reachable angular speed="
+        << rest_reachable_angular_speed
+        << "; set acc_lim_theta >= "
+        << limits_->min_vel_theta * params_->controller_frequency
+        << " or lower min_vel_theta";
+      RCLCPP_ERROR(node_->get_logger().get_child(name_), "%s", error.str().c_str());
+      throw std::invalid_argument(error.str());
+    }
+  }
 
   node_->declare_parameter(name_ + ".sim_granularity", rclcpp::ParameterValue(0.1));
   node_->get_parameter(name_ + ".sim_granularity", params_->sim_granularity);
@@ -304,6 +342,7 @@ void DDSimpleTrajectoryGeneratorTheory::initialise(){
     // Its complete swept cuboid is still evaluated by the collision critic.
     if(enable_in_place_rotation_ &&
        current_linear_speed <= in_place_rotation_max_linear_speed_){
+      const std::size_t in_place_sample_begin = sample_params_.size();
       trajectory_generators::VelocityIterator th_it(
         min_vel[2], max_vel[2], params_->angular_z_sample);
       for(; !th_it.isFinished(); th_it++){
@@ -315,6 +354,14 @@ void DDSimpleTrajectoryGeneratorTheory::initialise(){
         if(isMotorConstraintSatisfied(vel_samp)){
           sample_params_.push_back(vel_samp);
         }
+      }
+      if(sample_params_.size() == in_place_sample_begin){
+        RCLCPP_ERROR_THROTTLE(
+          node_->get_logger().get_child(name_), *(node_->get_clock()), 1000,
+          "No executable in-place sample: dynamic_window=[%.3f, %.3f] "
+          "min_vel_theta=%.3f current_yaw_rate=%.3f",
+          min_vel[2], max_vel[2], limits_->min_vel_theta,
+          shared_data_->robot_state_.twist.twist.angular.z);
       }
     }
 

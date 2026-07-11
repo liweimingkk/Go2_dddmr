@@ -281,6 +281,8 @@ nohup python3 /root/dddmr_navigation/src/dddmr_beginner_guide/scripts/go2_sport_
   -p cmd_timeout_sec:=0.20 \
   -p zero_epsilon:=0.001 \
   -p stop_keepalive_hz:=2.0 \
+  -p require_motion_decision:=true \
+  -p motion_allowed_decisions:="'d_controlling,d_align_heading,d_align_goal_heading,d_recovery_waitdone'" \
   -p enable_yaw_arc_shim:=false \
   > '${ADAPTER_LOG_CONTAINER}' 2>&1 &
 echo \$!" >/tmp/go2_xt16_nav_adapter_pid.txt

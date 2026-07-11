@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -38,7 +40,11 @@ protected:
   std::vector<base_trajectory::Trajectory> generate(
     const double current_linear_speed,
     const bool enable_in_place_rotation = true,
-    const double allowed_max_linear_speed = -1.0)
+    const double allowed_max_linear_speed = -1.0,
+    const double min_vel_theta = 0.15,
+    const double acc_lim_theta = 2.0,
+    const double controller_frequency = 10.0,
+    const double in_place_rotation_max_linear_speed = 0.05)
   {
     static int node_id = 0;
     const std::string prefix = "generator";
@@ -46,12 +52,14 @@ protected:
     options.parameter_overrides({
       rclcpp::Parameter(prefix + ".min_vel_x", 0.20),
       rclcpp::Parameter(prefix + ".max_vel_x", 0.30),
-      rclcpp::Parameter(prefix + ".min_vel_theta", 0.15),
+      rclcpp::Parameter(prefix + ".min_vel_theta", min_vel_theta),
       rclcpp::Parameter(prefix + ".max_vel_theta", 0.50),
       rclcpp::Parameter(prefix + ".enable_in_place_rotation", enable_in_place_rotation),
-      rclcpp::Parameter(prefix + ".in_place_rotation_max_linear_speed", 0.05),
+      rclcpp::Parameter(
+        prefix + ".in_place_rotation_max_linear_speed",
+        in_place_rotation_max_linear_speed),
       rclcpp::Parameter(prefix + ".acc_lim_x", 3.0),
-      rclcpp::Parameter(prefix + ".acc_lim_theta", 2.0),
+      rclcpp::Parameter(prefix + ".acc_lim_theta", acc_lim_theta),
       rclcpp::Parameter(prefix + ".prune_forward", 3.0),
       rclcpp::Parameter(prefix + ".prune_backward", 1.0),
       rclcpp::Parameter(prefix + ".deceleration_ratio", 2.0),
@@ -60,7 +68,7 @@ protected:
       rclcpp::Parameter(prefix + ".wheel_diameter", 0.16),
       rclcpp::Parameter(prefix + ".gear_ratio", 1.0),
       rclcpp::Parameter(prefix + ".robot_radius", 0.25),
-      rclcpp::Parameter(prefix + ".controller_frequency", 10.0),
+      rclcpp::Parameter(prefix + ".controller_frequency", controller_frequency),
       rclcpp::Parameter(prefix + ".sim_time", 1.5),
       rclcpp::Parameter(prefix + ".linear_x_sample", 5.0),
       rclcpp::Parameter(prefix + ".angular_z_sample", 10.0),
@@ -179,6 +187,65 @@ TEST_F(DDSimpleTrajectoryGeneratorTest, SubExecutableSpeedLimitProducesOnlyInPla
     EXPECT_NEAR(trajectory.xv_, 0.0, 1e-6);
     EXPECT_GE(std::fabs(trajectory.thetav_), 0.15 - 1e-6);
   }
+}
+
+TEST_F(DDSimpleTrajectoryGeneratorTest, UnreachableInPlaceMinimumFailsDuringInitialization)
+{
+  EXPECT_THROW(
+    generate(0.0, true, -1.0, 0.40, 2.0, 10.0),
+    std::invalid_argument);
+}
+
+TEST_F(DDSimpleTrajectoryGeneratorTest, ReachableBoundaryGeneratesBothTurnDirections)
+{
+  const auto trajectories = generate(0.0, true, -1.0, 0.40, 4.0, 10.0);
+  bool has_left_rotation = false;
+  bool has_right_rotation = false;
+  for(const auto & trajectory : trajectories){
+    if(std::fabs(trajectory.xv_) > 1e-6){
+      continue;
+    }
+    has_left_rotation = has_left_rotation || trajectory.thetav_ > 0.0;
+    has_right_rotation = has_right_rotation || trajectory.thetav_ < 0.0;
+    EXPECT_GE(std::fabs(trajectory.thetav_), 0.40 - 1e-6);
+  }
+
+  EXPECT_TRUE(has_left_rotation);
+  EXPECT_TRUE(has_right_rotation);
+}
+
+TEST_F(DDSimpleTrajectoryGeneratorTest, DisabledInPlaceRotationDoesNotRequireRestBootstrap)
+{
+  EXPECT_NO_THROW(generate(0.0, false, -1.0, 0.40, 2.0, 10.0));
+}
+
+TEST_F(DDSimpleTrajectoryGeneratorTest, InvalidAngularConfigurationFailsFast)
+{
+  EXPECT_THROW(
+    generate(0.0, true, -1.0, 0.60, 6.0, 10.0),
+    std::invalid_argument);
+  EXPECT_THROW(
+    generate(0.0, true, -1.0, 0.15, 2.0, 0.0),
+    std::invalid_argument);
+  EXPECT_THROW(
+    generate(0.0, false, -1.0, -0.15, 2.0, 10.0),
+    std::invalid_argument);
+  EXPECT_THROW(
+    generate(
+      0.0, false, -1.0, std::numeric_limits<double>::quiet_NaN(), 2.0, 10.0),
+    std::invalid_argument);
+}
+
+TEST_F(DDSimpleTrajectoryGeneratorTest, InvalidInPlaceLinearThresholdFailsFast)
+{
+  EXPECT_THROW(
+    generate(0.0, true, -1.0, 0.15, 2.0, 10.0, -0.01),
+    std::invalid_argument);
+  EXPECT_THROW(
+    generate(
+      0.0, true, -1.0, 0.15, 2.0, 10.0,
+      std::numeric_limits<double>::quiet_NaN()),
+    std::invalid_argument);
 }
 
 }  // namespace
