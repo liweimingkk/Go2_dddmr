@@ -66,6 +66,9 @@ class DDSimpleTrajectoryGeneratorTheory: public TrajectoryGeneratorTheory{
     std::shared_ptr<trajectory_generators::DDTrajectoryGeneratorLimits> limits_;
     std::shared_ptr<trajectory_generators::DDTrajectoryGeneratorParams> params_;
 
+    bool enable_in_place_rotation_;
+    double in_place_rotation_max_linear_speed_;
+
     unsigned int next_sample_index_;
     // to store sample params of each sample between init and generation
     std::vector<Eigen::Vector3f> sample_params_;

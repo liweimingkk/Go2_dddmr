@@ -230,12 +230,15 @@ trajectory_generators:
     
     differential_drive_simple:
       plugin: "trajectory_generators::DDSimpleTrajectoryGeneratorTheory"
-      # Keep the first field re-test conservative and retain slower candidates
-      # instead of forcing every accepted trajectory to at least 0.30 m/s.
+      # Field replay showed that 0.10-0.15 m/s Move requests leave the Go2
+      # effectively stationary. Sample only executable forward motion, plus
+      # collision-checked in-place turns after odometry confirms a full stop.
       max_vel_x: 0.30
-      min_vel_x: 0.10
+      min_vel_x: 0.20
       max_vel_theta: 0.50
       min_vel_theta: 0.04
+      enable_in_place_rotation: true
+      in_place_rotation_max_linear_speed: 0.05
       acc_lim_x: 3.00
       acc_lim_theta: 1.0
       deceleration_ratio: 2.0

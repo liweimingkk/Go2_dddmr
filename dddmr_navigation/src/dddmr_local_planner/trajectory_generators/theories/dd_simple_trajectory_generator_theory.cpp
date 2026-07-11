@@ -30,6 +30,10 @@
 */
 #include <trajectory_generators/dd_simple_trajectory_generator_theory.h>
 
+#include <algorithm>
+#include <cmath>
+#include <stdexcept>
+
 PLUGINLIB_EXPORT_CLASS(trajectory_generators::DDSimpleTrajectoryGeneratorTheory, trajectory_generators::TrajectoryGeneratorTheory)
 
 namespace trajectory_generators
@@ -55,6 +59,22 @@ void DDSimpleTrajectoryGeneratorTheory::onInitialize(){
   node_->declare_parameter(name_ + ".min_vel_theta", rclcpp::ParameterValue(0.1));
   node_->get_parameter(name_ + ".min_vel_theta", limits_->min_vel_theta);
   RCLCPP_INFO(node_->get_logger().get_child(name_), "min_vel_theta: %.2f", limits_->min_vel_theta);
+
+  node_->declare_parameter(name_ + ".enable_in_place_rotation", rclcpp::ParameterValue(false));
+  node_->get_parameter(name_ + ".enable_in_place_rotation", enable_in_place_rotation_);
+  RCLCPP_INFO(node_->get_logger().get_child(name_), "enable_in_place_rotation: %d", enable_in_place_rotation_);
+
+  node_->declare_parameter(
+    name_ + ".in_place_rotation_max_linear_speed", rclcpp::ParameterValue(0.05));
+  node_->get_parameter(
+    name_ + ".in_place_rotation_max_linear_speed", in_place_rotation_max_linear_speed_);
+  RCLCPP_INFO(
+    node_->get_logger().get_child(name_), "in_place_rotation_max_linear_speed: %.2f",
+    in_place_rotation_max_linear_speed_);
+
+  if(in_place_rotation_max_linear_speed_ < 0.0){
+    throw std::invalid_argument("in_place_rotation_max_linear_speed must be non-negative");
+  }
 
   node_->declare_parameter(name_ + ".max_vel_theta", rclcpp::ParameterValue(0.1));
   node_->get_parameter(name_ + ".max_vel_theta", limits_->max_vel_theta);
@@ -276,19 +296,47 @@ void DDSimpleTrajectoryGeneratorTheory::initialise(){
     }
 
     Eigen::Vector3f vel_samp = Eigen::Vector3f::Zero();
-    trajectory_generators::VelocityIterator x_it(min_vel[0], max_vel[0], params_->linear_x_sample);
-    trajectory_generators::VelocityIterator th_it(min_vel[2], max_vel[2], params_->angular_z_sample);
-    for(; !x_it.isFinished(); x_it++) {
-      vel_samp[0] = x_it.getVelocity();
+    const double current_linear_speed = std::hypot(
+      shared_data_->robot_state_.twist.twist.linear.x,
+      shared_data_->robot_state_.twist.twist.linear.y);
 
-      for(; !th_it.isFinished(); th_it++) {
+    // A pure rotation is offered only after the robot has physically stopped.
+    // Its complete swept cuboid is still evaluated by the collision critic.
+    if(enable_in_place_rotation_ &&
+       current_linear_speed <= in_place_rotation_max_linear_speed_){
+      trajectory_generators::VelocityIterator th_it(
+        min_vel[2], max_vel[2], params_->angular_z_sample);
+      for(; !th_it.isFinished(); th_it++){
+        vel_samp[0] = 0.0;
         vel_samp[2] = th_it.getVelocity();
-        //ROS_DEBUG("Sample %f, %f, %f", vel_samp[0], vel_samp[1], vel_samp[2]);
-        if(isMotorConstraintSatisfied(vel_samp))
+        if(std::fabs(vel_samp[2]) + 1e-4 < limits_->min_vel_theta){
+          continue;
+        }
+        if(isMotorConstraintSatisfied(vel_samp)){
           sample_params_.push_back(vel_samp);
+        }
       }
-      th_it.reset();
+    }
 
+    // Never generate a non-zero forward command below min_vel_x.  Such slow
+    // arcs can score well in simulation but fall inside a real platform's
+    // command dead zone, leaving the closed loop permanently stuck.
+    const double forward_sample_min = std::max(
+      static_cast<double>(min_vel[0]), limits_->min_vel_x);
+    if(max_vel[0] + 1e-4 >= forward_sample_min){
+      trajectory_generators::VelocityIterator x_it(
+        forward_sample_min, max_vel[0], params_->linear_x_sample);
+      for(; !x_it.isFinished(); x_it++){
+        vel_samp[0] = x_it.getVelocity();
+        trajectory_generators::VelocityIterator th_it(
+          min_vel[2], max_vel[2], params_->angular_z_sample);
+        for(; !th_it.isFinished(); th_it++){
+          vel_samp[2] = th_it.getVelocity();
+          if(isMotorConstraintSatisfied(vel_samp)){
+            sample_params_.push_back(vel_samp);
+          }
+        }
+      }
     }
     //ROS_WARN("%f,%f, %lu",vel.twist.twist.linear.x, vel.twist.twist.angular.z, sample_params_.size());
   }    
@@ -359,10 +407,18 @@ bool DDSimpleTrajectoryGeneratorTheory::generateTrajectory(
   //trajectory might be reused so we'll make sure to reset it
   traj.resetPoints();
 
-  // make sure that the robot would at least be moving with one of
-  // the required minimum velocities for translation and rotation (if set)
-  if ((limits_->min_vel_x >= 0 && vmag + eps < limits_->min_vel_x) &&
-      (limits_->min_vel_theta >= 0 && fabs(sample_target_vel[2]) + eps < limits_->min_vel_theta)) {
+  const bool rotation_meets_minimum = limits_->min_vel_theta < 0.0 ||
+    std::fabs(sample_target_vel[2]) + eps >= limits_->min_vel_theta;
+  const bool is_in_place_rotation = enable_in_place_rotation_ &&
+    vmag <= eps && rotation_meets_minimum;
+
+  // Below-minimum non-zero forward arcs are not executable candidates.  Zero
+  // linear speed is reserved for an explicitly enabled in-place rotation.
+  if(vmag <= eps && !is_in_place_rotation){
+    return false;
+  }
+  if(vmag > eps && limits_->min_vel_x >= 0.0 &&
+     vmag + eps < limits_->min_vel_x){
     return false;
   }
   // make sure we do not exceed max diagonal (x+y) translational velocity (if set)

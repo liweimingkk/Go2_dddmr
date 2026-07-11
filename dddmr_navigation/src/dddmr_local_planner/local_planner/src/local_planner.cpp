@@ -542,7 +542,9 @@ void Local_Planner::getBestTrajectory(std::string traj_gen_name, base_trajectory
     report << "trajectory_report gen=" << traj_gen_name
            << " total=" << total
            << " accepted=" << accepted
-           << " best_cost=" << best_traj.cost_;
+           << " best_cost=" << best_traj.cost_
+           << " best_vx=" << best_traj.xv_
+           << " best_vyaw=" << best_traj.thetav_;
     for(auto report_it=rejected_trajectories_.begin(); report_it!=rejected_trajectories_.end(); report_it++){
       double rate = total > 0 ? static_cast<double>((*report_it).second.size()) / static_cast<double>(total) : 0.0;
       report << " rejected_by=" << (*report_it).first

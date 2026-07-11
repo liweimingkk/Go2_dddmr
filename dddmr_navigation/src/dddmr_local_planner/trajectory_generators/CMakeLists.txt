@@ -150,6 +150,19 @@ install(FILES trajectory_generators.xml
   DESTINATION share/${PROJECT_NAME}
 )
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_dd_simple_trajectory_generator
+    test/test_dd_simple_trajectory_generator.cpp
+  )
+  target_link_libraries(test_dd_simple_trajectory_generator
+    theories
+  )
+  ament_target_dependencies(test_dd_simple_trajectory_generator
+    ${dependencies}
+  )
+endif()
+
 ament_export_include_directories(include)
 ament_export_libraries(trajectory_generator_theory stacked_generator trajectory_generator_ros theories)
 ament_export_dependencies(${dependencies})
