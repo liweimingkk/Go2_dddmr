@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.5)
 project(local_planner)
 
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
@@ -144,6 +148,17 @@ if(BUILD_TESTING)
   )
   target_include_directories(test_in_place_rotation_hysteresis PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+
+  ament_add_gtest(test_goal_tolerance
+    test/test_goal_tolerance.cpp
+  )
+  target_include_directories(test_goal_tolerance PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+  ament_target_dependencies(test_goal_tolerance
+    geometry_msgs
+    perception_3d
   )
 endif()
 

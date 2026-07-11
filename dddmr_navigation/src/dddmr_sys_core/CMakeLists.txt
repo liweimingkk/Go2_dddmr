@@ -30,6 +30,8 @@ set(dependencies
 )
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/TerrainStatus.msg"
+  "msg/TerrainTransition.msg"
   "action/PToPMoveBase.action"
   "action/GetPlan.action"
   "action/RecoveryBehaviors.action"

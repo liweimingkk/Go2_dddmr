@@ -29,6 +29,7 @@
 * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 #include <mpc_critics/scoring_model.h>
+#include <mpc_critics/stair_collision_policy.h>
 
 namespace mpc_critics
 {
@@ -43,6 +44,8 @@ class CollisionModel: public ScoringModel{
   protected:
 
     virtual void onInitialize();
+
+    StairCollisionPolicyConfig stair_collision_config_;
 };
 
 }//end of name space

@@ -162,6 +162,8 @@ class MultiLayerSpinningLidar: public Sensor{
     double euclidean_cluster_extraction_tolerance_;
     int stitcher_num_;
     double pub_gbl_marking_frequency_;
+    StairRiserSemanticsConfig stair_riser_marking_config_;
+    double terrain_surface_plane_tolerance_m_{0.0};
     
     /*pub and sub*/
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sensor_sub_;

@@ -56,6 +56,7 @@ class Sensor{
 
   public:
     Sensor();
+    virtual ~Sensor() = default;
 
     void initialize(std::string name,
         const rclcpp::Node::WeakPtr& weak_node,

@@ -31,21 +31,30 @@
 //@For graph
 #include <perception_3d/dynamic_graph.h>
 
+#include <cmath>
+
 namespace perception_3d
 {
 
 void DynamicGraph::setValue(unsigned int key, double distance){
-  //@ make sure we set minimum value, we have initialize the graph_, so dont worry memory lookup crash
-  graph_[key] = std::min(graph_[key],distance);
+  //@ Never create a node implicitly: graph indices must match mapground.
+  const auto found = graph_.find(key);
+  if(found != graph_.end()){
+    found->second = (!std::isfinite(distance) || distance < 0.0) ?
+      0.0 : std::min(found->second, distance);
+  }
 }
 
 void DynamicGraph::clearValue(unsigned int key, double distance){
-  //@ overwrite the value
-  graph_[key] = distance;
+  const auto found = graph_.find(key);
+  if(found != graph_.end()){
+    found->second = (!std::isfinite(distance) || distance < 0.0) ? 0.0 : distance;
+  }
 }
 
 double DynamicGraph::getValue(const unsigned int index){
-  return graph_[index];
+  const auto found = graph_.find(index);
+  return found == graph_.end() ? 0.0 : found->second;
 }
 
 void DynamicGraph::clear(){
@@ -53,8 +62,12 @@ void DynamicGraph::clear(){
 }
 
 void DynamicGraph::initial(std::size_t n, double max_obstacle_distance){
-  for(unsigned int i=0;i<=n;i++){
-    graph_[i] = max_obstacle_distance;
+  graph_.clear();
+  if(!std::isfinite(max_obstacle_distance) || max_obstacle_distance < 0.0){
+    max_obstacle_distance = 0.0;
+  }
+  for(std::size_t i=0;i<n;i++){
+    graph_[static_cast<unsigned int>(i)] = max_obstacle_distance;
   }
 }
 

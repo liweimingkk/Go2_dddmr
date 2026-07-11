@@ -1,0 +1,69 @@
+/*
+* BSD 3-Clause License
+*
+* Copyright (c) 2024, DDDMobileRobot
+*
+* Redistribution and use in source and binary forms, with or without
+* modification, are permitted provided that the following conditions are met:
+*
+* 1. Redistributions of source code must retain the above copyright notice, this
+*    list of conditions and the following disclaimer.
+*
+* 2. Redistributions in binary form must reproduce the above copyright notice,
+*    this list of conditions and the following disclaimer in the documentation
+*    and/or other materials provided with the distribution.
+*
+* 3. Neither the name of the copyright holder nor the names of its
+*    contributors may be used to endorse or promote products derived from
+*    this software without specific prior written permission.
+*
+* THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+* AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+* IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+* DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+* FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+* DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+* SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+* CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+* OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+* OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+*/
+#ifndef MPC_CRITICS_TERRAIN_SUPPORT_MODEL_H_
+#define MPC_CRITICS_TERRAIN_SUPPORT_MODEL_H_
+
+#include <mpc_critics/scoring_model.h>
+#include <mpc_critics/terrain_support_policy.h>
+
+namespace mpc_critics
+{
+
+class TerrainSupportModel : public ScoringModel
+{
+public:
+  TerrainSupportModel() = default;
+  double scoreTrajectory(base_trajectory::Trajectory & traj) override;
+
+protected:
+  void onInitialize() override;
+
+private:
+  double reject(
+    perception_3d::TerrainRejectionReason reason,
+    unsigned int step,
+    unsigned int step_count) const;
+
+  bool enabled_{false};
+  bool fail_closed_{true};
+  double support_z_offset_m_{0.24};
+  TerrainSupportLimits limits_;
+  perception_3d::TerrainSnapshotConstPtr validated_snapshot_;
+  pcl::PointCloud<pcl::PointXYZI>::ConstPtr validated_ground_;
+  const pcl::KdTreeFLANN<pcl::PointXYZI> * validated_kdtree_{nullptr};
+  std::uint64_t validated_ground_version_{0U};
+  perception_3d::TerrainRejectionReason validation_result_{
+    perception_3d::TerrainRejectionReason::MISSING_SNAPSHOT};
+};
+
+}  // namespace mpc_critics
+
+#endif  // MPC_CRITICS_TERRAIN_SUPPORT_MODEL_H_

@@ -6,6 +6,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(ament_cmake REQUIRED)
+find_package(eigen3_cmake_module REQUIRED)
+find_package(Eigen3 REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
@@ -27,6 +29,7 @@ find_package(pluginlib REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(image_geometry REQUIRED)
+find_package(dddmr_sys_core REQUIRED)
 
 find_package(PCL REQUIRED)
 find_package(OpenCV REQUIRED)
@@ -52,6 +55,7 @@ set(dependencies
   pluginlib
   pcl_conversions
   angles
+  dddmr_sys_core
 )
 
 include_directories(
@@ -65,8 +69,13 @@ add_library(shared_data_sensor SHARED
   src/shared_data.cpp
   src/graph/dynamic_graph.cpp
   src/graph/static_graph.cpp
+  src/graph/terrain_model.cpp
+  src/graph/terrain_model_builder.cpp
+  src/graph/terrain_edge_policy.cpp
+  src/graph/stair_riser_semantics.cpp
 )
 target_link_libraries(shared_data_sensor
+  Eigen3::Eigen
   ${PCL_LIBRARIES}
 )
 ament_target_dependencies(shared_data_sensor
@@ -150,6 +159,7 @@ add_library(layers SHARED
   plugins/path_blocked_strategy.cpp
   plugins/multilayer_spinning_lidar.cpp
   plugins/depth_camera/depth_camera_layer.cpp
+  plugins/terrain_layer.cpp
 )
 target_link_libraries(layers
   cluster_marking 
@@ -215,8 +225,83 @@ install(FILES perception_3d_plugins.xml
   DESTINATION share/${PROJECT_NAME}
 )
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_terrain_edge_policy
+    test/test_terrain_edge_policy.cpp
+  )
+  target_link_libraries(test_terrain_edge_policy
+    shared_data_sensor
+    Eigen3::Eigen
+  )
+  ament_target_dependencies(test_terrain_edge_policy
+    ${dependencies}
+  )
+
+  ament_add_gtest(test_terrain_model_builder
+    test/test_terrain_model_builder.cpp
+  )
+  target_link_libraries(test_terrain_model_builder
+    shared_data_sensor
+    Eigen3::Eigen
+  )
+
+  ament_add_gtest(test_graph_safety
+    test/test_graph_safety.cpp
+  )
+  target_link_libraries(test_graph_safety
+    shared_data_sensor
+  )
+  ament_target_dependencies(test_graph_safety
+    ${dependencies}
+  )
+
+  ament_add_gtest(test_static_ground_generation
+    test/test_static_ground_generation.cpp
+  )
+  target_link_libraries(test_static_ground_generation
+    shared_data_sensor
+  )
+  ament_target_dependencies(test_static_ground_generation
+    ${dependencies}
+  )
+
+  ament_add_gtest(test_static_map_pairing_state
+    test/test_static_map_pairing_state.cpp
+  )
+  target_include_directories(test_static_map_pairing_state PRIVATE include)
+
+  ament_add_gtest(test_terrain_freshness
+    test/test_terrain_freshness.cpp
+  )
+  target_include_directories(test_terrain_freshness PRIVATE include)
+
+  ament_add_gtest(test_stair_riser_semantics
+    test/test_stair_riser_semantics.cpp
+  )
+  target_link_libraries(test_stair_riser_semantics
+    shared_data_sensor
+    Eigen3::Eigen
+  )
+  ament_target_dependencies(test_stair_riser_semantics
+    ${dependencies}
+  )
+
+  ament_add_gtest(test_cluster_marking_stair_semantics
+    test/test_cluster_marking_stair_semantics.cpp
+  )
+  target_link_libraries(test_cluster_marking_stair_semantics
+    cluster_marking
+    shared_data_sensor
+    Eigen3::Eigen
+  )
+  ament_target_dependencies(test_cluster_marking_stair_semantics
+    ${dependencies}
+  )
+endif()
+
 ament_export_include_directories(include)
 ament_export_libraries(shared_data_sensor perception_sensor stacked_perception stacked_perception_ros cluster_marking depth_camera_buffer layers)
-ament_export_dependencies(${dependencies})
+ament_export_dependencies(eigen3_cmake_module Eigen3 ${dependencies})
 pluginlib_export_plugin_description_file(perception_3d perception_3d_plugins.xml)
 ament_package()

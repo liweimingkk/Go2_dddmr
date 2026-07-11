@@ -30,8 +30,12 @@
 */
 /*Debug*/
 #include <chrono>
+#include <atomic>
+#include <mutex>
 #include <p2p_move_base/p2p_state.h>
 #include <std_msgs/msg/string.hpp>
+#include <std_msgs/msg/bool.hpp>
+#include <std_srvs/srv/trigger.hpp>
 
 //@in enum state, the p_to_p_move_base is included
 #include <dddmr_sys_core/dddmr_enum_states.h>
@@ -41,8 +45,10 @@
 
 //@for call global planner action
 #include "dddmr_sys_core/action/get_plan.hpp"
+#include "dddmr_sys_core/msg/terrain_status.hpp"
 #include "p2p_move_base/local_failure_debounce.h"
 #include "p2p_move_base/p2p_global_plan_manager.h"
+#include "p2p_move_base/stair_traversal_supervisor.h"
 //@for call recovery action
 #include "dddmr_sys_core/action/recovery_behaviors.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
@@ -88,12 +94,28 @@ class P2PMoveBase : public rclcpp::Node {
     rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
     rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr stamped_cmd_vel_pub_;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr decision_pub_;
+    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr terrain_traversal_state_pub_;
+    rclcpp::Publisher<dddmr_sys_core::msg::TerrainStatus>::SharedPtr terrain_supervised_status_pub_;
+    rclcpp::Subscription<dddmr_sys_core::msg::TerrainStatus>::SharedPtr terrain_status_sub_;
+    rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr gait_unchanged_sub_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_stair_fault_service_;
 
     bool isQuaternionValid(const geometry_msgs::msg::Quaternion& q);
 
     void publishZeroVelocity();
     void publishVelocity(double vx, double vy, double angular_z);
     void publishDecisionState();
+    void publishTerrainTraversalState();
+    void publishSupervisedTerrainStatus();
+    void terrainStatusCb(const dddmr_sys_core::msg::TerrainStatus::SharedPtr msg);
+    void gaitUnchangedCb(const std_msgs::msg::Bool::SharedPtr msg);
+    void refreshTerrainSupervisor();
+    StairObservation toStairObservation(
+      const dddmr_sys_core::msg::TerrainStatus & msg, bool fresh) const;
+    void resetStairFaultCb(
+      const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+      std::shared_ptr<std_srvs::srv::Trigger::Response> response);
+    std::string selectControllingTrajectoryGenerator() const;
 
     std::shared_ptr<p2p_move_base::State> STATE_;
     std::shared_ptr<local_planner::Local_Planner> LP_;
@@ -112,10 +134,25 @@ class P2PMoveBase : public rclcpp::Node {
     rclcpp_action::Client<dddmr_sys_core::action::RecoveryBehaviors>::SharedPtr recovery_behaviors_client_ptr_;
     void recovery_behaviors_client_goal_response_callback(const rclcpp_action::ClientGoalHandle<dddmr_sys_core::action::RecoveryBehaviors>::SharedPtr & goal_handle);
     void recovery_behaviors_client_result_callback(const rclcpp_action::ClientGoalHandle<dddmr_sys_core::action::RecoveryBehaviors>::WrappedResult & result);
-    bool is_recoverying_;
-    bool is_recoverying_succeed_;
+    bool is_recoverying_{false};
+    bool is_recoverying_succeed_{false};
     void startRecoveryBehaviors(std::string behavior_name);
     LocalFailureDebounce local_failure_debounce_;
+    StairTraversalSupervisor stair_supervisor_;
+    bool terrain_supervisor_enabled_{false};
+    std::string stair_align_trajectory_generator_{
+      "differential_drive_stair_align"};
+    double terrain_status_timeout_sec_{0.30};
+    mutable std::mutex terrain_supervisor_mutex_;
+    dddmr_sys_core::msg::TerrainStatus latest_terrain_status_;
+    rclcpp::Time last_terrain_status_time_{0, 0, RCL_ROS_TIME};
+    bool has_terrain_status_{false};
+    bool require_gait_monitor_{true};
+    double gait_monitor_timeout_sec_{0.30};
+    bool latest_gait_unchanged_{false};
+    bool has_gait_status_{false};
+    rclcpp::Time last_gait_status_time_{0, 0, RCL_ROS_TIME};
+    std::atomic<bool> last_command_stopped_{true};
 
 
 };

@@ -17,18 +17,46 @@ Topics:
   /dddmr_go2/dry_run_cmd_vel
   /dddmr_go2/safe_cmd_vel
   /dddmr_go2/p2p_decision
+  /dddmr_go2/gait_unchanged
+  /dddmr_go2/gait_monitor_reason
   /api/sport/request
+  /lidar_points
+  /ground_cloud
+  /utlidar/robot_odom
+  /dddmr_go2/robot_odom_standard
+  /localization_status
+  /lowstate
+  /sportmodestate
   /mcl_pose
   /tf
   /tf_static
   /global_path
   /awared_global_path
+  /map1/mapcloud
+  /map1/mapsurface
+  /map1/mapground
+  /map1/terrain_ground
+  /perception_3d_ros/dGraph
+  /perception_3d_global/map/dGraph
+  /perception_3d_global/lidar/global_marking
   /prune_plan
   /trajectory
   /accepted_trajectory
   /best_trajectory
   /segmented_cloud_pure
+  /laser_cloud_less_sharp
+  /laser_cloud_less_flat
   /utlidar/cloud_base
+  /dddmr_terrain/traversability_cloud
+  /dddmr_terrain/support_cloud
+  /dddmr_terrain/unknown_cloud
+  /dddmr_terrain/drop_cloud
+  /dddmr_terrain/stair_markers
+  /dddmr_terrain/status
+  /dddmr_terrain/supervised_status
+  /dddmr_terrain/traversal_state
+  /dddmr_terrain/rejection_reason
+  /dddmr_terrain/speed_limit
 EOF
 }
 
@@ -85,18 +113,46 @@ topics=(
   /dddmr_go2/dry_run_cmd_vel
   /dddmr_go2/safe_cmd_vel
   /dddmr_go2/p2p_decision
+  /dddmr_go2/gait_unchanged
+  /dddmr_go2/gait_monitor_reason
   /api/sport/request
+  /lidar_points
+  /ground_cloud
+  /utlidar/robot_odom
+  /dddmr_go2/robot_odom_standard
+  /localization_status
+  /lowstate
+  /sportmodestate
   /mcl_pose
   /tf
   /tf_static
   /global_path
   /awared_global_path
+  /map1/mapcloud
+  /map1/mapsurface
+  /map1/mapground
+  /map1/terrain_ground
+  /perception_3d_ros/dGraph
+  /perception_3d_global/map/dGraph
+  /perception_3d_global/lidar/global_marking
   /prune_plan
   /trajectory
   /accepted_trajectory
   /best_trajectory
   /segmented_cloud_pure
+  /laser_cloud_less_sharp
+  /laser_cloud_less_flat
   /utlidar/cloud_base
+  /dddmr_terrain/traversability_cloud
+  /dddmr_terrain/support_cloud
+  /dddmr_terrain/unknown_cloud
+  /dddmr_terrain/drop_cloud
+  /dddmr_terrain/stair_markers
+  /dddmr_terrain/status
+  /dddmr_terrain/supervised_status
+  /dddmr_terrain/traversal_state
+  /dddmr_terrain/rejection_reason
+  /dddmr_terrain/speed_limit
 )
 
 echo "OUTPUT=${output}"

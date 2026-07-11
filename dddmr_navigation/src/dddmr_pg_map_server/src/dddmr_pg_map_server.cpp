@@ -30,21 +30,82 @@
 */
 
 #include <dddmr_pg_map_server.h>
+
+#include <stdexcept>
+
 namespace dddmr_pg_map_server
 {
 DDDMRPGMapServer::DDDMRPGMapServer(std::string name) : Node(name){
 
   clock_ = this->get_clock();
-  
-  access_ = new sub_maps_mutex_t();
 
   declare_parameter("pose_graph_dir", rclcpp::ParameterValue(""));
   this->get_parameter("pose_graph_dir", pose_graph_dir_);
   RCLCPP_INFO(this->get_logger(), "pose_graph_dir: %s", pose_graph_dir_.c_str());
 
-  declare_parameter("complete_map_voxel_size", rclcpp::ParameterValue(0.3f));
-  this->get_parameter("complete_map_voxel_size", complete_map_voxel_size_);
-  RCLCPP_INFO(this->get_logger(), "complete_map_voxel_size: %.2f", complete_map_voxel_size_);
+  source_map_sha256_ = normalizeMapSha256(
+    this->declare_parameter<std::string>("source_map_sha256", ""));
+  if (source_map_sha256_.empty()) {
+    RCLCPP_WARN(
+      this->get_logger(),
+      "source_map_sha256 is missing/invalid; the computed artifact identity "
+      "will still be reported, but terrain ROI activation requires an exact configured match");
+  }
+
+  complete_map_voxel_size_ =
+    this->declare_parameter<double>("complete_map_voxel_size", 0.3);
+  complete_ground_voxel_size_ = this->declare_parameter<double>(
+    "complete_ground_voxel_size", complete_map_voxel_size_);
+
+  const auto complete_map_voxel_result = validateVoxelSize(
+    "complete_map_voxel_size", complete_map_voxel_size_);
+  if (!complete_map_voxel_result.valid) {
+    throw std::invalid_argument(complete_map_voxel_result.reason);
+  }
+  const auto complete_ground_voxel_result = validateVoxelSize(
+    "complete_ground_voxel_size", complete_ground_voxel_size_);
+  if (!complete_ground_voxel_result.valid) {
+    throw std::invalid_argument(complete_ground_voxel_result.reason);
+  }
+
+  RCLCPP_INFO(
+    this->get_logger(), "complete_map_voxel_size: %.3f",
+    complete_map_voxel_size_);
+  RCLCPP_INFO(
+    this->get_logger(), "complete_ground_voxel_size: %.3f",
+    complete_ground_voxel_size_);
+
+  terrain_roi_config_.enabled =
+    this->declare_parameter<bool>("terrain_roi_enabled", false);
+  terrain_roi_config_.voxel_size =
+    this->declare_parameter<double>("terrain_roi_voxel_size", 0.05);
+  terrain_roi_config_.minimum = {{
+    this->declare_parameter<double>("terrain_roi_min_x", 0.0),
+    this->declare_parameter<double>("terrain_roi_min_y", 0.0),
+    this->declare_parameter<double>("terrain_roi_min_z", 0.0)}};
+  terrain_roi_config_.maximum = {{
+    this->declare_parameter<double>("terrain_roi_max_x", 0.0),
+    this->declare_parameter<double>("terrain_roi_max_y", 0.0),
+    this->declare_parameter<double>("terrain_roi_max_z", 0.0)}};
+
+  const auto terrain_roi_result = validateTerrainROIConfig(
+    terrain_roi_config_, complete_ground_voxel_size_);
+  if (!terrain_roi_result.valid) {
+    RCLCPP_ERROR(
+      this->get_logger(),
+      "Terrain ROI request rejected (fail closed): %s. "
+      "No terrain_ground point cloud will be published.",
+      terrain_roi_result.reason.c_str());
+  } else if (terrain_roi_config_.enabled && source_map_sha256_.empty()) {
+    RCLCPP_ERROR(
+      this->get_logger(),
+      "Terrain ROI request rejected (fail closed): source_map_sha256 must be a 64-hex "
+      "hash of the loaded pose graph.");
+  } else {
+    terrain_roi_active_ = terrain_roi_config_.enabled;
+  }
+
+  access_ = new sub_maps_mutex_t();
   
   pub_key_pose_arr_ = this->create_publisher<geometry_msgs::msg::PoseArray>("~/key_poses",
               rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable());    
@@ -57,6 +118,25 @@ DDDMRPGMapServer::DDDMRPGMapServer(std::string name) : Node(name){
 
   pub_ground_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("~/mapground",
                 rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable());  
+
+  pub_navigation_ground_ =
+    this->create_publisher<sensor_msgs::msg::PointCloud2>(
+    "~/navigation_ground",
+    rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable());
+
+  pub_map_sha256_ = this->create_publisher<std_msgs::msg::String>(
+    "~/map_sha256", rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable());
+
+  if (terrain_roi_active_) {
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Terrain ROI enabled: min [%.3f, %.3f, %.3f], "
+      "max [%.3f, %.3f, %.3f], voxel %.3f",
+      terrain_roi_config_.minimum[0], terrain_roi_config_.minimum[1],
+      terrain_roi_config_.minimum[2], terrain_roi_config_.maximum[0],
+      terrain_roi_config_.maximum[1], terrain_roi_config_.maximum[2],
+      terrain_roi_config_.voxel_size);
+  }
   
   srv_get_key_frame_ = this->create_service<dddmr_sys_core::srv::GetKeyFrameCloud>("~/get_key_frame_cloud", std::bind(&DDDMRPGMapServer::getKeyFrameCloud, this, std::placeholders::_1, std::placeholders::_2), rmw_qos_profile_services_default);
 
@@ -75,37 +155,97 @@ void DDDMRPGMapServer::readPoseGraph(){
   */
 
   pcd_poses_.reset(new pcl::PointCloud<PointTypePose>());
-  if (pcl::io::loadPCDFile<PointTypePose> (pose_graph_dir_ + "/poses.pcd", *pcd_poses_) == -1) //* load the file
+  if (pose_graph_dir_.empty()) {
+    throw std::invalid_argument("pose_graph_dir must not be empty");
+  }
+  const std::string poses_file_path = pose_graph_dir_ + "/poses.pcd";
+  std::vector<MapArtifact> map_artifacts{{"poses.pcd", poses_file_path}};
+  if (pcl::io::loadPCDFile<PointTypePose> (poses_file_path, *pcd_poses_) == -1) //* load the file
   {
-    RCLCPP_ERROR(this->get_logger(), "Read poses PCD file fail: %s", pose_graph_dir_.c_str());
+    throw std::runtime_error("failed to read pose graph poses.pcd from " + pose_graph_dir_);
+  }
+  if (pcd_poses_->empty()) {
+    throw std::runtime_error("pose graph contains no poses: " + pose_graph_dir_);
   }
   RCLCPP_INFO(this->get_logger(), "Poses read: %lu", pcd_poses_->points.size());
   
   for(unsigned int it=0; it<pcd_poses_->points.size(); it++){
     //@ something like 0_feature.pcd
     std::string feature_file_dir = pose_graph_dir_ + "/pcd/" + std::to_string(it) + "_feature.pcd";
+    map_artifacts.push_back(
+      {"pcd/" + std::to_string(it) + "_feature.pcd", feature_file_dir});
     pcl::PointCloud<dddmr_pg_map_server::pcl_t>::Ptr a_feature_pcd(new pcl::PointCloud<dddmr_pg_map_server::pcl_t>());
     if (pcl::io::loadPCDFile<dddmr_pg_map_server::pcl_t> (feature_file_dir, *a_feature_pcd) == -1) //* load the file
     {
-      RCLCPP_ERROR(this->get_logger(), "Read feature PCD file fail: %s", feature_file_dir.c_str());
+      throw std::runtime_error("failed to read feature PCD: " + feature_file_dir);
     }
     cornerCloudKeyFrames_baselink_.push_back(a_feature_pcd);
 
     std::string surface_file_dir = pose_graph_dir_ + "/pcd/" + std::to_string(it) + "_surface.pcd";
+    map_artifacts.push_back(
+      {"pcd/" + std::to_string(it) + "_surface.pcd", surface_file_dir});
     pcl::PointCloud<dddmr_pg_map_server::pcl_t>::Ptr a_surface_pcd(new pcl::PointCloud<dddmr_pg_map_server::pcl_t>());
     if (pcl::io::loadPCDFile<dddmr_pg_map_server::pcl_t> (surface_file_dir, *a_surface_pcd) == -1) //* load the file
     {
-      RCLCPP_ERROR(this->get_logger(), "Read feature PCD file fail: %s", surface_file_dir.c_str());
+      throw std::runtime_error("failed to read surface PCD: " + surface_file_dir);
     }
     surfCloudKeyFrames_baselink_.push_back(a_surface_pcd);
 
     std::string ground_file_dir = pose_graph_dir_ + "/pcd/" + std::to_string(it) + "_ground.pcd";
+    map_artifacts.push_back(
+      {"pcd/" + std::to_string(it) + "_ground.pcd", ground_file_dir});
     pcl::PointCloud<dddmr_pg_map_server::pcl_t>::Ptr a_ground_pcd(new pcl::PointCloud<dddmr_pg_map_server::pcl_t>());
     if (pcl::io::loadPCDFile<dddmr_pg_map_server::pcl_t> (ground_file_dir, *a_ground_pcd) == -1) //* load the file
     {
-      RCLCPP_ERROR(this->get_logger(), "Read ground PCD file fail: %s", ground_file_dir.c_str());
+      throw std::runtime_error("failed to read ground PCD: " + ground_file_dir);
     }
     groundCloudKeyFrames_baselink_.push_back(a_ground_pcd);
+  }
+
+  const auto map_identity = computeMapArtifactIdentity(map_artifacts);
+  if (!map_identity.valid) {
+    loaded_map_sha256_.clear();
+    terrain_roi_active_ = false;
+    RCLCPP_ERROR(
+      this->get_logger(),
+      "Could not compute the loaded pose-graph identity: %s. Terrain outputs "
+      "are disabled fail-closed; ordinary map outputs remain available.",
+      map_identity.reason.c_str());
+  } else {
+    loaded_map_sha256_ = map_identity.sha256;
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Loaded pose-graph artifact identity: %s (%zu artifacts, %llu bytes)",
+      loaded_map_sha256_.c_str(), map_identity.artifact_count,
+      static_cast<unsigned long long>(map_identity.total_bytes));
+
+    const auto identity_validation = validateLoadedMapIdentity(
+      terrain_roi_config_.enabled, source_map_sha256_, loaded_map_sha256_);
+    if (!identity_validation.valid) {
+      terrain_roi_active_ = false;
+      RCLCPP_ERROR(
+        this->get_logger(),
+        "Terrain ROI identity verification failed closed: %s "
+        "(configured=%s loaded=%s). No terrain-aware navigation ground will "
+        "be published. If this map is intentional, independently verify it, "
+        "then configure source_map_sha256 as %s.",
+        identity_validation.reason.c_str(),
+        source_map_sha256_.empty() ? "missing/invalid" : source_map_sha256_.c_str(),
+        loaded_map_sha256_.c_str(), loaded_map_sha256_.c_str());
+    } else if (terrain_roi_config_.enabled) {
+      RCLCPP_INFO(
+        this->get_logger(),
+        "Configured source_map_sha256 matches the loaded artifact manifest.");
+    } else if (!source_map_sha256_.empty() &&
+      source_map_sha256_ != loaded_map_sha256_)
+    {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "Configured source_map_sha256 does not match the loaded artifacts "
+        "(configured=%s loaded=%s). Terrain ROI is disabled, so legacy flat "
+        "map/navigation publication remains enabled.",
+        source_map_sha256_.c_str(), loaded_map_sha256_.c_str());
+    }
   }
 
   pcl::PointCloud<dddmr_pg_map_server::pcl_t>::Ptr map_cloud (new pcl::PointCloud<dddmr_pg_map_server::pcl_t>);
@@ -226,9 +366,71 @@ void DDDMRPGMapServer::readPoseGraph(){
   pub_surf_->publish(surf_pc);
 
   RCLCPP_INFO(this->get_logger(), "Ground pointcloud size: %lu", map_ground->points.size());
+  if (map_ground->empty()) {
+    throw std::runtime_error("pose graph contains no ground points");
+  }
+
+  pcl::PointCloud<dddmr_pg_map_server::pcl_t>::Ptr terrain_ground(
+    new pcl::PointCloud<dddmr_pg_map_server::pcl_t>);
+  bool terrain_ground_ready = false;
+  if (terrain_roi_active_) {
+    terrain_ground->reserve(map_ground->size());
+    for (const auto & point : map_ground->points) {
+      if (pointIsInsideTerrainROI(
+          terrain_roi_config_, point.x, point.y, point.z))
+      {
+        terrain_ground->push_back(point);
+      }
+    }
+
+    if (terrain_ground->empty()) {
+      RCLCPP_ERROR(
+        this->get_logger(),
+        "Terrain ROI contains no ground points; terrain_ground will not be "
+        "published (fail closed).");
+    } else {
+      pcl::VoxelGrid<dddmr_pg_map_server::pcl_t> sor_terrain_ground;
+      sor_terrain_ground.setInputCloud(terrain_ground);
+      const auto terrain_voxel =
+        static_cast<float>(terrain_roi_config_.voxel_size);
+      sor_terrain_ground.setLeafSize(
+        terrain_voxel, terrain_voxel, terrain_voxel);
+      sor_terrain_ground.filter(*terrain_ground);
+      terrain_ground->is_dense = false;
+      std::vector<int> terrain_ground_indices;
+      pcl::removeNaNFromPointCloud(
+        *terrain_ground, *terrain_ground, terrain_ground_indices);
+
+      if (terrain_ground->empty()) {
+        RCLCPP_ERROR(
+          this->get_logger(),
+          "Terrain ROI became empty after downsampling; terrain_ground will "
+          "not be advertised or published (fail closed).");
+      } else {
+        pub_terrain_ground_ =
+          this->create_publisher<sensor_msgs::msg::PointCloud2>(
+          "~/terrain_ground",
+          rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable());
+        sensor_msgs::msg::PointCloud2 terrain_ground_pc;
+        pcl::toROSMsg(*terrain_ground, terrain_ground_pc);
+        terrain_ground_pc.header.frame_id = "map";
+        pub_terrain_ground_->publish(terrain_ground_pc);
+        terrain_ground_ready = true;
+        RCLCPP_INFO(
+          this->get_logger(),
+          "Terrain ground pointcloud published with %lu points.",
+          terrain_ground->points.size());
+      }
+    }
+  }
+
   pcl::VoxelGrid<dddmr_pg_map_server::pcl_t> sor_ground;
   sor_ground.setInputCloud (map_ground);
-  sor_ground.setLeafSize (complete_map_voxel_size_, complete_map_voxel_size_, complete_map_voxel_size_);
+  const auto complete_ground_voxel =
+    static_cast<float>(complete_ground_voxel_size_);
+  sor_ground.setLeafSize(
+    complete_ground_voxel, complete_ground_voxel,
+    complete_ground_voxel);
   sor_ground.filter (*map_ground);
   map_ground->is_dense = false;
   std::vector<int> ind_ground;
@@ -238,9 +440,65 @@ void DDDMRPGMapServer::readPoseGraph(){
   pcl::toROSMsg(*map_ground, ground_pc);
   ground_pc.header.frame_id = "map";
   pub_ground_->publish(ground_pc);
+
+  if (!terrain_roi_config_.enabled) {
+    pub_navigation_ground_->publish(ground_pc);
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Navigation ground published from complete mapground with %lu points.",
+      map_ground->points.size());
+  } else if (!terrain_roi_active_) {
+    RCLCPP_ERROR(
+      this->get_logger(),
+      "Navigation ground will not be published because the requested terrain "
+      "ROI configuration is invalid (fail closed).");
+  } else if (!terrain_ground_ready) {
+    RCLCPP_ERROR(
+      this->get_logger(),
+      "Navigation ground will not be published because terrain_ground is not "
+      "ready (fail closed).");
+  } else {
+    const auto navigation_ground_result = mergeNavigationGroundPoints(
+      map_ground->points, terrain_ground->points, terrain_roi_config_,
+      complete_ground_voxel_size_);
+    if (!navigation_ground_result.valid) {
+      RCLCPP_ERROR(
+        this->get_logger(),
+        "Navigation ground merge rejected (fail closed): %s. No "
+        "navigation_ground point cloud will be published.",
+        navigation_ground_result.reason.c_str());
+    } else {
+      pcl::PointCloud<dddmr_pg_map_server::pcl_t> navigation_ground;
+      navigation_ground.points = navigation_ground_result.points;
+      navigation_ground.width = navigation_ground.points.size();
+      navigation_ground.height = 1;
+      navigation_ground.is_dense = false;
+
+      sensor_msgs::msg::PointCloud2 navigation_ground_pc;
+      pcl::toROSMsg(navigation_ground, navigation_ground_pc);
+      navigation_ground_pc.header.frame_id = "map";
+      pub_navigation_ground_->publish(navigation_ground_pc);
+      RCLCPP_INFO(
+        this->get_logger(),
+        "Navigation ground published with %lu coarse ROI-outside points, "
+        "%lu high-resolution ROI points, and %lu duplicates removed.",
+        navigation_ground_result.coarse_points_retained,
+        navigation_ground_result.terrain_points_added,
+        navigation_ground_result.duplicate_points_removed);
+    }
+  }
   
   key_poses_.header.frame_id = "map";
   pub_key_pose_arr_->publish(key_poses_);
+
+  if (!loaded_map_sha256_.empty()) {
+    std_msgs::msg::String map_identity;
+    // Publish only the digest computed from what was actually loaded.  A
+    // configured value is a verifier, never an authority that can overwrite
+    // the measured identity.
+    map_identity.data = loaded_map_sha256_;
+    pub_map_sha256_->publish(map_identity);
+  }
 
   RCLCPP_INFO(this->get_logger(), "\033[1;32mMap and Ground published.\033[0m ");
   

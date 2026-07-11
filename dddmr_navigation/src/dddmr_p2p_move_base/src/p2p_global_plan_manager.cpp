@@ -148,9 +148,11 @@ void P2PGlobalPlanManager::global_planner_client_goal_response_callback(const rc
 
 void P2PGlobalPlanManager::global_planner_client_result_callback(const rclcpp_action::ClientGoalHandle<dddmr_sys_core::action::GetPlan>::WrappedResult & result)
 {
+  std::unique_lock<std::mutex> lock(access_);
+  bool transport_succeeded = false;
   switch (result.code) {
     case rclcpp_action::ResultCode::SUCCEEDED:
-      //RCLCPP_INFO(this->get_logger(), "Global Planner ---> %s: Global plan is found", global_planner_action_name_.c_str());
+      transport_succeeded = true;
       break;
     case rclcpp_action::ResultCode::ABORTED:
       RCLCPP_ERROR(this->get_logger(), "Global Planner ---> %s: Goal was aborted", global_planner_action_name_.c_str());
@@ -162,7 +164,30 @@ void P2PGlobalPlanManager::global_planner_client_result_callback(const rclcpp_ac
       RCLCPP_ERROR(this->get_logger(), "Global Planner ---> %s: Unknown result code", global_planner_action_name_.c_str());
       break;
   }
-  global_path_ = result.result->path;
+  if (!result.result) {
+    RCLCPP_ERROR(
+      this->get_logger(), "Global Planner ---> %s returned no result payload",
+      global_planner_action_name_.c_str());
+    global_path_ = nav_msgs::msg::Path();
+  } else if (!transport_succeeded ||
+    result.result->status_code != dddmr_sys_core::action::GetPlan::Result::STATUS_SUCCESS)
+  {
+    RCLCPP_ERROR(
+      this->get_logger(),
+      "Global Planner ---> %s rejected the plan: code=%u reason=%s "
+      "map=%s generation=%llu snapshot=%llu edges=%llu/%llu rejected=%llu",
+      global_planner_action_name_.c_str(), result.result->status_code,
+      result.result->status_reason.c_str(),
+      result.result->map_hash.empty() ? "none" : result.result->map_hash.c_str(),
+      static_cast<unsigned long long>(result.result->static_ground_generation),
+      static_cast<unsigned long long>(result.result->terrain_snapshot_version),
+      static_cast<unsigned long long>(result.result->accepted_edge_count),
+      static_cast<unsigned long long>(result.result->evaluated_edge_count),
+      static_cast<unsigned long long>(result.result->rejected_edge_count));
+    global_path_ = nav_msgs::msg::Path();
+  } else {
+    global_path_ = result.result->path;
+  }
   is_planning_ = false;
 }
 

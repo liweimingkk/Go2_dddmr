@@ -6,6 +6,8 @@
   <arg name="start_feature" default="true"/>
   <arg name="start_localization" default="true"/>
   <arg name="start_move_base" default="true"/>
+  <!-- Set true only for offline bag/synthetic replay with a /clock publisher. -->
+  <arg name="use_sim_time" default="false"/>
 
   <arg name="publish_static_tf" default="true"/>
   <arg name="lidar_x" default="0.1710"/>
@@ -33,6 +35,33 @@
   <arg name="go2_nav_cmd_gate_max_yaw" default="0.50"/>
   <arg name="go2_nav_cmd_gate_zero_epsilon" default="0.001"/>
   <arg name="go2_nav_cmd_gate_log_period" default="0.50"/>
+  <!-- Terrain motion remains fail-closed and disabled until a site capability
+       profile and /dddmr_terrain/status producer have been validated. -->
+  <arg name="go2_nav_cmd_gate_require_terrain_safe" default="false"/>
+  <arg name="go2_nav_cmd_gate_terrain_status_topic" default="/dddmr_terrain/supervised_status"/>
+  <arg name="go2_nav_cmd_gate_terrain_timeout_sec" default="0.30"/>
+  <arg name="go2_nav_cmd_gate_terrain_min_confidence" default="0.90"/>
+  <arg name="go2_nav_cmd_gate_terrain_min_support_ratio" default="0.80"/>
+  <arg name="go2_nav_cmd_gate_stair_max_heading_error_rad" default="0.13962634"/>
+  <arg name="go2_nav_cmd_gate_stair_max_lateral_error_m" default="0.10"/>
+  <arg name="go2_nav_cmd_gate_stair_align_max_forward_mps" default="0.0"/>
+  <arg name="go2_nav_cmd_gate_stair_align_max_yaw_rps" default="0.25"/>
+  <arg name="go2_nav_cmd_gate_stair_committed_max_yaw_rps" default="0.0"/>
+  <arg name="go2_nav_cmd_gate_stair_committed_max_forward_mps" default="0.0"/>
+  <arg name="go2_nav_cmd_gate_ramp_max_up_slope_rad" default="0.0"/>
+  <arg name="go2_nav_cmd_gate_ramp_max_down_slope_rad" default="0.0"/>
+  <arg name="go2_nav_cmd_gate_ramp_max_cross_slope_rad" default="0.0"/>
+  <arg name="go2_nav_cmd_gate_ramp_up_max_x_mps" default="0.0"/>
+  <arg name="go2_nav_cmd_gate_ramp_down_max_x_mps" default="0.0"/>
+  <arg name="go2_nav_cmd_gate_ramp_max_yaw_rps" default="0.0"/>
+  <arg name="go2_nav_cmd_gate_max_body_roll_rad" default="0.0"/>
+  <arg name="go2_nav_cmd_gate_max_body_pitch_rad" default="0.0"/>
+  <arg name="go2_nav_cmd_gate_require_odom_progress" default="false"/>
+  <arg name="go2_nav_cmd_gate_odom_timeout_sec" default="0.30"/>
+  <arg name="go2_nav_cmd_gate_progress_minimum_command_mps" default="0.10"/>
+  <arg name="go2_nav_cmd_gate_progress_minimum_measured_mps" default="0.05"/>
+  <arg name="go2_nav_cmd_gate_progress_minimum_speed_ratio" default="0.50"/>
+  <arg name="go2_nav_cmd_gate_progress_mismatch_timeout_sec" default="0.50"/>
   <arg name="start_sport_dry_run_adapter" default="true"/>
   <arg name="sport_cmd_vel_topic" default="/dddmr_go2/safe_cmd_vel"/>
   <arg name="sport_dry_run_axis_mode" default="standard"/>
@@ -88,7 +117,7 @@
     <param name="raw_to_standard_yaw" value="$(var raw_to_standard_yaw)" type="float"/>
     <param name="rotate_parent_frame" value="$(var rotate_odom_parent_frame)" type="bool"/>
     <param name="rotate_twist" value="$(var rotate_odom_twist)" type="bool"/>
-    <param name="use_sim_time" value="false"/>
+    <param name="use_sim_time" value="$(var use_sim_time)" type="bool"/>
   </node>
 
   <node pkg="tf2_ros" exec="static_transform_publisher" name="base_link_to_base_footprint"
@@ -105,24 +134,24 @@
     <param from="$(var config_file)" />
     <remap from="/lslidar_point_cloud" to="$(var lidar_topic)"/>
     <remap from="/odom" to="$(var odom_topic)"/>
-    <param name="use_sim_time" value="false"/>
+    <param name="use_sim_time" value="$(var use_sim_time)" type="bool"/>
   </node>
 
   <node pkg="dddmr_pg_map_server" exec="dddmr_pg_map_server_node" output="screen" respawn="false">
     <param from="$(var config_file)" />
-    <param name="use_sim_time" value="false"/>
+    <param name="use_sim_time" value="$(var use_sim_time)" type="bool"/>
   </node>
 
   <node pkg="mcl_3dl" exec="mcl_3dl" output="screen" respawn="false" if="$(var start_localization)">
     <param from="$(var config_file)" />
     <param from="$(var relocalization_config_file)" />
     <remap from="/odom" to="$(var odom_topic)"/>
-    <param name="use_sim_time" value="false"/>
+    <param name="use_sim_time" value="$(var use_sim_time)" type="bool"/>
   </node>
 
   <node pkg="global_planner" exec="global_planner_node" output="screen" respawn="false" if="$(var start_move_base)">
     <param from="$(var config_file)" />
-    <param name="use_sim_time" value="false"/>
+    <param name="use_sim_time" value="$(var use_sim_time)" type="bool"/>
   </node>
 
   <!-- No-motion test path: DDDMR velocity output is intentionally isolated. -->
@@ -130,7 +159,7 @@
     <param from="$(var config_file)" />
     <remap from="/cmd_vel" to="/dddmr_go2/dry_run_cmd_vel"/>
     <remap from="/cmd_vel_stamped" to="/dddmr_go2/dry_run_cmd_vel_stamped"/>
-    <param name="use_sim_time" value="false"/>
+    <param name="use_sim_time" value="$(var use_sim_time)" type="bool"/>
   </node>
 
   <node pkg="dddmr_beginner_guide" exec="go2_nav_cmd_gate.py"
@@ -147,7 +176,33 @@
     <param name="max_yaw" value="$(var go2_nav_cmd_gate_max_yaw)" type="float"/>
     <param name="zero_epsilon" value="$(var go2_nav_cmd_gate_zero_epsilon)" type="float"/>
     <param name="log_period_sec" value="$(var go2_nav_cmd_gate_log_period)" type="float"/>
-    <param name="use_sim_time" value="false"/>
+    <param name="require_terrain_safe" value="$(var go2_nav_cmd_gate_require_terrain_safe)" type="bool"/>
+    <param name="terrain_status_topic" value="$(var go2_nav_cmd_gate_terrain_status_topic)" type="str"/>
+    <param name="terrain_status_timeout_sec" value="$(var go2_nav_cmd_gate_terrain_timeout_sec)" type="float"/>
+    <param name="terrain_min_confidence" value="$(var go2_nav_cmd_gate_terrain_min_confidence)" type="float"/>
+    <param name="terrain_min_support_ratio" value="$(var go2_nav_cmd_gate_terrain_min_support_ratio)" type="float"/>
+    <param name="stair_max_heading_error_rad" value="$(var go2_nav_cmd_gate_stair_max_heading_error_rad)" type="float"/>
+    <param name="stair_max_lateral_error_m" value="$(var go2_nav_cmd_gate_stair_max_lateral_error_m)" type="float"/>
+    <param name="stair_align_max_forward_mps" value="$(var go2_nav_cmd_gate_stair_align_max_forward_mps)" type="float"/>
+    <param name="stair_align_max_yaw_rps" value="$(var go2_nav_cmd_gate_stair_align_max_yaw_rps)" type="float"/>
+    <param name="stair_committed_max_yaw_rps" value="$(var go2_nav_cmd_gate_stair_committed_max_yaw_rps)" type="float"/>
+    <param name="stair_committed_max_forward_mps" value="$(var go2_nav_cmd_gate_stair_committed_max_forward_mps)" type="float"/>
+    <param name="ramp_max_up_slope_rad" value="$(var go2_nav_cmd_gate_ramp_max_up_slope_rad)" type="float"/>
+    <param name="ramp_max_down_slope_rad" value="$(var go2_nav_cmd_gate_ramp_max_down_slope_rad)" type="float"/>
+    <param name="ramp_max_cross_slope_rad" value="$(var go2_nav_cmd_gate_ramp_max_cross_slope_rad)" type="float"/>
+    <param name="ramp_up_max_x_mps" value="$(var go2_nav_cmd_gate_ramp_up_max_x_mps)" type="float"/>
+    <param name="ramp_down_max_x_mps" value="$(var go2_nav_cmd_gate_ramp_down_max_x_mps)" type="float"/>
+    <param name="ramp_max_yaw_rps" value="$(var go2_nav_cmd_gate_ramp_max_yaw_rps)" type="float"/>
+    <param name="terrain_max_body_roll_rad" value="$(var go2_nav_cmd_gate_max_body_roll_rad)" type="float"/>
+    <param name="terrain_max_body_pitch_rad" value="$(var go2_nav_cmd_gate_max_body_pitch_rad)" type="float"/>
+    <param name="require_odom_progress" value="$(var go2_nav_cmd_gate_require_odom_progress)" type="bool"/>
+    <param name="odom_topic" value="$(var odom_topic)" type="str"/>
+    <param name="odom_timeout_sec" value="$(var go2_nav_cmd_gate_odom_timeout_sec)" type="float"/>
+    <param name="progress_minimum_command_mps" value="$(var go2_nav_cmd_gate_progress_minimum_command_mps)" type="float"/>
+    <param name="progress_minimum_measured_mps" value="$(var go2_nav_cmd_gate_progress_minimum_measured_mps)" type="float"/>
+    <param name="progress_minimum_speed_ratio" value="$(var go2_nav_cmd_gate_progress_minimum_speed_ratio)" type="float"/>
+    <param name="progress_mismatch_timeout_sec" value="$(var go2_nav_cmd_gate_progress_mismatch_timeout_sec)" type="float"/>
+    <param name="use_sim_time" value="$(var use_sim_time)" type="bool"/>
   </node>
 
   <node pkg="dddmr_beginner_guide" exec="go2_sport_cmd_vel_dry_run.py"
@@ -173,7 +228,7 @@
     <param name="decision_timeout_sec" value="$(var sport_dry_run_decision_timeout_sec)" type="float"/>
     <param name="zero_yaw_only_when_shim_disallowed" value="$(var sport_dry_run_zero_yaw_only_when_shim_disallowed)" type="bool"/>
     <param name="max_continuous_yaw_arc_sec" value="$(var sport_dry_run_max_continuous_yaw_arc_sec)" type="float"/>
-    <param name="use_sim_time" value="false"/>
+    <param name="use_sim_time" value="$(var use_sim_time)" type="bool"/>
   </node>
 
   <node pkg="dddmr_beginner_guide" exec="go2_sport_cmd_vel_adapter.py"
@@ -203,15 +258,15 @@
     <param name="decision_timeout_sec" value="$(var go2_sport_decision_timeout_sec)" type="float"/>
     <param name="zero_yaw_only_when_shim_disallowed" value="$(var go2_sport_zero_yaw_only_when_shim_disallowed)" type="bool"/>
     <param name="max_continuous_yaw_arc_sec" value="$(var go2_sport_max_continuous_yaw_arc_sec)" type="float"/>
-    <param name="use_sim_time" value="false"/>
+    <param name="use_sim_time" value="$(var use_sim_time)" type="bool"/>
   </node>
 
   <node pkg="p2p_move_base" exec="clicked2goal.py" output="screen" respawn="false" if="$(var start_move_base)">
-    <param name="use_sim_time" value="false"/>
+    <param name="use_sim_time" value="$(var use_sim_time)" type="bool"/>
   </node>
 
   <node name="rviz2" pkg="rviz2" exec="rviz2" output="screen" respawn="false"
         if="$(var rviz)" args="-d $(var rviz_config)">
-    <param name="use_sim_time" value="false"/>
+    <param name="use_sim_time" value="$(var use_sim_time)" type="bool"/>
   </node>
 </launch>

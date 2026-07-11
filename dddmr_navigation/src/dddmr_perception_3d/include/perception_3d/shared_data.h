@@ -33,6 +33,13 @@
 
 #include "rclcpp/rclcpp.hpp"
 
+#include <atomic>
+#include <cstdint>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <string>
+
 /*For kd tree*/
 #include <pcl/kdtree/kdtree_flann.h>
 #include <pcl/search/kdtree.h>
@@ -41,6 +48,7 @@
 /*For planner*/
 #include <perception_3d/dynamic_graph.h>
 #include <perception_3d/static_graph.h>
+#include <perception_3d/terrain_model.h>
 
 namespace perception_3d
 {
@@ -54,6 +62,41 @@ class SharedData{
     void requestAllLayersToResetDGraph();
     //@ return false if any false in dgraph_update_request
     bool isAllLayersBeenReset();
+
+    //@ Atomically publish/load one immutable terrain version.  Passing nullptr
+    //@ clears the snapshot so terrain consumers fail closed rather than using a
+    //@ stale version after a producer fault or map change. A non-null snapshot
+    //@ is ignored while a two-phase static pair replacement is pending.
+    void setTerrainSnapshot(TerrainSnapshotConstPtr snapshot);
+    TerrainSnapshotConstPtr getTerrainSnapshot() const;
+
+    //@ Immediate compatibility helper: a static-ground update is an identity
+    //@ change even when the new cloud
+    //@ has exactly the same number of points as the previous cloud.  Invalidate
+    //@ the terrain snapshot before publishing the next generation so readers
+    //@ can never pair a new ground cloud with an old terrain model.
+    std::uint64_t invalidateTerrainForStaticGroundUpdate();
+    std::uint64_t getStaticGroundGeneration() const noexcept;
+
+    //@ Begin a two-phase static map/ground replacement. The existing paired
+    //@ clouds remain visible, but terrain publication is blocked and the old
+    //@ snapshot is cleared until the matching map and ground are committed.
+    std::uint64_t beginStaticMapGroundUpdate();
+    std::uint64_t commitStaticMapGroundUpdate(
+      std::uint64_t expected_update_token);
+    bool isStaticMapGroundUpdatePending() const;
+
+    //@ Publish only if the static ground used to build this snapshot is still
+    //@ current.  This prevents a slow terrain build from restoring a snapshot
+    //@ after a newer ground callback has invalidated it.
+    bool setTerrainSnapshotForStaticGroundGeneration(
+      TerrainSnapshotConstPtr snapshot,
+      std::uint64_t expected_generation);
+
+    // Hold this lease together with ground_kdtree_cb_mutex_ when a consumer
+    // must classify against one inseparable snapshot/ground/KD-tree tuple.
+    // The established lock order is ground first, terrain identity second.
+    std::unique_lock<std::mutex> acquireTerrainIdentityLease() const;
     
     //@ Variable that compute from local planner for path blocked check
     pcl::PointCloud<pcl::PointXYZI> pcl_prune_plan_;
@@ -88,6 +131,11 @@ class SharedData{
     bool mapping_mode_;
   private:
 
+    mutable std::mutex terrain_identity_mutex_;
+    std::atomic<std::uint64_t> static_ground_generation_{0U};
+    std::uint64_t static_update_token_{0U};
+    bool static_update_pending_{false};
+    TerrainSnapshotConstPtr terrain_snapshot_;
 
 
 };

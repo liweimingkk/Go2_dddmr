@@ -33,6 +33,8 @@
 #define DDDMR_PG_MAP_SERVER_H_
 
 #include "utilities.h"
+#include "map_artifact_identity.h"
+#include "terrain_roi_config.h"
 
 #include <mutex>
 
@@ -47,6 +49,7 @@
 #include <visualization_msgs/msg/marker.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
 #include <geometry_msgs/msg/pose_array.hpp>
+#include <std_msgs/msg/string.hpp>
 
 // This is for euclidean distance segmentation
 #include <pcl/segmentation/sac_segmentation.h>
@@ -76,11 +79,16 @@ class DDDMRPGMapServer  : public rclcpp::Node
 private:
 
   std::string pose_graph_dir_;
+  std::string source_map_sha256_;
+  std::string loaded_map_sha256_;
   rclcpp::Clock::SharedPtr clock_;
 
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_map_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_surf_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_ground_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_terrain_ground_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_navigation_ground_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr pub_map_sha256_;
   rclcpp::Service<dddmr_sys_core::srv::GetKeyFrameCloud>::SharedPtr srv_get_key_frame_;
   rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr pub_key_pose_arr_;
 
@@ -102,7 +110,10 @@ private:
       std::shared_ptr<dddmr_sys_core::srv::GetKeyFrameCloud::Response>
           response);
 
-  float complete_map_voxel_size_;
+  double complete_map_voxel_size_;
+  double complete_ground_voxel_size_;
+  TerrainROIConfig terrain_roi_config_;
+  bool terrain_roi_active_{false};
   geometry_msgs::msg::PoseArray key_poses_;
   
 public:

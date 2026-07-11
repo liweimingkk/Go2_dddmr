@@ -57,12 +57,37 @@ include_directories(
   ${PCL_INCLUDE_DIRS}
 )
 
+# planner fail-closed utilities
+add_library(planner_safety SHARED
+  src/planner_safety.cpp
+)
+target_link_libraries(planner_safety
+  ${PCL_LIBRARIES}
+)
+ament_target_dependencies(planner_safety
+  ${dependencies}
+)
+
+# immutable terrain snapshot -> A* edge adapter
+add_library(terrain_edge_validator SHARED
+  src/terrain_edge_validator.cpp
+)
+target_link_libraries(terrain_edge_validator
+  planner_safety
+  ${PCL_LIBRARIES}
+)
+ament_target_dependencies(terrain_edge_validator
+  ${dependencies}
+)
+
 # a_star_on_graph
 add_library(a_star_on_graph SHARED
   src/a_star_on_pc.cpp
   src/a_star_on_pre_graph.cpp
 )
 target_link_libraries(a_star_on_graph
+  terrain_edge_validator
+  planner_safety
   ${PCL_LIBRARIES}
 )
 ament_target_dependencies(a_star_on_graph
@@ -75,6 +100,7 @@ add_library(global_planner SHARED
 )
 target_link_libraries(global_planner
   a_star_on_graph
+  planner_safety
 )
 ament_target_dependencies(global_planner
   ${dependencies}
@@ -86,6 +112,7 @@ add_library(dynamic_window_aware_global_planner SHARED
 )
 target_link_libraries(dynamic_window_aware_global_planner
   global_planner
+  planner_safety
 )
 ament_target_dependencies(dynamic_window_aware_global_planner
   ${dependencies}
@@ -125,6 +152,8 @@ ament_target_dependencies(dummy_pc_publisher
 )
 
 install(TARGETS
+  planner_safety
+  terrain_edge_validator
   a_star_on_graph
   global_planner
   dynamic_window_aware_global_planner
@@ -160,7 +189,44 @@ install(PROGRAMS
   DESTINATION lib/${PROJECT_NAME}
 )
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_planner_fail_closed
+    test/test_planner_fail_closed.cpp
+  )
+  if(TARGET test_planner_fail_closed)
+    target_link_libraries(test_planner_fail_closed
+      global_planner
+      planner_safety
+      a_star_on_graph
+      ${PCL_LIBRARIES}
+    )
+    ament_target_dependencies(test_planner_fail_closed
+      ${dependencies}
+    )
+  endif()
+
+  ament_add_gtest(test_terrain_edge_validator
+    test/test_terrain_edge_validator.cpp
+  )
+  if(TARGET test_terrain_edge_validator)
+    target_link_libraries(test_terrain_edge_validator
+      terrain_edge_validator
+      ${PCL_LIBRARIES}
+    )
+    ament_target_dependencies(test_terrain_edge_validator
+      ${dependencies}
+    )
+  endif()
+endif()
+
 ament_export_include_directories(include)
-ament_export_libraries(a_star_on_graph global_planner dynamic_window_aware_global_planner)
+ament_export_libraries(
+  planner_safety
+  terrain_edge_validator
+  a_star_on_graph
+  global_planner
+  dynamic_window_aware_global_planner
+)
 ament_export_dependencies(${dependencies})
 ament_package()
