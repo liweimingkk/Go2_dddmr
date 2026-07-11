@@ -151,6 +151,19 @@ install(FILES mpc_critics.xml
   DESTINATION share/${PROJECT_NAME}
 )
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_collision_model
+    test/test_collision_model.cpp
+  )
+  target_link_libraries(test_collision_model
+    critics
+  )
+  ament_target_dependencies(test_collision_model
+    ${dependencies}
+  )
+endif()
+
 ament_export_include_directories(include)
 ament_export_libraries(scoring_model stacked_scoring_model mpc_critics_ros critics)
 ament_export_dependencies(${dependencies})

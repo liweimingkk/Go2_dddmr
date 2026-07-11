@@ -154,16 +154,19 @@ local_planner:
     xy_goal_tolerance: 0.4
     yaw_goal_tolerance: 0.8
     controller_frequency: 10.0
+    debug_rejection_report: true
     
+    # Swept Go2 stance envelope. base_footprint is 0.24 m below base_link;
+    # leave 0.04 m ground tolerance while protecting the legs and lower body.
     cuboid:
-      flb: [0.42, 0.18, 0.0] #front left buttom
-      frb: [0.42, -0.18, 0.0]
-      flt: [0.42, 0.18, 0.6] #front left top
-      frt: [0.42, -0.18, 0.6]
-      blb: [-0.35, 0.18, 0.0] #back left buttom
-      brb: [-0.35, -0.18, 0.0]
-      blt: [-0.35, 0.18, 0.6]
-      brt: [-0.35, -0.18, 0.6]
+      flb: [0.42, 0.30, -0.20] #front left bottom
+      frb: [0.42, -0.30, -0.20]
+      flt: [0.42, 0.30, 0.60] #front left top
+      frt: [0.42, -0.30, 0.60]
+      blb: [-0.35, 0.30, -0.20] #back left bottom
+      brb: [-0.35, -0.30, -0.20]
+      blt: [-0.35, 0.30, 0.60]
+      brt: [-0.35, -0.30, 0.60]
 
 recovery_behaviors:
   ros__parameters:
@@ -183,14 +186,14 @@ trajectory_generators:
       rotation_speed: 0.40
       rotation_forward_x: 0.0
       cuboid:
-        flb: [0.42, 0.18, 0.0] #front left buttom
-        frb: [0.42, -0.18, 0.0]
-        flt: [0.42, 0.18, 0.6] #front left top
-        frt: [0.42, -0.18, 0.6]
-        blb: [-0.35, 0.18, 0.0] #back left buttom
-        brb: [-0.35, -0.18, 0.0]
-        blt: [-0.35, 0.18, 0.6]
-        brt: [-0.35, -0.18, 0.6]
+        flb: [0.42, 0.30, -0.20] #front left bottom
+        frb: [0.42, -0.30, -0.20]
+        flt: [0.42, 0.30, 0.60] #front left top
+        frt: [0.42, -0.30, 0.60]
+        blb: [-0.35, 0.30, -0.20] #back left bottom
+        brb: [-0.35, -0.30, -0.20]
+        blt: [-0.35, 0.30, 0.60]
+        brt: [-0.35, -0.30, 0.60]
 
     differential_drive_rotate_inplace:
       plugin: "trajectory_generators::DDRotateInplaceTheory"
@@ -198,14 +201,14 @@ trajectory_generators:
       rotation_speed: 0.40
       rotation_forward_x: 0.0
       cuboid:
-        flb: [0.42, 0.18, 0.0] #front left buttom
-        frb: [0.42, -0.18, 0.0]
-        flt: [0.42, 0.18, 0.6] #front left top
-        frt: [0.42, -0.18, 0.6]
-        blb: [-0.35, 0.18, 0.0] #back left buttom
-        brb: [-0.35, -0.18, 0.0]
-        blt: [-0.35, 0.18, 0.6]
-        brt: [-0.35, -0.18, 0.6]
+        flb: [0.42, 0.30, -0.20] #front left bottom
+        frb: [0.42, -0.30, -0.20]
+        flt: [0.42, 0.30, 0.60] #front left top
+        frt: [0.42, -0.30, 0.60]
+        blb: [-0.35, 0.30, -0.20] #back left bottom
+        brb: [-0.35, -0.30, -0.20]
+        blt: [-0.35, 0.30, 0.60]
+        brt: [-0.35, -0.30, 0.60]
 
     differential_drive_go2_heading_arc:
       plugin: "trajectory_generators::DDRotateInplaceTheory"
@@ -216,19 +219,21 @@ trajectory_generators:
       linear_x_sample: 1.0
       angular_z_sample: 2.0
       cuboid:
-        flb: [0.42, 0.18, 0.0] #front left buttom
-        frb: [0.42, -0.18, 0.0]
-        flt: [0.42, 0.18, 0.6] #front left top
-        frt: [0.42, -0.18, 0.6]
-        blb: [-0.35, 0.18, 0.0] #back left buttom
-        brb: [-0.35, -0.18, 0.0]
-        blt: [-0.35, 0.18, 0.6]
-        brt: [-0.35, -0.18, 0.6]
+        flb: [0.42, 0.30, -0.20] #front left bottom
+        frb: [0.42, -0.30, -0.20]
+        flt: [0.42, 0.30, 0.60] #front left top
+        frt: [0.42, -0.30, 0.60]
+        blb: [-0.35, 0.30, -0.20] #back left bottom
+        brb: [-0.35, -0.30, -0.20]
+        blt: [-0.35, 0.30, 0.60]
+        brt: [-0.35, -0.30, 0.60]
     
     differential_drive_simple:
       plugin: "trajectory_generators::DDSimpleTrajectoryGeneratorTheory"
-      max_vel_x: 0.50
-      min_vel_x: 0.30 # Go2 supervised axis/tilt verification threshold.
+      # Keep the first field re-test conservative and retain slower candidates
+      # instead of forcing every accepted trajectory to at least 0.30 m/s.
+      max_vel_x: 0.30
+      min_vel_x: 0.10
       max_vel_theta: 0.50
       min_vel_theta: 0.04
       acc_lim_x: 3.00
@@ -240,21 +245,21 @@ trajectory_generators:
       robot_radius: 0.25
       
       controller_frequency: 10.0
-      sim_time: 0.6
-      linear_x_sample: 4.0
-      angular_z_sample: 6.0
+      sim_time: 1.5
+      linear_x_sample: 5.0
+      angular_z_sample: 10.0
       sim_granularity: 0.05
       angular_sim_granularity: 0.025
 
       cuboid:
-        flb: [0.42, 0.18, 0.0] #front left buttom
-        frb: [0.42, -0.18, 0.0]
-        flt: [0.42, 0.18, 0.6] #front left top
-        frt: [0.42, -0.18, 0.6]
-        blb: [-0.35, 0.18, 0.0] #back left buttom
-        brb: [-0.35, -0.18, 0.0]
-        blt: [-0.35, 0.18, 0.6]
-        brt: [-0.35, -0.18, 0.6]
+        flb: [0.42, 0.30, -0.20] #front left bottom
+        frb: [0.42, -0.30, -0.20]
+        flt: [0.42, 0.30, 0.60] #front left top
+        frt: [0.42, -0.30, 0.60]
+        blb: [-0.35, 0.30, -0.20] #back left bottom
+        brb: [-0.35, -0.30, -0.20]
+        blt: [-0.35, 0.30, 0.60]
+        brt: [-0.35, -0.30, 0.60]
 
 mpc_critics:
   ros__parameters:
@@ -317,7 +322,7 @@ perception_3d_local:
       ground_topic: "map1/mapground"
     path_blocked_strategy:
       plugin: "perception_3d::PathBlockedStrategy"
-      check_radius: 0.1
+      check_radius: 0.40
     lidar:
       plugin: "perception_3d::MultiLayerSpinningLidar"
       is_local_planner: true
@@ -331,7 +336,10 @@ perception_3d_local:
       scan_effective_negative_end: -180.0
       xy_resolution: 0.05
       height_resolution: 0.05
-      marking_height: 2.0
+      # segmented_cloud_pure is already non-ground. Include the lower body and
+      # leg envelope instead of discarding everything below base_link + 5 cm.
+      marking_minimum_height: -0.20
+      marking_height: 0.60
       perception_window_size: 3.0 #the window for marking/clearing in meter, we dont casting to maximum range of the sensor even it is gbl map
       segmentation_ignore_ratio: 0.5 #f a segmentation match static pc with this ratio, we ignore it. ex: a wall
       expected_sensor_time: 0.2

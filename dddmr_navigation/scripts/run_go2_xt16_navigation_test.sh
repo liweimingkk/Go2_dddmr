@@ -138,6 +138,13 @@ stop_nav_containers() {
     stop_adapter_in_container "${name}"
     log "Stopping navigation container: ${name}"
     docker stop -t 5 "${name}" >/dev/null || true
+    mkdir -p "${RUN_LOG_DIR}"
+    local docker_log="${RUN_LOG_DIR}/${name}_docker.log"
+    if docker logs "${name}" >"${docker_log}" 2>&1; then
+      log "Saved navigation log: ${docker_log}"
+    else
+      log "WARNING: failed to save navigation log for ${name}"
+    fi
     docker rm "${name}" >/dev/null 2>&1 || true
   done <<< "${names}"
 }
