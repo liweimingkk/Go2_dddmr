@@ -28,12 +28,16 @@ public:
   void configure(
     const double minimum_hold_seconds,
     const double switch_cost_margin,
-    const double reset_gap_seconds)
+    const double reset_gap_seconds,
+    const bool allow_cost_switch = true,
+    const double unavailable_grace_seconds = 0.0)
   {
     std::lock_guard<std::mutex> lock(mutex_);
     minimum_hold_seconds_ = minimum_hold_seconds;
     switch_cost_margin_ = switch_cost_margin;
     reset_gap_seconds_ = reset_gap_seconds;
+    allow_cost_switch_ = allow_cost_switch;
+    unavailable_grace_seconds_ = unavailable_grace_seconds;
     resetUnlocked();
   }
 
@@ -59,7 +63,10 @@ public:
 
     const auto & preferred = candidates[preferred_index];
     if(!isInPlace(preferred)){
-      resetUnlocked();
+      // A short forward segment may separate two parts of the same obstacle
+      // avoidance turn. Preserve the yaw lock here; the next in-place sample
+      // will still start a new episode once reset_gap_seconds_ has elapsed.
+      clearUnavailableGrace();
       return preferred_index;
     }
 
@@ -75,16 +82,22 @@ public:
 
     if(preferred_sign == locked_sign_){
       last_in_place_time_ = now;
+      clearUnavailableGrace();
       return preferred_index;
     }
 
     const std::size_t locked_index = bestAcceptedInPlaceForSign(candidates, locked_sign_);
     if(locked_index >= candidates.size()){
-      // The previous direction is no longer collision-accepted. Never retain a
-      // rejected trajectory merely to preserve direction continuity.
+      // The previous direction is no longer collision-accepted. During the
+      // grace interval, return no selection instead of reusing a rejected
+      // trajectory or reacting to one transient candidate-set change.
+      if(waitForPersistentUnavailable(now)){
+        return candidates.size();
+      }
       lockDirection(preferred_sign, now);
       return preferred_index;
     }
+    clearUnavailableGrace();
 
     const bool hold_expired =
       now >= lock_started_time_ &&
@@ -92,7 +105,7 @@ public:
     const bool opposite_is_materially_better =
       preferred.cost + switch_cost_margin_ < candidates[locked_index].cost;
 
-    if(hold_expired && opposite_is_materially_better){
+    if(allow_cost_switch_ && hold_expired && opposite_is_materially_better){
       lockDirection(preferred_sign, now);
       return preferred_index;
     }
@@ -154,6 +167,36 @@ private:
     locked_sign_ = direction_sign;
     lock_started_time_ = now;
     last_in_place_time_ = now;
+    clearUnavailableGrace();
+  }
+
+  bool waitForPersistentUnavailable(const TimePoint now)
+  {
+    if(unavailable_grace_seconds_ <= 0.0){
+      return false;
+    }
+
+    if(
+      !unavailable_since_valid_ ||
+      now < unavailable_since_)
+    {
+      unavailable_since_ = now;
+      unavailable_since_valid_ = true;
+      last_in_place_time_ = now;
+      return true;
+    }
+
+    if(elapsedSeconds(unavailable_since_, now) < unavailable_grace_seconds_){
+      last_in_place_time_ = now;
+      return true;
+    }
+    return false;
+  }
+
+  void clearUnavailableGrace()
+  {
+    unavailable_since_ = TimePoint{};
+    unavailable_since_valid_ = false;
   }
 
   void resetIfGapExpired(const TimePoint now)
@@ -172,15 +215,20 @@ private:
     locked_sign_ = 0;
     lock_started_time_ = TimePoint{};
     last_in_place_time_ = TimePoint{};
+    clearUnavailableGrace();
   }
 
   std::mutex mutex_;
   int locked_sign_{0};
   TimePoint lock_started_time_{};
   TimePoint last_in_place_time_{};
+  TimePoint unavailable_since_{};
+  bool unavailable_since_valid_{false};
   double minimum_hold_seconds_{1.0};
   double switch_cost_margin_{0.05};
   double reset_gap_seconds_{2.0};
+  bool allow_cost_switch_{true};
+  double unavailable_grace_seconds_{0.0};
 };
 
 }  // namespace local_planner

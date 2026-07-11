@@ -81,6 +81,24 @@ void DDSimpleTrajectoryGeneratorTheory::onInitialize(){
       "in_place_rotation_max_linear_speed must be finite and non-negative");
   }
 
+  node_->declare_parameter(
+    name_ + ".in_place_rotation_stopped_angular_speed", rclcpp::ParameterValue(0.0));
+  node_->get_parameter(
+    name_ + ".in_place_rotation_stopped_angular_speed",
+    in_place_rotation_stopped_angular_speed_);
+  RCLCPP_INFO(
+    node_->get_logger().get_child(name_),
+    "in_place_rotation_stopped_angular_speed: %.3f",
+    in_place_rotation_stopped_angular_speed_);
+
+  if(
+    !std::isfinite(in_place_rotation_stopped_angular_speed_) ||
+    in_place_rotation_stopped_angular_speed_ < 0.0)
+  {
+    throw std::invalid_argument(
+      "in_place_rotation_stopped_angular_speed must be finite and non-negative");
+  }
+
   node_->declare_parameter(name_ + ".max_vel_theta", rclcpp::ParameterValue(0.1));
   node_->get_parameter(name_ + ".max_vel_theta", limits_->max_vel_theta);
   RCLCPP_INFO(node_->get_logger().get_child(name_), "max_vel_theta: %.2f", limits_->max_vel_theta);
@@ -163,6 +181,11 @@ void DDSimpleTrajectoryGeneratorTheory::onInitialize(){
   if(limits_->min_vel_theta > limits_->max_vel_theta)
   {
     throw std::invalid_argument("min_vel_theta must not exceed max_vel_theta");
+  }
+  if(in_place_rotation_stopped_angular_speed_ >= limits_->min_vel_theta)
+  {
+    throw std::invalid_argument(
+      "in_place_rotation_stopped_angular_speed must be less than min_vel_theta");
   }
   if(enable_in_place_rotation_){
     const double rest_reachable_angular_speed = std::min(
@@ -339,16 +362,36 @@ void DDSimpleTrajectoryGeneratorTheory::initialise(){
       shared_data_->robot_state_.twist.twist.linear.y);
 
     // A pure rotation is offered only after the robot has physically stopped.
-    // Its complete swept cuboid is still evaluated by the collision critic.
+    // Explicitly offer each fixed-speed turn direction only when it is inside
+    // this control cycle's angular dynamic window.  For pure rotation only,
+    // configured near-zero odometry noise is treated as rest so both directions
+    // can bootstrap without intermittent single-sided samples.  Forward samples
+    // below continue to use the unmodified raw-odometry window.  The complete
+    // swept cuboid is still evaluated by the collision critic before either
+    // sample is accepted.
     if(enable_in_place_rotation_ &&
        current_linear_speed <= in_place_rotation_max_linear_speed_){
       const std::size_t in_place_sample_begin = sample_params_.size();
-      trajectory_generators::VelocityIterator th_it(
-        min_vel[2], max_vel[2], params_->angular_z_sample);
-      for(; !th_it.isFinished(); th_it++){
+      const double raw_yaw_rate =
+        shared_data_->robot_state_.twist.twist.angular.z;
+      const double effective_yaw_rate =
+        std::fabs(raw_yaw_rate) <= in_place_rotation_stopped_angular_speed_ ?
+        0.0 : raw_yaw_rate;
+      const double current_angular_speed = std::isfinite(effective_yaw_rate) ?
+        std::fabs(effective_yaw_rate) : 0.0;
+      const double in_place_angular_speed = std::min(
+        max_vel_th,
+        std::max(limits_->min_vel_theta, current_angular_speed));
+      const double in_place_min_vel_theta = std::max(
+        min_vel_th, effective_yaw_rate - acc_lim[2] * sim_period);
+      const double in_place_max_vel_theta = std::min(
+        max_vel_th, effective_yaw_rate + acc_lim[2] * sim_period);
+      constexpr double velocity_epsilon = 1e-6;
+      for(const double direction : {-1.0, 1.0}){
         vel_samp[0] = 0.0;
-        vel_samp[2] = th_it.getVelocity();
-        if(std::fabs(vel_samp[2]) + 1e-4 < limits_->min_vel_theta){
+        vel_samp[2] = direction * in_place_angular_speed;
+        if(vel_samp[2] < in_place_min_vel_theta - velocity_epsilon ||
+           vel_samp[2] > in_place_max_vel_theta + velocity_epsilon){
           continue;
         }
         if(isMotorConstraintSatisfied(vel_samp)){
@@ -358,10 +401,12 @@ void DDSimpleTrajectoryGeneratorTheory::initialise(){
       if(sample_params_.size() == in_place_sample_begin){
         RCLCPP_ERROR_THROTTLE(
           node_->get_logger().get_child(name_), *(node_->get_clock()), 1000,
-          "No executable in-place sample: dynamic_window=[%.3f, %.3f] "
-          "min_vel_theta=%.3f current_yaw_rate=%.3f",
-          min_vel[2], max_vel[2], limits_->min_vel_theta,
-          shared_data_->robot_state_.twist.twist.angular.z);
+          "No executable in-place sample: requested_speed=%.3f "
+          "dynamic_window=[%.3f, %.3f] "
+          "min_vel_theta=%.3f max_vel_theta=%.3f "
+          "raw_yaw_rate=%.3f effective_yaw_rate=%.3f",
+          in_place_angular_speed, in_place_min_vel_theta, in_place_max_vel_theta,
+          limits_->min_vel_theta, max_vel_th, raw_yaw_rate, effective_yaw_rate);
       }
     }
 

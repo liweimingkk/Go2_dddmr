@@ -44,7 +44,9 @@ protected:
     const double min_vel_theta = 0.15,
     const double acc_lim_theta = 2.0,
     const double controller_frequency = 10.0,
-    const double in_place_rotation_max_linear_speed = 0.05)
+    const double in_place_rotation_max_linear_speed = 0.05,
+    const double current_yaw_rate = 0.0,
+    const double in_place_rotation_stopped_angular_speed = 0.0)
   {
     static int node_id = 0;
     const std::string prefix = "generator";
@@ -58,6 +60,9 @@ protected:
       rclcpp::Parameter(
         prefix + ".in_place_rotation_max_linear_speed",
         in_place_rotation_max_linear_speed),
+      rclcpp::Parameter(
+        prefix + ".in_place_rotation_stopped_angular_speed",
+        in_place_rotation_stopped_angular_speed),
       rclcpp::Parameter(prefix + ".acc_lim_x", 3.0),
       rclcpp::Parameter(prefix + ".acc_lim_theta", acc_lim_theta),
       rclcpp::Parameter(prefix + ".prune_forward", 3.0),
@@ -92,6 +97,7 @@ protected:
     shared_data->robot_pose_.child_frame_id = "base_link";
     shared_data->robot_pose_.transform.rotation.w = 1.0;
     shared_data->robot_state_.twist.twist.linear.x = current_linear_speed;
+    shared_data->robot_state_.twist.twist.angular.z = current_yaw_rate;
     shared_data->current_allowed_max_linear_speed_ = allowed_max_linear_speed;
 
     DDSimpleTrajectoryGeneratorTheory generator;
@@ -214,6 +220,142 @@ TEST_F(DDSimpleTrajectoryGeneratorTest, ReachableBoundaryGeneratesBothTurnDirect
   EXPECT_TRUE(has_right_rotation);
 }
 
+TEST_F(DDSimpleTrajectoryGeneratorTest, NearZeroYawNoiseRestoresBothInPlaceDirections)
+{
+  const std::vector<double> measured_yaw_rates{-0.0085, 0.0085};
+
+  for(const double measured_yaw_rate : measured_yaw_rates){
+    SCOPED_TRACE(measured_yaw_rate);
+    const auto trajectories = generate(
+      0.0, true, -1.0, 0.40, 4.0, 10.0, 0.05,
+      measured_yaw_rate, 0.02);
+    bool has_left_rotation = false;
+    bool has_right_rotation = false;
+    std::size_t in_place_count = 0;
+
+    for(const auto & trajectory : trajectories){
+      if(std::fabs(trajectory.xv_) > 1e-6){
+        continue;
+      }
+      ++in_place_count;
+      has_left_rotation = has_left_rotation || trajectory.thetav_ > 0.0;
+      has_right_rotation = has_right_rotation || trajectory.thetav_ < 0.0;
+      EXPECT_NEAR(std::fabs(trajectory.thetav_), 0.40, 1e-6);
+    }
+
+    EXPECT_EQ(in_place_count, 2U);
+    EXPECT_TRUE(has_left_rotation);
+    EXPECT_TRUE(has_right_rotation);
+  }
+}
+
+TEST_F(DDSimpleTrajectoryGeneratorTest, DefaultAngularStopThresholdPreservesRawWindow)
+{
+  constexpr double measured_yaw_rate = -0.0085;
+  const auto trajectories = generate(
+    0.0, true, -1.0, 0.40, 4.0, 10.0, 0.05, measured_yaw_rate);
+  std::size_t in_place_count = 0;
+
+  for(const auto & trajectory : trajectories){
+    if(std::fabs(trajectory.xv_) > 1e-6){
+      continue;
+    }
+    ++in_place_count;
+    EXPECT_LT(trajectory.thetav_, 0.0);
+    EXPECT_GE(trajectory.thetav_, measured_yaw_rate - 4.0 / 10.0 - 1e-6);
+  }
+
+  EXPECT_EQ(in_place_count, 1U);
+}
+
+TEST_F(DDSimpleTrajectoryGeneratorTest, TurningYawFeedbackKeepsOnlyReachableInPlaceDirection)
+{
+  const std::vector<double> measured_yaw_rates{-0.212, -0.108, 0.108, 0.212};
+
+  for(const double measured_yaw_rate : measured_yaw_rates){
+    SCOPED_TRACE(measured_yaw_rate);
+    const auto trajectories = generate(
+      0.0, true, -1.0, 0.40, 4.0, 10.0, 0.05,
+      measured_yaw_rate, 0.02);
+    const double min_dynamic_yaw_rate = std::max(
+      -0.50, measured_yaw_rate - 4.0 / 10.0);
+    const double max_dynamic_yaw_rate = std::min(
+      0.50, measured_yaw_rate + 4.0 / 10.0);
+    std::size_t in_place_count = 0;
+
+    for(const auto & trajectory : trajectories){
+      if(std::fabs(trajectory.xv_) > 1e-6){
+        continue;
+      }
+      ++in_place_count;
+      EXPECT_NEAR(std::fabs(trajectory.thetav_), 0.40, 1e-6);
+      EXPECT_GE(trajectory.thetav_, min_dynamic_yaw_rate - 1e-6);
+      EXPECT_LE(trajectory.thetav_, max_dynamic_yaw_rate + 1e-6);
+      EXPECT_GT(trajectory.thetav_ * measured_yaw_rate, 0.0);
+    }
+
+    EXPECT_EQ(in_place_count, 1U);
+  }
+}
+
+TEST_F(DDSimpleTrajectoryGeneratorTest, StoppedYawFeedbackRestoresBothInPlaceDirections)
+{
+  const auto trajectories = generate(
+    0.0, true, -1.0, 0.40, 4.0, 10.0, 0.05, 0.0);
+  bool has_left_rotation = false;
+  bool has_right_rotation = false;
+  std::size_t in_place_count = 0;
+
+  for(const auto & trajectory : trajectories){
+    if(std::fabs(trajectory.xv_) > 1e-6){
+      continue;
+    }
+    ++in_place_count;
+    has_left_rotation = has_left_rotation || trajectory.thetav_ > 0.0;
+    has_right_rotation = has_right_rotation || trajectory.thetav_ < 0.0;
+    EXPECT_NEAR(std::fabs(trajectory.thetav_), 0.40, 1e-6);
+  }
+
+  EXPECT_EQ(in_place_count, 2U);
+  EXPECT_TRUE(has_left_rotation);
+  EXPECT_TRUE(has_right_rotation);
+}
+
+TEST_F(DDSimpleTrajectoryGeneratorTest, ForwardSamplesStillRespectAngularDynamicWindow)
+{
+  constexpr double measured_yaw_rate = -0.0085;
+  constexpr double angular_acceleration = 4.0;
+  constexpr double controller_frequency = 10.0;
+  constexpr double min_dynamic_yaw_rate =
+    measured_yaw_rate - angular_acceleration / controller_frequency;
+  constexpr double max_dynamic_yaw_rate =
+    measured_yaw_rate + angular_acceleration / controller_frequency;
+  const auto trajectories = generate(
+    0.0, true, -1.0, 0.40, angular_acceleration,
+    controller_frequency, 0.05, measured_yaw_rate, 0.02);
+  bool has_left_in_place_direction = false;
+  bool has_right_in_place_direction = false;
+  bool has_forward_sample = false;
+
+  for(const auto & trajectory : trajectories){
+    if(std::fabs(trajectory.xv_) <= 1e-6){
+      has_left_in_place_direction =
+        has_left_in_place_direction || trajectory.thetav_ > 0.0;
+      has_right_in_place_direction =
+        has_right_in_place_direction || trajectory.thetav_ < 0.0;
+      EXPECT_NEAR(std::fabs(trajectory.thetav_), 0.40, 1e-6);
+      continue;
+    }
+    has_forward_sample = true;
+    EXPECT_GE(trajectory.thetav_, min_dynamic_yaw_rate - 1e-6);
+    EXPECT_LE(trajectory.thetav_, max_dynamic_yaw_rate + 1e-6);
+  }
+
+  EXPECT_TRUE(has_left_in_place_direction);
+  EXPECT_TRUE(has_right_in_place_direction);
+  EXPECT_TRUE(has_forward_sample);
+}
+
 TEST_F(DDSimpleTrajectoryGeneratorTest, DisabledInPlaceRotationDoesNotRequireRestBootstrap)
 {
   EXPECT_NO_THROW(generate(0.0, false, -1.0, 0.40, 2.0, 10.0));
@@ -245,6 +387,21 @@ TEST_F(DDSimpleTrajectoryGeneratorTest, InvalidInPlaceLinearThresholdFailsFast)
     generate(
       0.0, true, -1.0, 0.15, 2.0, 10.0,
       std::numeric_limits<double>::quiet_NaN()),
+    std::invalid_argument);
+}
+
+TEST_F(DDSimpleTrajectoryGeneratorTest, InvalidInPlaceAngularThresholdFailsFast)
+{
+  EXPECT_THROW(
+    generate(0.0, true, -1.0, 0.15, 2.0, 10.0, 0.05, 0.0, -0.01),
+    std::invalid_argument);
+  EXPECT_THROW(
+    generate(
+      0.0, true, -1.0, 0.15, 2.0, 10.0, 0.05, 0.0,
+      std::numeric_limits<double>::quiet_NaN()),
+    std::invalid_argument);
+  EXPECT_THROW(
+    generate(0.0, true, -1.0, 0.15, 2.0, 10.0, 0.05, 0.0, 0.15),
     std::invalid_argument);
 }
 

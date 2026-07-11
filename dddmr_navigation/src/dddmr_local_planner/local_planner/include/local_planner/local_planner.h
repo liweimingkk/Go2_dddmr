@@ -74,6 +74,7 @@ class Local_Planner : public rclcpp::Node {
       void setPlan(const std::vector<geometry_msgs::msg::PoseStamped>& orig_global_plan);
       dddmr_sys_core::PlannerState computeVelocityCommand(std::string traj_gen_name, base_trajectory::Trajectory& best_traj);
       void getBestTrajectory(std::string traj_gen_name, base_trajectory::Trajectory& best_traj);
+      void resetInPlaceRotationHysteresis();
 
       //@ shared data for trajectory generator, we manage the variables by this way for future changed to ROS2
       std::shared_ptr<trajectory_generators::TrajectoryGeneratorSharedData> traj_shared_data_;

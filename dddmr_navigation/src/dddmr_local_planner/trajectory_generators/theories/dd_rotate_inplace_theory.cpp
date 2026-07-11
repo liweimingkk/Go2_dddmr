@@ -30,6 +30,9 @@
 */
 #include <trajectory_generators/dd_rotate_inplace_theory.h>
 
+#include <cmath>
+#include <stdexcept>
+
 PLUGINLIB_EXPORT_CLASS(trajectory_generators::DDRotateInplaceTheory, trajectory_generators::TrajectoryGeneratorTheory)
 
 namespace trajectory_generators
@@ -37,6 +40,32 @@ namespace trajectory_generators
 
 DDRotateInplaceTheory::DDRotateInplaceTheory(){
   return;
+}
+
+double DDRotateInplaceTheory::computeCollisionSimulationTime(
+    const double forward_velocity,
+    const double angular_velocity,
+    const double configured_simulation_time,
+    const bool simulate_full_rotation_for_pure_yaw)
+{
+  constexpr double velocity_epsilon = 1e-4;
+  constexpr double two_pi = 6.28318530717958647692;
+
+  if(!std::isfinite(configured_simulation_time) || configured_simulation_time <= 0.0){
+    throw std::invalid_argument("Configured collision simulation time must be finite and positive");
+  }
+  if(!std::isfinite(forward_velocity) || !std::isfinite(angular_velocity)){
+    throw std::invalid_argument("Rotation trajectory velocities must be finite");
+  }
+
+  const bool is_pure_yaw = std::fabs(forward_velocity) <= velocity_epsilon;
+  if(!is_pure_yaw || !simulate_full_rotation_for_pure_yaw){
+    return configured_simulation_time;
+  }
+  if(std::fabs(angular_velocity) <= velocity_epsilon){
+    throw std::invalid_argument("A full pure-yaw sweep requires non-zero angular velocity");
+  }
+  return two_pi / std::fabs(angular_velocity);
 }
 
 void DDRotateInplaceTheory::onInitialize(){
@@ -107,6 +136,13 @@ void DDRotateInplaceTheory::onInitialize(){
   node_->declare_parameter(name_ + ".sim_time", rclcpp::ParameterValue(2.0));
   node_->get_parameter(name_ + ".sim_time", params_->sim_time);
   RCLCPP_INFO(node_->get_logger().get_child(name_), "sim_time: %.2f", params_->sim_time);
+  if(!std::isfinite(params_->sim_time) || params_->sim_time <= 0.0){
+    RCLCPP_FATAL(
+      node_->get_logger().get_child(name_),
+      "sim_time must be finite and positive; received %.6f",
+      params_->sim_time);
+    throw std::invalid_argument("sim_time must be finite and positive");
+  }
 
   node_->declare_parameter(name_ + ".linear_x_sample", rclcpp::ParameterValue(10.0));
   node_->get_parameter(name_ + ".linear_x_sample", params_->linear_x_sample);
@@ -131,6 +167,17 @@ void DDRotateInplaceTheory::onInitialize(){
   node_->declare_parameter(name_ + ".rotation_forward_x", rclcpp::ParameterValue(0.0));
   node_->get_parameter(name_ + ".rotation_forward_x", rotation_forward_x_);
   RCLCPP_INFO(node_->get_logger().get_child(name_), "rotation_forward_x: %.3f", rotation_forward_x_);
+
+  node_->declare_parameter(
+    name_ + ".simulate_full_rotation_for_pure_yaw", rclcpp::ParameterValue(true));
+  node_->get_parameter(
+    name_ + ".simulate_full_rotation_for_pure_yaw",
+    simulate_full_rotation_for_pure_yaw_);
+  RCLCPP_INFO(
+    node_->get_logger().get_child(name_),
+    "simulate_full_rotation_for_pure_yaw: %s (pure-yaw collision horizon: %s)",
+    simulate_full_rotation_for_pure_yaw_ ? "true" : "false",
+    simulate_full_rotation_for_pure_yaw_ ? "full 2*pi sweep" : "configured sim_time");
 
   //@ parse cuboid
   /*
@@ -344,8 +391,9 @@ bool DDRotateInplaceTheory::generateTrajectory(
   }
 
   int num_steps;
-  const bool bounded_forward_arc = fabs(sample_target_vel[0]) > eps;
-  double simulation_time = bounded_forward_arc ? params_->sim_time : 6.28/fabs(sample_target_vel[2]);
+  const double simulation_time = computeCollisionSimulationTime(
+    sample_target_vel[0], sample_target_vel[2], params_->sim_time,
+    simulate_full_rotation_for_pure_yaw_);
   //compute the number of steps we must take along this trajectory to be "safe"
   double sim_time_distance = vmag * simulation_time; // the distance the robot would travel in sim_time if it did not change velocity
   double sim_time_angle = fabs(sample_target_vel[2]) * simulation_time; // the angle the robot would rotate in sim_time

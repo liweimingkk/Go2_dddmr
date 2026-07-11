@@ -68,6 +68,7 @@ class DDSimpleTrajectoryGeneratorTheory: public TrajectoryGeneratorTheory{
 
     bool enable_in_place_rotation_;
     double in_place_rotation_max_linear_speed_;
+    double in_place_rotation_stopped_angular_speed_;
 
     unsigned int next_sample_index_;
     // to store sample params of each sample between init and generation

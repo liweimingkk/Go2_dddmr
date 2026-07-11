@@ -48,6 +48,12 @@ class DDRotateInplaceTheory: public TrajectoryGeneratorTheory{
     virtual bool hasMoreTrajectories();
     virtual bool nextTrajectory(base_trajectory::Trajectory& _traj);
 
+    static double computeCollisionSimulationTime(
+        double forward_velocity,
+        double angular_velocity,
+        double configured_simulation_time,
+        bool simulate_full_rotation_for_pure_yaw);
+
   private:
     void initialise();
     bool isMotorConstraintSatisfied(Eigen::Vector3f& vel_samp);
@@ -61,6 +67,7 @@ class DDRotateInplaceTheory: public TrajectoryGeneratorTheory{
 
     double rotation_speed_;
     double rotation_forward_x_;
+    bool simulate_full_rotation_for_pure_yaw_{true};
     
   protected:
 

@@ -133,6 +133,18 @@ void Local_Planner::initial(
   declare_parameter("in_place_direction_reset_gap_sec", rclcpp::ParameterValue(2.0));
   this->get_parameter("in_place_direction_reset_gap_sec", in_place_direction_reset_gap_sec);
 
+  bool in_place_direction_allow_cost_switch = true;
+  declare_parameter("in_place_direction_allow_cost_switch", rclcpp::ParameterValue(true));
+  this->get_parameter(
+    "in_place_direction_allow_cost_switch", in_place_direction_allow_cost_switch);
+
+  double in_place_direction_unavailable_grace_sec = 0.0;
+  declare_parameter(
+    "in_place_direction_unavailable_grace_sec", rclcpp::ParameterValue(0.0));
+  this->get_parameter(
+    "in_place_direction_unavailable_grace_sec",
+    in_place_direction_unavailable_grace_sec);
+
   if(
     !std::isfinite(in_place_direction_min_hold_sec) ||
     in_place_direction_min_hold_sec < 0.0 ||
@@ -140,22 +152,29 @@ void Local_Planner::initial(
     in_place_direction_switch_cost_margin < 0.0 ||
     !std::isfinite(in_place_direction_reset_gap_sec) ||
     in_place_direction_reset_gap_sec <= 0.0 ||
+    !std::isfinite(in_place_direction_unavailable_grace_sec) ||
+    in_place_direction_unavailable_grace_sec < 0.0 ||
     in_place_direction_hysteresis_generator_.empty())
   {
     throw std::invalid_argument(
       "in-place direction hysteresis requires a non-empty generator, non-negative "
-      "hold/margin, and a positive reset gap");
+      "hold/margin/unavailable grace, and a positive reset gap");
   }
   in_place_rotation_hysteresis_.configure(
     in_place_direction_min_hold_sec,
     in_place_direction_switch_cost_margin,
-    in_place_direction_reset_gap_sec);
+    in_place_direction_reset_gap_sec,
+    in_place_direction_allow_cost_switch,
+    in_place_direction_unavailable_grace_sec);
   RCLCPP_INFO(
     this->get_logger(),
-    "in_place_direction_hysteresis: hold=%.2f cost_margin=%.3f reset_gap=%.2f",
+    "in_place_direction_hysteresis: hold=%.2f cost_margin=%.3f reset_gap=%.2f "
+    "allow_cost_switch=%d unavailable_grace=%.2f",
     in_place_direction_min_hold_sec,
     in_place_direction_switch_cost_margin,
-    in_place_direction_reset_gap_sec);
+    in_place_direction_reset_gap_sec,
+    in_place_direction_allow_cost_switch,
+    in_place_direction_unavailable_grace_sec);
 
   //@Initialize transform listener and broadcaster
   tf_listener_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
@@ -603,9 +622,10 @@ void Local_Planner::getBestTrajectory(std::string traj_gen_name, base_trajectory
   {
     selected_index = in_place_rotation_hysteresis_.select(
       hysteresis_candidates, preferred_index, std::chrono::steady_clock::now());
-  }else{
-    in_place_rotation_hysteresis_.reset();
   }
+  // Other generators can run briefly during the same avoidance manoeuvre.
+  // They must not erase this generator's lock; the time gap or an explicit
+  // new-goal reset defines the end of the direction episode.
 
   if(selected_index < trajectories_->size()){
     best_traj = trajectories_->at(selected_index);
@@ -617,6 +637,15 @@ void Local_Planner::getBestTrajectory(std::string traj_gen_name, base_trajectory
         "selected=(%.3f,cost=%.3f)",
         preferred.thetav_, preferred.cost_, best_traj.thetav_, best_traj.cost_);
     }
+  }
+  else if(
+    in_place_direction_hysteresis_enabled_ &&
+    traj_gen_name == in_place_direction_hysteresis_generator_ &&
+    preferred_index < trajectories_->size())
+  {
+    RCLCPP_INFO_THROTTLE(
+      this->get_logger().get_child(name_), *clock_, 1000,
+      "in_place_direction_hysteresis stopped during direction-unavailable grace period");
   }
   
   if(best_traj.cost_ < 0 || debug_rejection_report_){
@@ -655,6 +684,11 @@ void Local_Planner::getBestTrajectory(std::string traj_gen_name, base_trajectory
   best_pose_arr.header.stamp = clock_->now();
   pub_best_trajectory_pose_->publish(best_pose_arr);
 
+}
+
+void Local_Planner::resetInPlaceRotationHysteresis()
+{
+  in_place_rotation_hysteresis_.reset();
 }
 
 dddmr_sys_core::PlannerState Local_Planner::computeVelocityCommand(std::string traj_gen_name, base_trajectory::Trajectory& best_traj){

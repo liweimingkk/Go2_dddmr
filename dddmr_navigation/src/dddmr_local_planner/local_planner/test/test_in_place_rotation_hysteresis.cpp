@@ -94,7 +94,7 @@ TEST(InPlaceRotationHysteresis, RejectedLockedDirectionIsNeverReused)
   EXPECT_EQ(policy.select(candidates, 0U, atSeconds(0.1)), 0U);
 }
 
-TEST(InPlaceRotationHysteresis, ForwardWinnerClearsDirectionLock)
+TEST(InPlaceRotationHysteresis, ForwardWinnerPreservesDirectionLockWithinGap)
 {
   InPlaceRotationHysteresis policy;
   policy.configure(5.0, 1.0, 10.0);
@@ -109,7 +109,93 @@ TEST(InPlaceRotationHysteresis, ForwardWinnerClearsDirectionLock)
 
   rotations[0].cost = 0.99;
   rotations[1].cost = 1.00;
-  EXPECT_EQ(policy.select(rotations, 0U, atSeconds(0.2)), 0U);
+  EXPECT_EQ(policy.select(rotations, 0U, atSeconds(0.2)), 1U);
+}
+
+TEST(InPlaceRotationHysteresis, CostBasedSwitchCanBeDisabled)
+{
+  InPlaceRotationHysteresis policy;
+  policy.configure(1.0, 0.05, 2.0, false, 0.0);
+
+  std::vector<InPlaceRotationCandidate> candidates{
+    rotation(-0.20, 1.20), rotation(0.20, 1.00)};
+  ASSERT_EQ(policy.select(candidates, 1U, atSeconds(0.0)), 1U);
+
+  candidates[0].cost = 0.20;
+  candidates[1].cost = 1.00;
+  EXPECT_EQ(policy.select(candidates, 0U, atSeconds(1.1)), 1U);
+}
+
+TEST(InPlaceRotationHysteresis, Go2ProfileIgnoresNoiseButAllowsMaterialSwitch)
+{
+  InPlaceRotationHysteresis policy;
+  policy.configure(3.0, 0.20, 2.0, true, 0.10);
+
+  std::vector<InPlaceRotationCandidate> candidates{
+    rotation(-0.40, 1.10), rotation(0.40, 1.00)};
+  ASSERT_EQ(policy.select(candidates, 1U, atSeconds(0.0)), 1U);
+
+  candidates[0].cost = 0.85;
+  candidates[1].cost = 1.00;
+  EXPECT_EQ(policy.select(candidates, 0U, atSeconds(1.0)), 1U);
+  EXPECT_EQ(policy.select(candidates, 0U, atSeconds(2.0)), 1U);
+  EXPECT_EQ(policy.select(candidates, 0U, atSeconds(3.1)), 1U);
+
+  candidates[0].cost = 0.70;
+  EXPECT_EQ(policy.select(candidates, 0U, atSeconds(3.2)), 0U);
+}
+
+TEST(InPlaceRotationHysteresis, MissingLockedDirectionWaitsThenSwitches)
+{
+  InPlaceRotationHysteresis policy;
+  policy.configure(5.0, 1.0, 10.0, true, 0.10);
+
+  std::vector<InPlaceRotationCandidate> candidates{
+    rotation(-0.20, 1.10), rotation(0.20, 1.00)};
+  ASSERT_EQ(policy.select(candidates, 1U, atSeconds(0.0)), 1U);
+
+  candidates[0].cost = 0.90;
+  candidates[1].cost = -1.0;
+  EXPECT_EQ(policy.select(candidates, 0U, atSeconds(0.10)), candidates.size());
+  EXPECT_EQ(policy.select(candidates, 0U, atSeconds(0.15)), candidates.size());
+  EXPECT_EQ(policy.select(candidates, 0U, atSeconds(0.21)), 0U);
+}
+
+TEST(InPlaceRotationHysteresis, LockedDirectionRecoveryRestartsUnavailableGrace)
+{
+  InPlaceRotationHysteresis policy;
+  policy.configure(5.0, 1.0, 10.0, true, 0.10);
+
+  std::vector<InPlaceRotationCandidate> candidates{
+    rotation(-0.20, 1.10), rotation(0.20, 1.00)};
+  ASSERT_EQ(policy.select(candidates, 1U, atSeconds(0.0)), 1U);
+
+  candidates[0].cost = 0.90;
+  candidates[1].cost = -1.0;
+  EXPECT_EQ(policy.select(candidates, 0U, atSeconds(0.10)), candidates.size());
+
+  candidates[1].cost = 1.00;
+  EXPECT_EQ(policy.select(candidates, 0U, atSeconds(0.15)), 1U);
+
+  candidates[1].cost = -1.0;
+  EXPECT_EQ(policy.select(candidates, 0U, atSeconds(0.20)), candidates.size());
+  EXPECT_EQ(policy.select(candidates, 0U, atSeconds(0.26)), candidates.size());
+  EXPECT_EQ(policy.select(candidates, 0U, atSeconds(0.31)), 0U);
+}
+
+TEST(InPlaceRotationHysteresis, ExplicitResetStartsNewDirectionEpisode)
+{
+  InPlaceRotationHysteresis policy;
+  policy.configure(5.0, 1.0, 10.0);
+
+  std::vector<InPlaceRotationCandidate> candidates{
+    rotation(-0.20, 1.01), rotation(0.20, 1.00)};
+  ASSERT_EQ(policy.select(candidates, 1U, atSeconds(0.0)), 1U);
+
+  policy.reset();
+  candidates[0].cost = 0.99;
+  candidates[1].cost = 1.00;
+  EXPECT_EQ(policy.select(candidates, 0U, atSeconds(0.1)), 0U);
 }
 
 TEST(InPlaceRotationHysteresis, LongGapStartsANewDirectionEpisode)

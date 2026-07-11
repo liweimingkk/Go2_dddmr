@@ -1,15 +1,22 @@
 p2p_move_base:
   ros__parameters:
-    controller_frequency: 20.0
+    # Match the 10 Hz local planner and XT16 obstacle stream so each decision
+    # uses a fresh planning horizon and the DWA acceleration window is honest.
+    controller_frequency: 10.0
     use_twist_stamped: false
     planner_patience: 10.0
     oscillation_distance: 0.05
     oscillation_angle: 0.3
     oscillation_patience: 15.0
     controller_patience: 10.0
+    # Confirm across three stopped decisions (about 0.20 s from first to third)
+    # before escalating. Every failed decision still publishes StopMove.
+    local_failure_confirmation_cycles: 3
     no_plan_retry_num: 10
     waiting_patience: 10.0
-    initial_heading_trajectory_generator: "differential_drive_go2_heading_arc"
+    # Pure yaw is responsive on this Go2; the previous 0.10 m/s heading arc
+    # operated in its observed low-speed dead zone and prolonged alignment.
+    initial_heading_trajectory_generator: "differential_drive_rotate_shortest_angle"
     goal_heading_trajectory_generator: "differential_drive_rotate_shortest_angle"
 global_plan_manager:
   ros__parameters:
@@ -160,9 +167,15 @@ local_planner:
     # making the robot shake in front of an obstacle.
     in_place_direction_hysteresis_enabled: true
     in_place_direction_hysteresis_generator: "differential_drive_simple"
-    in_place_direction_min_hold_sec: 1.0
-    in_place_direction_switch_cost_margin: 0.05
+    # Ignore small critic noise; after a three-second hold, allow only a
+    # materially better side to win so the lock cannot force a long detour.
+    in_place_direction_min_hold_sec: 3.0
+    in_place_direction_switch_cost_margin: 0.20
     in_place_direction_reset_gap_sec: 2.0
+    # Preserve the chosen side until it is genuinely unavailable. A transient
+    # one-frame loss stops safely instead of immediately reversing direction.
+    in_place_direction_allow_cost_switch: true
+    in_place_direction_unavailable_grace_sec: 0.10
     
     # Swept Go2 stance envelope. base_footprint is 0.24 m below base_link;
     # leave 0.04 m ground tolerance while protecting the legs and lower body.
@@ -198,6 +211,10 @@ trajectory_generators:
       controller_frequency: 10.0
       rotation_speed: 0.40
       rotation_forward_x: 0.0
+      sim_time: 2.0
+      # Heading alignment is re-evaluated every control cycle. Check the next
+      # 2 s / 0.8 rad, not an unnecessarily conservative full 360-degree sweep.
+      simulate_full_rotation_for_pure_yaw: false
       cuboid:
         flb: [0.42, 0.30, -0.20] #front left bottom
         frb: [0.42, -0.30, -0.20]
@@ -252,6 +269,9 @@ trajectory_generators:
       min_vel_theta: 0.40
       enable_in_place_rotation: true
       in_place_rotation_max_linear_speed: 0.05
+      # Treat only the measured near-zero yaw noise as stopped. Real rotation
+      # rates (0.108/0.212 rad/s in the trace) remain dynamically constrained.
+      in_place_rotation_stopped_angular_speed: 0.02
       acc_lim_x: 3.00
       # At 10 Hz this makes +/-0.40 rad/s reachable from rest, matching
       # min_vel_theta instead of silently filtering every rotation sample.
