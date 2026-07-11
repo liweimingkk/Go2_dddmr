@@ -32,6 +32,8 @@
 
 #include <sstream>
 
+#include "planner_state_arbitration.h"
+
 namespace local_planner {
 
 Local_Planner::Local_Planner(const std::string& name): Node(name)
@@ -684,27 +686,53 @@ dddmr_sys_core::PlannerState Local_Planner::computeVelocityCommand(std::string t
     RCLCPP_WARN(this->get_logger().get_child(name_), "Local planner control time exceed expect time: %.2f but is %.2f", 1./controller_frequency_, t_diff.seconds());
   }
   
-  //@Loop opinions
+  //@Loop opinions.  Keep them as fallback states: a trajectory with a valid
+  //@cost has already passed the collision critic and is the local detour that
+  //@must be executed when the reference path itself is obstructed.
   std::vector<perception_3d::PerceptionOpinion> opinions = perception_3d_ros_->getStackedPerception()->getOpinions();
+  bool path_blocked_wait = false;
+  bool path_blocked_replanning = false;
   for(auto opinion_it=opinions.begin(); opinion_it!=opinions.end();opinion_it++){
     if((*opinion_it)==perception_3d::PATH_BLOCKED_WAIT){
-      RCLCPP_WARN_THROTTLE(this->get_logger().get_child(name_), *clock_, 5000, "Found the prune plan is blocked, go to wait state.");
-      return dddmr_sys_core::PATH_BLOCKED_WAIT;
+      path_blocked_wait = true;
     }
     else if((*opinion_it)==perception_3d::PATH_BLOCKED_REPLANNING){
-      RCLCPP_WARN_THROTTLE(this->get_logger().get_child(name_), *clock_, 5000, "Found the prune plan is blocked, go to replanning.");
-      return dddmr_sys_core::PATH_BLOCKED_REPLANNING;      
+      path_blocked_replanning = true;
     }
   }
 
+  const auto planner_state = arbitratePlannerState(
+    best_traj.cost_, path_blocked_wait, path_blocked_replanning);
 
-  if(best_traj.cost_<0){
+  if(planner_state == dddmr_sys_core::TRAJECTORY_FOUND){
+    if(path_blocked_wait || path_blocked_replanning){
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger().get_child(name_), *clock_, 5000,
+        "Reference path is blocked, but collision critics found a safe local trajectory; continue local avoidance.");
+    }
+    return planner_state;
+  }
+
+  if(planner_state == dddmr_sys_core::PATH_BLOCKED_WAIT){
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger().get_child(name_), *clock_, 5000,
+      "Reference path is blocked and no safe local trajectory exists; go to wait state.");
+    return planner_state;
+  }
+
+  if(planner_state == dddmr_sys_core::PATH_BLOCKED_REPLANNING){
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger().get_child(name_), *clock_, 5000,
+      "Reference path is blocked and no safe local trajectory exists; go to replanning.");
+    return planner_state;
+  }
+
+  if(planner_state == dddmr_sys_core::ALL_TRAJECTORIES_FAIL){
     RCLCPP_WARN_THROTTLE(this->get_logger().get_child(name_), *clock_, 5000, "All trajectories are rejected by critics.");
-    return dddmr_sys_core::ALL_TRAJECTORIES_FAIL;
+    return planner_state;
   }
-  else{
-    return dddmr_sys_core::TRAJECTORY_FOUND;
-  }
+
+  return planner_state;
   
   //@ Reset kd tree/observations because it is shared_ptr and copied from perception_ros
   mpc_critics_ros_->getSharedDataPtr()->pcl_perception_.reset(new pcl::PointCloud<pcl::PointXYZI>());
