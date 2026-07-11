@@ -46,12 +46,12 @@ protected:
     options.parameter_overrides({
       rclcpp::Parameter(prefix + ".min_vel_x", 0.20),
       rclcpp::Parameter(prefix + ".max_vel_x", 0.30),
-      rclcpp::Parameter(prefix + ".min_vel_theta", 0.04),
+      rclcpp::Parameter(prefix + ".min_vel_theta", 0.15),
       rclcpp::Parameter(prefix + ".max_vel_theta", 0.50),
       rclcpp::Parameter(prefix + ".enable_in_place_rotation", enable_in_place_rotation),
       rclcpp::Parameter(prefix + ".in_place_rotation_max_linear_speed", 0.05),
       rclcpp::Parameter(prefix + ".acc_lim_x", 3.0),
-      rclcpp::Parameter(prefix + ".acc_lim_theta", 1.0),
+      rclcpp::Parameter(prefix + ".acc_lim_theta", 2.0),
       rclcpp::Parameter(prefix + ".prune_forward", 3.0),
       rclcpp::Parameter(prefix + ".prune_backward", 1.0),
       rclcpp::Parameter(prefix + ".deceleration_ratio", 2.0),
@@ -116,7 +116,7 @@ TEST_F(DDSimpleTrajectoryGeneratorTest, RestingRobotGetsExecutableForwardAndInPl
     if(std::fabs(trajectory.xv_) <= 1e-6){
       has_left_rotation = has_left_rotation || trajectory.thetav_ > 0.0;
       has_right_rotation = has_right_rotation || trajectory.thetav_ < 0.0;
-      EXPECT_GE(std::fabs(trajectory.thetav_), 0.04 - 1e-6);
+      EXPECT_GE(std::fabs(trajectory.thetav_), 0.15 - 1e-6);
     }else{
       has_forward = true;
       EXPECT_GE(trajectory.xv_, 0.20 - 1e-6);
@@ -159,7 +159,7 @@ TEST_F(DDSimpleTrajectoryGeneratorTest, InPlaceSampleRotatesWithoutTranslating)
     rotation->getPoint(rotation->getPointsSize() - 1U).pose.orientation;
   const double final_yaw = 2.0 * std::atan2(
     final_orientation.z, final_orientation.w);
-  EXPECT_GT(final_yaw, 0.05);
+  EXPECT_GT(final_yaw, 0.20);
 }
 
 TEST_F(DDSimpleTrajectoryGeneratorTest, InPlaceSamplesCanBeDisabled)
@@ -177,7 +177,7 @@ TEST_F(DDSimpleTrajectoryGeneratorTest, SubExecutableSpeedLimitProducesOnlyInPla
   ASSERT_FALSE(trajectories.empty());
   for(const auto & trajectory : trajectories){
     EXPECT_NEAR(trajectory.xv_, 0.0, 1e-6);
-    EXPECT_GE(std::fabs(trajectory.thetav_), 0.04 - 1e-6);
+    EXPECT_GE(std::fabs(trajectory.thetav_), 0.15 - 1e-6);
   }
 }
 
