@@ -492,6 +492,9 @@ if(BUILD_TESTING)
     tf2
     tf2_geometry_msgs
   )
+  target_link_libraries(test_mapping_math
+    gtsam
+  )
 endif()
 
 # --- Everything CI/CD test finish here ---

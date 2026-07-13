@@ -103,15 +103,23 @@ lego_loam_mo:
         ground_voxel_size: 0.3
         broadcast_external_odom_tf: true
         # Eigen returns ascending eigenvalues with eigenvectors in columns.
-        # Weak scan-to-map eigendirections are projected out with V D V^T.
+        # The full 6DoF diagnostic still uses these thresholds; axis-split
+        # mode solves its world-Z column conditionally instead of projecting it.
         degeneracy_eigenvalue_thresholds: [100.0, 100.0, 100.0, 100.0, 100.0, 100.0]
-        # Anchor corridor-weak directions with the synchronized external odom.
-        external_odom_factor_enabled: true
+        # Keep the measured approximately 2 m stair rise from scan/ground geometry.
+        # Odom/IMU supplies rotation and world X/Y, never world Z.
+        axis_split_factor_enabled: true
+        axis_split_scan_z_variance: 0.01
+        axis_split_unobservable_z_variance: 1000000.0
+        axis_split_scan_z_min_information: 10.0
+        # Per LM iteration; diagnostics report whether any iteration was clamped.
+        axis_split_scan_z_max_iteration_step: 0.15
+        external_odom_factor_enabled: false
         external_odom_rotation_variance: 0.0025
         external_odom_translation_variance: 0.01
-        # On the flat indoor route, use the odom/IMU estimate for roll, pitch
-        # and z while leaving x, y and yaw effectively unconstrained here.
-        planar_constraint_enabled: true
+        # Mutually exclusive with the axis-split factor: this legacy prior
+        # would pull Z back to the nearly planar external odometry trajectory.
+        planar_constraint_enabled: false
         planar_roll_pitch_variance: 0.0025
         planar_z_variance: 0.01
         planar_unconstrained_variance: 1000000.0

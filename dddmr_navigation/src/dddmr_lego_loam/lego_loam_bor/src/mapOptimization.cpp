@@ -182,6 +182,30 @@ MapOptimization::MapOptimization(std::string name,
         static_cast<float>(std::max(eigenvalue_thresholds[static_cast<std::size_t>(i)], 0.0));
   }
 
+  axis_split_factor_enabled_ = declare_parameter<bool>(
+      "mapping.axis_split_factor_enabled", false);
+  axis_split_scan_z_variance_ = declare_parameter<double>(
+      "mapping.axis_split_scan_z_variance", 0.01);
+  axis_split_unobservable_z_variance_ = declare_parameter<double>(
+      "mapping.axis_split_unobservable_z_variance", 1e6);
+  axis_split_scan_z_min_information_ = declare_parameter<double>(
+      "mapping.axis_split_scan_z_min_information", 10.0);
+  axis_split_scan_z_max_iteration_step_ = declare_parameter<double>(
+      "mapping.axis_split_scan_z_max_iteration_step", 0.15);
+  if (!std::isfinite(axis_split_scan_z_min_information_) ||
+      axis_split_scan_z_min_information_ < 0.0) {
+    RCLCPP_WARN(
+        this->get_logger(),
+        "invalid axis-split scan Z minimum information; using 10.0");
+    axis_split_scan_z_min_information_ = 10.0;
+  }
+  if (!std::isfinite(axis_split_scan_z_max_iteration_step_) ||
+      axis_split_scan_z_max_iteration_step_ <= 0.0) {
+    RCLCPP_WARN(
+        this->get_logger(),
+        "invalid axis-split scan Z maximum iteration step; using 0.15 m");
+    axis_split_scan_z_max_iteration_step_ = 0.15;
+  }
   external_odom_factor_enabled_ = declare_parameter<bool>(
       "mapping.external_odom_factor_enabled", false);
   external_odom_rotation_variance_ = declare_parameter<double>(
@@ -196,12 +220,52 @@ MapOptimization::MapOptimization(std::string name,
       "mapping.planar_z_variance", 0.01);
   planar_unconstrained_variance_ = declare_parameter<double>(
       "mapping.planar_unconstrained_variance", 1e6);
+  if (!std::isfinite(axis_split_scan_z_variance_) ||
+      axis_split_scan_z_variance_ <= 0.0) {
+    RCLCPP_WARN(
+        this->get_logger(),
+        "invalid axis-split scan Z variance; using 0.01");
+    axis_split_scan_z_variance_ = 0.01;
+  }
+  if (!std::isfinite(axis_split_unobservable_z_variance_) ||
+      axis_split_unobservable_z_variance_ <= 0.0) {
+    RCLCPP_WARN(
+        this->get_logger(),
+        "invalid axis-split unobservable Z variance; using 1e6");
+    axis_split_unobservable_z_variance_ = 1e6;
+  }
+  if (axis_split_factor_enabled_ &&
+      (!std::isfinite(external_odom_rotation_variance_) ||
+       external_odom_rotation_variance_ <= 0.0)) {
+    RCLCPP_WARN(
+        this->get_logger(),
+        "invalid external odom rotation variance for axis-split mode; using 0.01");
+    external_odom_rotation_variance_ = 0.01;
+  }
+  if (axis_split_factor_enabled_ &&
+      (!std::isfinite(external_odom_translation_variance_) ||
+       external_odom_translation_variance_ <= 0.0)) {
+    RCLCPP_WARN(
+        this->get_logger(),
+        "invalid external odom XY variance for axis-split mode; using 0.04");
+    external_odom_translation_variance_ = 0.04;
+  }
   RCLCPP_INFO(
       this->get_logger(),
-      "external odom factor: enabled=%d rot_var=%.6f trans_var=%.6f; planar=%d rp_var=%.6f z_var=%.6f",
+      "axis-split factor: enabled=%d scan_z_var=%.6f unobservable_z_var=%.3g min_info=%.3f max_iteration_step=%.3f; external odom factor: enabled=%d rot_var=%.6f trans_var=%.6f; planar=%d rp_var=%.6f z_var=%.6f",
+      axis_split_factor_enabled_, axis_split_scan_z_variance_,
+      axis_split_unobservable_z_variance_,
+      axis_split_scan_z_min_information_,
+      axis_split_scan_z_max_iteration_step_,
       external_odom_factor_enabled_, external_odom_rotation_variance_,
       external_odom_translation_variance_, planar_constraint_enabled_,
       planar_roll_pitch_variance_, planar_z_variance_);
+  if (axis_split_factor_enabled_ &&
+      (external_odom_factor_enabled_ || planar_constraint_enabled_)) {
+    RCLCPP_WARN(
+        this->get_logger(),
+        "axis-split factor takes precedence; full external-odom and planar constraints will be ignored");
+  }
   
   allocateMemory();
 
@@ -500,6 +564,22 @@ void MapOptimization::allocateMemory() {
       std::max(external_odom_translation_variance_, 1e-9);
   externalOdometryNoise = noiseModel::Diagonal::Variances(Vector6);
 
+  Vector6 << std::max(external_odom_rotation_variance_, 1e-9),
+      std::max(external_odom_rotation_variance_, 1e-9),
+      std::max(external_odom_rotation_variance_, 1e-9),
+      std::max(external_odom_translation_variance_, 1e-9),
+      std::max(external_odom_translation_variance_, 1e-9),
+      std::max(axis_split_scan_z_variance_, 1e-9);
+  axisSplitNoise = noiseModel::Diagonal::Variances(Vector6);
+
+  Vector6 << std::max(external_odom_rotation_variance_, 1e-9),
+      std::max(external_odom_rotation_variance_, 1e-9),
+      std::max(external_odom_rotation_variance_, 1e-9),
+      std::max(external_odom_translation_variance_, 1e-9),
+      std::max(external_odom_translation_variance_, 1e-9),
+      std::max(axis_split_unobservable_z_variance_, 1.0);
+  axisSplitNoZNoise = noiseModel::Diagonal::Variances(Vector6);
+
   Vector6 << std::max(planar_roll_pitch_variance_, 1e-9),
       std::max(planar_roll_pitch_variance_, 1e-9),
       std::max(planar_unconstrained_variance_, 1.0),
@@ -529,10 +609,17 @@ void MapOptimization::allocateMemory() {
   current_external_odom_valid_ = false;
   previous_keyframe_external_odom_valid_ = false;
   last_keyframe_inserted_ = false;
+  last_axis_split_factor_added_ = false;
   last_external_odom_factor_added_ = false;
   last_planar_constraint_added_ = false;
+  last_axis_split_scan_delta_z_ = 0.0;
+  last_axis_split_fallback_reason_ = "not_evaluated";
+  last_scan_z_information_ = 0.0;
+  last_scan_z_observable_ = false;
+  last_scan_z_step_clamped_ = false;
   current_external_odom_pose_ = gtsam::Pose3();
   previous_keyframe_external_odom_pose_ = gtsam::Pose3();
+  current_axis_split_odometry_pose_ = gtsam::Pose3();
 
   laserCloudCornerFromMapDSNum = 0;
   laserCloudSurfFromMapDSNum = 0;
@@ -1653,7 +1740,24 @@ bool MapOptimization::LMOptimization(int iterCount) {
     isDegenerate = degeneracy.is_degenerate;
   }
 
-  if (isDegenerate) {
+  if (axis_split_factor_enabled_ && current_external_odom_valid_) {
+    // The other five DoF are fixed to synchronized odometry/IMU before scan
+    // matching. Solve the remaining world-Z column conditionally so a weak Z
+    // eigendirection is not discarded with unrelated weak horizontal axes.
+    const lego_loam_bor::AxisSplitScalarUpdate z_update =
+        lego_loam_bor::solveAxisSplitScalarUpdate(
+        matAtA(4, 4), matAtB(4), axis_split_scan_z_min_information_,
+        axis_split_scan_z_max_iteration_step_);
+    last_scan_z_information_ = std::max(
+        last_scan_z_information_, z_update.information);
+    last_scan_z_observable_ = last_scan_z_observable_ || z_update.observable;
+    last_scan_z_step_clamped_ =
+        last_scan_z_step_clamped_ || z_update.clamped;
+    matX.setZero();
+    if (z_update.observable) {
+      matX(4) = static_cast<float>(z_update.delta);
+    }
+  } else if (isDegenerate) {
     matX = matP * matX;
   }
 
@@ -1687,6 +1791,9 @@ void MapOptimization::scan2MapOptimization() {
   last_lm_selected_point_count_ = 0;
   last_lm_delta_.setZero();
   accumulated_lm_delta_.setZero();
+  last_scan_z_information_ = 0.0;
+  last_scan_z_observable_ = false;
+  last_scan_z_step_clamped_ = false;
   last_degeneracy_eigenvalues_.setZero();
   last_degeneracy_eigenvectors_.setIdentity();
   last_degenerate_eigendirections_.fill(false);
@@ -1739,8 +1846,12 @@ gtsam::Pose3 MapOptimization::transformArrayToGtsamPose(
 void MapOptimization::saveKeyFramesAndFactor() {
 
   last_keyframe_inserted_ = false;
+  last_axis_split_factor_added_ = false;
   last_external_odom_factor_added_ = false;
   last_planar_constraint_added_ = false;
+  last_axis_split_scan_delta_z_ = 0.0;
+  last_axis_split_fallback_reason_ = axis_split_factor_enabled_ ?
+      "keyframe_not_inserted" : "disabled";
 
   currentRobotPos_.x = transformAftMapped[3];
   currentRobotPos_.y = transformAftMapped[4];
@@ -1771,6 +1882,26 @@ void MapOptimization::saveKeyFramesAndFactor() {
 
   if (saveThisKeyFrame == false && !cloudKeyPoses3D->points.empty()) return;
 
+  if (axis_split_factor_enabled_) {
+    const gtsam::Pose3 current_mapped_pose =
+        transformArrayToGtsamPose(transformAftMapped);
+    if (!current_external_odom_valid_ ||
+        !lego_loam_bor::isFinitePose(current_axis_split_odometry_pose_) ||
+        !lego_loam_bor::isFinitePose(current_mapped_pose) ||
+        (!cloudKeyPoses3D->empty() &&
+         !previous_keyframe_external_odom_valid_)) {
+      last_axis_split_fallback_reason_ = !current_external_odom_valid_ ?
+          "external_odom_unavailable" :
+          (!previous_keyframe_external_odom_valid_ ?
+          "previous_external_odom_unavailable" : "non_finite_pose");
+      RCLCPP_WARN(
+          this->get_logger(),
+          "Skip axis-split keyframe: %s",
+          last_axis_split_fallback_reason_.c_str());
+      return;
+    }
+  }
+
   last_keyframe_inserted_ = true;
 
   previousRobotPos_ = currentRobotPos_;
@@ -1780,6 +1911,10 @@ void MapOptimization::saveKeyFramesAndFactor() {
   std::pair<int, int> edge;
 
   if (cloudKeyPoses3D->points.empty()) {
+
+    if (axis_split_factor_enabled_) {
+      last_axis_split_fallback_reason_ = "initial_keyframe";
+    }
 
     edge.first = 0;
     edge.second = 0;
@@ -1823,7 +1958,38 @@ void MapOptimization::saveKeyFramesAndFactor() {
               Point3(transformAftMapped[5], transformAftMapped[3],
                      transformAftMapped[4]));
     const std::size_t current_key = cloudKeyPoses3D->points.size();
-    if (external_odom_factor_enabled_ && current_external_odom_valid_ &&
+    if (axis_split_factor_enabled_) {
+      const bool scan_z_available = last_scan_to_map_attempted_ &&
+          last_lm_had_constraints_ && last_scan_z_observable_;
+      // transformAssociateToMap() propagates odometry/IMU from the previous
+      // optimized map pose.  Its rotation and world X/Y therefore retain any
+      // map-to-odom correction, while poseTo.z contains the scan-only update.
+      lego_loam_bor::AxisSplitMeasurement measurement =
+          lego_loam_bor::makeAxisSplitMeasurement(
+          poseFrom, current_axis_split_odometry_pose_, poseFrom,
+          scan_z_available ? poseTo : poseFrom);
+      if (!scan_z_available) {
+        // Keep the graph numerically connected without allowing external Z or
+        // unconstrained full-pose scan matching to masquerade as geometry Z.
+        measurement.world_translation_delta.z() = 0.0;
+      }
+      if (!measurement.isFinite()) {
+        last_axis_split_fallback_reason_ = "non_finite_measurement";
+        last_keyframe_inserted_ = false;
+        RCLCPP_ERROR(
+            this->get_logger(),
+            "Skip axis-split keyframe: non-finite factor measurement");
+        return;
+      }
+      gtSAMgraph.add(lego_loam_bor::AxisSplitFactor(
+          current_key - 1, current_key, measurement,
+          scan_z_available ? axisSplitNoise : axisSplitNoZNoise));
+      last_axis_split_factor_added_ = true;
+      last_axis_split_scan_delta_z_ = scan_z_available ?
+          measurement.world_translation_delta.z() : 0.0;
+      last_axis_split_fallback_reason_ = scan_z_available ?
+          "none" : "scan_z_unobservable_weak_hold";
+    } else if (external_odom_factor_enabled_ && current_external_odom_valid_ &&
         previous_keyframe_external_odom_valid_) {
       gtSAMgraph.add(BetweenFactor<Pose3>(
           current_key - 1, current_key,
@@ -1835,7 +2001,8 @@ void MapOptimization::saveKeyFramesAndFactor() {
           current_key - 1, current_key,
           poseFrom.between(poseTo), odometryNoise));
     }
-    if (planar_constraint_enabled_ && current_external_odom_valid_) {
+    if (!axis_split_factor_enabled_ && planar_constraint_enabled_ &&
+        current_external_odom_valid_) {
       // The external odometry orientation is expected to include the IMU
       // estimate. This prior only constrains roll, pitch and z; yaw, x and y
       // receive the configured near-unbounded variance.
@@ -1903,9 +2070,9 @@ void MapOptimization::saveKeyFramesAndFactor() {
       transformTobeMapped[i] = transformAftMapped[i];
     }
   }
+  previous_keyframe_external_odom_valid_ = current_external_odom_valid_;
   if (current_external_odom_valid_) {
     previous_keyframe_external_odom_pose_ = current_external_odom_pose_;
-    previous_keyframe_external_odom_valid_ = true;
   }
   
   // publish recent and optimized result for visual check
@@ -2013,12 +2180,32 @@ void MapOptimization::publishMappingDiagnostic(
   diagnostic_msgs::msg::DiagnosticStatus status;
   status.name = "lego_loam/map_optimization_frame";
   status.hardware_id = "scan_to_map";
-  status.level = isDegenerate ? diagnostic_msgs::msg::DiagnosticStatus::WARN :
-      diagnostic_msgs::msg::DiagnosticStatus::OK;
-  status.message = isDegenerate ?
-      "degenerate eigendirections projected out" :
-      (last_scan_to_map_attempted_ ? "scan-to-map optimization observable" :
-      "local map not large enough for scan-to-map optimization");
+  if (axis_split_factor_enabled_) {
+    const bool axis_split_frame_observable = current_external_odom_valid_ &&
+        last_scan_to_map_attempted_ && last_lm_had_constraints_ &&
+        last_scan_z_observable_;
+    status.level = axis_split_frame_observable ?
+        diagnostic_msgs::msg::DiagnosticStatus::OK :
+        diagnostic_msgs::msg::DiagnosticStatus::WARN;
+    if (!current_external_odom_valid_) {
+      status.message = "axis-split unavailable: synchronized odometry invalid";
+    } else if (!last_scan_to_map_attempted_) {
+      status.message = "axis-split waiting for a sufficiently large local map";
+    } else if (!last_lm_had_constraints_) {
+      status.message = "axis-split unavailable: scan matching has no constraints";
+    } else if (!last_scan_z_observable_) {
+      status.message = "axis-split unavailable: scan Z is weak";
+    } else {
+      status.message = "axis-split observable: odometry/IMU 5DoF plus scan Z";
+    }
+  } else {
+    status.level = isDegenerate ? diagnostic_msgs::msg::DiagnosticStatus::WARN :
+        diagnostic_msgs::msg::DiagnosticStatus::OK;
+    status.message = isDegenerate ?
+        "degenerate eigendirections projected out" :
+        (last_scan_to_map_attempted_ ? "scan-to-map optimization observable" :
+        "local map not large enough for scan-to-map optimization");
+  }
 
   const auto add_value = [&status](const std::string & key, const auto & value) {
       std::ostringstream stream;
@@ -2035,7 +2222,15 @@ void MapOptimization::publishMappingDiagnostic(
   add_value("map_corner_points", laserCloudCornerFromMapDSNum);
   add_value("map_surface_points", laserCloudSurfFromMapDSNum);
   add_value("is_degenerate", isDegenerate);
+  add_value("full_6d_is_degenerate", isDegenerate);
+  add_value("axis_split_enabled", axis_split_factor_enabled_);
   add_value("keyframe_inserted", last_keyframe_inserted_);
+  add_value("axis_split_factor_added", last_axis_split_factor_added_);
+  add_value("axis_split_scan_delta_z", last_axis_split_scan_delta_z_);
+  add_value("axis_split_fallback_reason", last_axis_split_fallback_reason_);
+  add_value("scan_z_information", last_scan_z_information_);
+  add_value("scan_z_observable", last_scan_z_observable_);
+  add_value("scan_z_step_clamped", last_scan_z_step_clamped_);
   add_value("external_odom_factor_added", last_external_odom_factor_added_);
   add_value("planar_constraint_added", last_planar_constraint_added_);
   add_value("external_odom_valid", association.external_odometry_valid);
@@ -2098,9 +2293,16 @@ void MapOptimization::publishMappingDiagnostic(
     add_value("raw_odom_qw", association.external_odometry.pose.pose.orientation.w);
   }
 
-  if (isDegenerate) {
+  if (isDegenerate && axis_split_factor_enabled_ && last_scan_z_observable_) {
+    RCLCPP_INFO_THROTTLE(
+        this->get_logger(), *this->get_clock(), 1000,
+        "Full 6DoF scan diagnostic is degenerate (%s), but conditional world-Z remains observable (information %.2f)",
+        degenerate_dofs.str().c_str(), last_scan_z_information_);
+  } else if (isDegenerate) {
     RCLCPP_WARN_THROTTLE(
         this->get_logger(), *this->get_clock(), 1000,
+        axis_split_factor_enabled_ ?
+        "Axis-split scan Z is not observable; weak eigendirections: %s; eigenvalues: %.2f %.2f %.2f %.2f %.2f %.2f" :
         "Degenerate scan-to-map frame; projected eigendirections: %s; eigenvalues: %.2f %.2f %.2f %.2f %.2f %.2f",
         degenerate_dofs.str().c_str(),
         last_degeneracy_eigenvalues_(0), last_degeneracy_eigenvalues_(1),
@@ -2150,11 +2352,33 @@ void MapOptimization::run() {
   pcl::transformPointCloud(*association.cloud_patched_ground_edge_last, *laserCloudPatchedGroundEdgeLast, trans_c2s_af3_);
 
   OdometryToTransform(decisive_odometry, transformSum);
+  if (axis_split_factor_enabled_) {
+    const bool transform_sum_finite = std::all_of(
+        std::begin(transformSum), std::end(transformSum),
+        [](const float value) {return std::isfinite(value);});
+    if (!current_external_odom_valid_ || !transform_sum_finite) {
+      current_external_odom_valid_ = false;
+      RCLCPP_WARN_THROTTLE(
+          this->get_logger(), *this->get_clock(), 1000,
+          "Reject axis-split mapping frame: synchronized odometry is unavailable or non-finite");
+      return;
+    }
+  }
   if (current_external_odom_valid_) {
     current_external_odom_pose_ = transformArrayToGtsamPose(transformSum);
   }
 
   transformAssociateToMap();
+  if (axis_split_factor_enabled_) {
+    current_axis_split_odometry_pose_ =
+        transformArrayToGtsamPose(transformTobeMapped);
+    if (!lego_loam_bor::isFinitePose(current_axis_split_odometry_pose_)) {
+      RCLCPP_WARN_THROTTLE(
+          this->get_logger(), *this->get_clock(), 1000,
+          "Reject axis-split mapping frame: map-aligned odometry prediction is non-finite");
+      return;
+    }
+  }
   std::array<float, 6> pose_before_optimization{};
   std::copy(
       std::begin(transformTobeMapped), std::end(transformTobeMapped),
