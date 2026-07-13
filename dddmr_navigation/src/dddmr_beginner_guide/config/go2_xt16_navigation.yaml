@@ -1,15 +1,46 @@
 p2p_move_base:
   ros__parameters:
-    controller_frequency: 20.0
+    # Match the 10 Hz local planner and XT16 obstacle stream so each decision
+    # uses a fresh planning horizon and the DWA acceleration window is honest.
+    controller_frequency: 10.0
     use_twist_stamped: false
     planner_patience: 10.0
     oscillation_distance: 0.05
     oscillation_angle: 0.3
     oscillation_patience: 15.0
     controller_patience: 10.0
+    # Confirm across three stopped decisions (about 0.20 s from first to third)
+    # before escalating. Every failed decision still publishes StopMove.
+    local_failure_confirmation_cycles: 3
+    # Normal Sport gait is retained. This navigation-layer supervisor remains
+    # disabled until a site staircase model and online terrain status pass the
+    # offline gates in go2_xt16_ramp_stair_test_stage_plan.md.
+    terrain_supervisor_enabled: false
+    terrain_status_topic: "/dddmr_terrain/status"
+    terrain_supervised_status_topic: "/dddmr_terrain/supervised_status"
+    terrain_status_timeout_sec: 0.30
+    require_gait_monitor: true
+    gait_unchanged_topic: "/dddmr_go2/gait_unchanged"
+    gait_monitor_timeout_sec: 0.30
+    stair_confirmation_cycles: 5
+    stair_min_confidence: 0.90
+    stair_min_support_ratio: 0.80
+    stair_max_heading_error_rad: 0.13962634
+    stair_max_lateral_error_m: 0.10
+    stair_align_max_forward_mps: 0.0
+    stair_align_max_yaw_rps: 0.25
+    stair_committed_max_yaw_rps: 0.0
+    # ALIGN uses an already collision-scored pure-yaw trajectory; the
+    # supervisor never edits a scored forward trajectory into a rotation.
+    stair_align_trajectory_generator: "differential_drive_stair_align"
+    # Switch to differential_drive_terrain only after the complete site
+    # profile is validated; the shipped flat-ground behavior stays unchanged.
+    main_trajectory_generator: "differential_drive_simple"
     no_plan_retry_num: 10
     waiting_patience: 10.0
-    initial_heading_trajectory_generator: "differential_drive_go2_heading_arc"
+    # Pure yaw is responsive on this Go2; the previous 0.10 m/s heading arc
+    # operated in its observed low-speed dead zone and prolonged alignment.
+    initial_heading_trajectory_generator: "differential_drive_rotate_shortest_angle"
     goal_heading_trajectory_generator: "differential_drive_rotate_shortest_angle"
 global_plan_manager:
   ros__parameters:
@@ -22,7 +53,10 @@ mcl_ip:
         odom_type: "wheel_odometry"         # wheel_odometry/laser_odometry
         base_ground_frame: "base_link"
         num_vertical_scans: 16
-        num_horizontal_scans: 4000
+        # Current XT16 driver mode publishes 2000 samples/ring (32000 points)
+        # at 10 Hz. Match the range-image columns so adjacent samples remain
+        # adjacent during segmentation.
+        num_horizontal_scans: 2000
         vertical_angle_bottom: -15.0        # degrees
         vertical_angle_top: 15.0            # degrees
         scan_period: 0.1                    # seconds
@@ -63,8 +97,22 @@ dddmr_pg_map_server_manager:
 
 map1:
   ros__parameters:
-    pose_graph_dir: "/root/dddmr_bags/go2_xt16_mouth_mapping_20260709_130235_map_2026_07_09_05_02_34"
+    pose_graph_dir: "/root/dddmr_bags/go2_xt16_mouth_mapping_20260710_153813_map_2026_07_10_07_38_12"
+    # Fill with the measured site profile's 64-hex source map hash before
+    # enabling terrain ROI/layers. Empty keeps terrain fail-closed.
+    source_map_sha256: ""
     complete_map_voxel_size: 0.2
+    complete_ground_voxel_size: 0.2
+    # Keep the localization map at 0.2 m. Enable a separate high-resolution
+    # terrain ROI only after the bounds are surveyed for the test staircase.
+    terrain_roi_enabled: false
+    terrain_roi_voxel_size: 0.05
+    terrain_roi_min_x: 0.0
+    terrain_roi_min_y: 0.0
+    terrain_roi_min_z: 0.0
+    terrain_roi_max_x: 0.0
+    terrain_roi_max_y: 0.0
+    terrain_roi_max_z: 0.0
 
 sub_maps:
   ros__parameters:
@@ -151,19 +199,47 @@ local_planner:
     heading_tracking_distance: 0.5
     heading_align_angle: 0.8
     prune_plane_timeout: 3.0
+    plan_max_segment_length: 0.75
+    # Keep horizontal and elevation acceptance independent. A wide 3D radius
+    # can otherwise report success on the wrong landing or floor.
     xy_goal_tolerance: 0.4
+    z_goal_tolerance: 0.2
     yaw_goal_tolerance: 0.8
+    # Global-plan z is mapground; base_link is nominally 0.24 m above it.
+    robot_ground_z_offset: 0.24
+    # Enable together with a validated TerrainLayer.  It prevents a goal on a
+    # vertically overlapping floor, the opposite landing, or another tread
+    # from being accepted merely because the XYZ tolerance happens to pass.
+    goal_surface_match_required: false
+    goal_terrain_search_radius: 0.35
     controller_frequency: 10.0
+    debug_rejection_report: true
+    # Hold a collision-accepted in-place turn direction across control cycles.
+    # This prevents nearly symmetric left/right candidates from alternating and
+    # making the robot shake in front of an obstacle.
+    in_place_direction_hysteresis_enabled: true
+    in_place_direction_hysteresis_generator: "differential_drive_simple"
+    # Ignore small critic noise; after a three-second hold, allow only a
+    # materially better side to win so the lock cannot force a long detour.
+    in_place_direction_min_hold_sec: 3.0
+    in_place_direction_switch_cost_margin: 0.20
+    in_place_direction_reset_gap_sec: 2.0
+    # Preserve the chosen side until it is genuinely unavailable. A transient
+    # one-frame loss stops safely instead of immediately reversing direction.
+    in_place_direction_allow_cost_switch: true
+    in_place_direction_unavailable_grace_sec: 0.10
     
+    # Swept Go2 stance envelope. base_footprint is 0.24 m below base_link;
+    # leave 0.04 m ground tolerance while protecting the legs and lower body.
     cuboid:
-      flb: [0.42, 0.18, 0.0] #front left buttom
-      frb: [0.42, -0.18, 0.0]
-      flt: [0.42, 0.18, 0.6] #front left top
-      frt: [0.42, -0.18, 0.6]
-      blb: [-0.35, 0.18, 0.0] #back left buttom
-      brb: [-0.35, -0.18, 0.0]
-      blt: [-0.35, 0.18, 0.6]
-      brt: [-0.35, -0.18, 0.6]
+      flb: [0.42, 0.30, -0.20] #front left bottom
+      frb: [0.42, -0.30, -0.20]
+      flt: [0.42, 0.30, 0.60] #front left top
+      frt: [0.42, -0.30, 0.60]
+      blb: [-0.35, 0.30, -0.20] #back left bottom
+      brb: [-0.35, -0.30, -0.20]
+      blt: [-0.35, 0.30, 0.60]
+      brt: [-0.35, -0.30, 0.60]
 
 recovery_behaviors:
   ros__parameters:
@@ -172,40 +248,69 @@ recovery_behaviors:
       plugin: "recovery_behaviors::RotateInPlaceBehavior"
       frequency: 10.0
       tolerance: 0.3
+      transform_timeout: 2.0
+      odom_timeout: 0.5
+      future_tolerance: 0.1
+      progress_timeout: 3.0
+      progress_angle: 0.05
       trajectory_generator_name: "differential_drive_rotate_inplace"
 
 trajectory_generators:
   ros__parameters:
-    plugins: ["differential_drive_simple", "differential_drive_rotate_inplace", "differential_drive_rotate_shortest_angle", "differential_drive_go2_heading_arc"]
+    plugins: ["differential_drive_simple", "differential_drive_terrain", "differential_drive_stair_align", "differential_drive_rotate_inplace", "differential_drive_rotate_shortest_angle", "differential_drive_go2_heading_arc"]
     differential_drive_rotate_shortest_angle:
       plugin: "trajectory_generators::DDRotateInplaceTheory"
       controller_frequency: 10.0
       rotation_speed: 0.40
       rotation_forward_x: 0.0
+      sim_time: 2.0
+      # Heading alignment is re-evaluated every control cycle. Check the next
+      # 2 s / 0.8 rad, not an unnecessarily conservative full 360-degree sweep.
+      simulate_full_rotation_for_pure_yaw: false
       cuboid:
-        flb: [0.42, 0.18, 0.0] #front left buttom
-        frb: [0.42, -0.18, 0.0]
-        flt: [0.42, 0.18, 0.6] #front left top
-        frt: [0.42, -0.18, 0.6]
-        blb: [-0.35, 0.18, 0.0] #back left buttom
-        brb: [-0.35, -0.18, 0.0]
-        blt: [-0.35, 0.18, 0.6]
-        brt: [-0.35, -0.18, 0.6]
+        flb: [0.42, 0.30, -0.20] #front left bottom
+        frb: [0.42, -0.30, -0.20]
+        flt: [0.42, 0.30, 0.60] #front left top
+        frt: [0.42, -0.30, 0.60]
+        blb: [-0.35, 0.30, -0.20] #back left bottom
+        brb: [-0.35, -0.30, -0.20]
+        blt: [-0.35, 0.30, 0.60]
+        brt: [-0.35, -0.30, 0.60]
 
     differential_drive_rotate_inplace:
       plugin: "trajectory_generators::DDRotateInplaceTheory"
       controller_frequency: 10.0
-      rotation_speed: 0.40
+      rotation_speed: 0.50
       rotation_forward_x: 0.0
       cuboid:
-        flb: [0.42, 0.18, 0.0] #front left buttom
-        frb: [0.42, -0.18, 0.0]
-        flt: [0.42, 0.18, 0.6] #front left top
-        frt: [0.42, -0.18, 0.6]
-        blb: [-0.35, 0.18, 0.0] #back left buttom
-        brb: [-0.35, -0.18, 0.0]
-        blt: [-0.35, 0.18, 0.6]
-        brt: [-0.35, -0.18, 0.6]
+        flb: [0.42, 0.30, -0.20] #front left bottom
+        frb: [0.42, -0.30, -0.20]
+        flt: [0.42, 0.30, 0.60] #front left top
+        frt: [0.42, -0.30, 0.60]
+        blb: [-0.35, 0.30, -0.20] #back left bottom
+        brb: [-0.35, -0.30, -0.20]
+        blt: [-0.35, 0.30, 0.60]
+        brt: [-0.35, -0.30, 0.60]
+
+    # Platform-only alignment for the stair supervisor. The command is
+    # collision-scored as generated and is never reshaped afterward. Its
+    # 0.20 rad/s value remains subject to the site capability evidence.
+    differential_drive_stair_align:
+      plugin: "trajectory_generators::DDRotateInplaceTheory"
+      controller_frequency: 10.0
+      rotation_speed: 0.20
+      rotation_forward_x: 0.0
+      sim_time: 1.0
+      simulate_full_rotation_for_pure_yaw: false
+      cuboid:
+        flb: [0.42, 0.30, -0.20]
+        frb: [0.42, -0.30, -0.20]
+        flt: [0.42, 0.30, 0.60]
+        frt: [0.42, -0.30, 0.60]
+        blb: [-0.35, 0.30, -0.20]
+        brb: [-0.35, -0.30, -0.20]
+        blt: [-0.35, 0.30, 0.60]
+        brt: [-0.35, -0.30, 0.60]
 
     differential_drive_go2_heading_arc:
       plugin: "trajectory_generators::DDRotateInplaceTheory"
@@ -216,23 +321,33 @@ trajectory_generators:
       linear_x_sample: 1.0
       angular_z_sample: 2.0
       cuboid:
-        flb: [0.42, 0.18, 0.0] #front left buttom
-        frb: [0.42, -0.18, 0.0]
-        flt: [0.42, 0.18, 0.6] #front left top
-        frt: [0.42, -0.18, 0.6]
-        blb: [-0.35, 0.18, 0.0] #back left buttom
-        brb: [-0.35, -0.18, 0.0]
-        blt: [-0.35, 0.18, 0.6]
-        brt: [-0.35, -0.18, 0.6]
+        flb: [0.42, 0.30, -0.20] #front left bottom
+        frb: [0.42, -0.30, -0.20]
+        flt: [0.42, 0.30, 0.60] #front left top
+        frt: [0.42, -0.30, 0.60]
+        blb: [-0.35, 0.30, -0.20] #back left bottom
+        brb: [-0.35, -0.30, -0.20]
+        blt: [-0.35, 0.30, 0.60]
+        brt: [-0.35, -0.30, 0.60]
     
     differential_drive_simple:
       plugin: "trajectory_generators::DDSimpleTrajectoryGeneratorTheory"
-      max_vel_x: 0.50
-      min_vel_x: 0.30 # Go2 supervised axis/tilt verification threshold.
+      # Field replay showed that 0.10-0.15 m/s forward and about 0.05 rad/s
+      # in-place Move requests leave the Go2 effectively stationary. Sample
+      # only executable motion after odometry confirms a full stop.
+      max_vel_x: 0.40
+      min_vel_x: 0.30
       max_vel_theta: 0.50
-      min_vel_theta: 0.04
+      min_vel_theta: 0.40
+      enable_in_place_rotation: true
+      in_place_rotation_max_linear_speed: 0.05
+      # Treat only the measured near-zero yaw noise as stopped. Real rotation
+      # rates (0.108/0.212 rad/s in the trace) remain dynamically constrained.
+      in_place_rotation_stopped_angular_speed: 0.02
       acc_lim_x: 3.00
-      acc_lim_theta: 1.0
+      # At 10 Hz this makes +/-0.40 rad/s reachable from rest, matching
+      # min_vel_theta instead of silently filtering every rotation sample.
+      acc_lim_theta: 4.0
       deceleration_ratio: 2.0
       max_motor_shaft_rpm: 3000.0
       wheel_diameter: 0.16
@@ -240,25 +355,74 @@ trajectory_generators:
       robot_radius: 0.25
       
       controller_frequency: 10.0
-      sim_time: 0.6
-      linear_x_sample: 4.0
-      angular_z_sample: 6.0
+      sim_time: 1.5
+      linear_x_sample: 5.0
+      angular_z_sample: 10.0
       sim_granularity: 0.05
       angular_sim_granularity: 0.025
 
       cuboid:
-        flb: [0.42, 0.18, 0.0] #front left buttom
-        frb: [0.42, -0.18, 0.0]
-        flt: [0.42, 0.18, 0.6] #front left top
-        frt: [0.42, -0.18, 0.6]
-        blb: [-0.35, 0.18, 0.0] #back left buttom
-        brb: [-0.35, -0.18, 0.0]
-        blt: [-0.35, 0.18, 0.6]
-        brt: [-0.35, -0.18, 0.6]
+        flb: [0.42, 0.30, -0.20] #front left bottom
+        frb: [0.42, -0.30, -0.20]
+        flt: [0.42, 0.30, 0.60] #front left top
+        frt: [0.42, -0.30, 0.60]
+        blb: [-0.35, 0.30, -0.20] #back left bottom
+        brb: [-0.35, -0.30, -0.20]
+        blt: [-0.35, 0.30, 0.60]
+        brt: [-0.35, -0.30, 0.60]
+
+    # Loaded under a distinct name so flat navigation remains an exact legacy
+    # path. It produces no candidates while terrain_enabled is false.
+    differential_drive_terrain:
+      plugin: "trajectory_generators::TerrainFollowingDDTheory"
+      terrain_enabled: false
+      terrain_fail_closed: true
+      terrain_body_clearance_m: 0.24
+      terrain_max_support_xy_distance_m: 0.15
+      terrain_max_support_vertical_distance_m: 0.30
+      terrain_min_support_ratio: 0.80
+      terrain_min_confidence: 0.90
+      terrain_min_upward_normal_z: 0.20
+      terrain_max_normal_change_rad: 0.35
+      terrain_stair_transition_waypoint_tolerance_m: 0.15
+      terrain_max_stair_transition_span_m: 0.45
+      terrain_max_stair_heading_error_rad: 0.0
+      terrain_stairs_enabled: false
+      terrain_require_manual_corridor: true
+      terrain_require_online_confirmation: true
+      max_vel_x: 0.40
+      min_vel_x: 0.30
+      max_vel_theta: 0.50
+      min_vel_theta: 0.40
+      enable_in_place_rotation: false
+      in_place_rotation_max_linear_speed: 0.0
+      in_place_rotation_stopped_angular_speed: 0.02
+      acc_lim_x: 3.00
+      acc_lim_theta: 4.0
+      deceleration_ratio: 2.0
+      max_motor_shaft_rpm: 3000.0
+      wheel_diameter: 0.16
+      gear_ratio: 1.0
+      robot_radius: 0.25
+      controller_frequency: 10.0
+      sim_time: 1.5
+      linear_x_sample: 5.0
+      angular_z_sample: 10.0
+      sim_granularity: 0.05
+      angular_sim_granularity: 0.025
+      cuboid:
+        flb: [0.42, 0.30, -0.20]
+        frb: [0.42, -0.30, -0.20]
+        flt: [0.42, 0.30, 0.60]
+        frt: [0.42, -0.30, 0.60]
+        blb: [-0.35, 0.30, -0.20]
+        brb: [-0.35, -0.30, -0.20]
+        blt: [-0.35, 0.30, 0.60]
+        brt: [-0.35, -0.30, 0.60]
 
 mpc_critics:
   ros__parameters:
-    plugins: ["collision", "stick_path", "pure_pursuit", "toward_global_plan", "collision_rotate", "collision_rotate_shortest", "prefer_rotate_shortest", "collision_go2_heading_arc", "prefer_go2_heading_arc"]
+    plugins: ["collision", "stick_path", "pure_pursuit", "toward_global_plan", "terrain_collision", "terrain_stick_path", "terrain_pure_pursuit", "terrain_toward_global_plan", "terrain_support", "collision_stair_align", "prefer_stair_align", "collision_rotate", "collision_rotate_shortest", "prefer_rotate_shortest", "collision_go2_heading_arc", "prefer_go2_heading_arc"]
     collision:
       plugin: "mpc_critics::CollisionModel"
       trajectory_generator: differential_drive_simple
@@ -275,6 +439,69 @@ mpc_critics:
     toward_global_plan:
       plugin: "mpc_critics::TowardGlobalPlanModel"
       trajectory_generator: differential_drive_simple
+      weight: 1.0
+    terrain_collision:
+      plugin: "mpc_critics::CollisionModel"
+      trajectory_generator: differential_drive_terrain
+      weight: 1.0
+      # Only a surveyed, online-confirmed expected riser may enter the leg
+      # envelope. Every zero below is literal zero capability while disabled.
+      stair_semantics:
+        enabled: false
+        fail_closed: true
+        expected_map_hash: ""
+        max_snapshot_age_sec: 0.0
+        minimum_stair_confidence: 0.0
+        max_node_match_distance_m: 0.0
+        riser_plane_tolerance_m: 0.0
+        riser_lateral_tolerance_m: 0.0
+        riser_vertical_tolerance_m: 0.0
+        leg_envelope_min_x_m: 0.0
+        leg_envelope_min_y_m: 0.0
+        leg_envelope_min_z_m: 0.0
+        leg_envelope_max_x_m: 0.0
+        leg_envelope_max_y_m: 0.0
+        leg_envelope_max_z_m: 0.0
+        max_support_xy_distance_m: 0.0
+        min_body_clearance_m: 0.0
+        max_body_clearance_m: 0.0
+    terrain_stick_path:
+      plugin: "mpc_critics::StickPathModel"
+      trajectory_generator: differential_drive_terrain
+      weight: 0.1
+    terrain_pure_pursuit:
+      plugin: "mpc_critics::PurePursuitModel"
+      trajectory_generator: differential_drive_terrain
+      translation_weight: 1.0
+      orientation_weight: 0.01
+    terrain_toward_global_plan:
+      plugin: "mpc_critics::TowardGlobalPlanModel"
+      trajectory_generator: differential_drive_terrain
+      weight: 1.0
+    # Loaded but disabled until the surveyed ROI/stair model passes offline
+    # validation. Enabling it is fail-closed and never changes the Go2 gait.
+    terrain_support:
+      plugin: "mpc_critics::TerrainSupportModel"
+      trajectory_generator: differential_drive_terrain
+      enabled: false
+      fail_closed: true
+      weight: 1.0
+      support_z_offset_m: 0.24
+      max_support_distance_m: 0.30
+      max_z_gap_m: 0.12
+      min_support_ratio: 0.80
+      min_confidence: 0.90
+      max_step_index_delta: 1
+      stairs_enabled: false
+      require_manual_corridor: true
+      require_online_confirmation: true
+    collision_stair_align:
+      plugin: "mpc_critics::CollisionModel"
+      trajectory_generator: differential_drive_stair_align
+      weight: 1.0
+    prefer_stair_align:
+      plugin: "mpc_critics::ShortestAngleModel"
+      trajectory_generator: differential_drive_stair_align
       weight: 1.0
     collision_rotate:
       plugin: "mpc_critics::CollisionModel"
@@ -302,20 +529,24 @@ perception_3d_local:
     global_frame: "map"
     robot_base_frame: "base_link"
     max_obstacle_distance: 9999.0
-    inscribed_radius: 0.1
+    # Centerline hard clearance. A 0.40 m radius requires roughly 0.8 m of
+    # usable passage width before localization and tracking tolerances.
+    inscribed_radius: 0.40
     inflation_descending_rate: 2.0
-    inflation_radius: 0.1
+    inflation_radius: 1.5
     sensors_collected_frequency: 10.0
-    plugins: ["map", "path_blocked_strategy", "lidar"]
+    plugins: ["map", "path_blocked_strategy", "lidar", "terrain"]
     map:
       plugin: "perception_3d::StaticLayer"
       is_local_planner: true
       mapping_mode: false
       map_topic: "map1/mapcloud"
-      ground_topic: "map1/mapground"
+      # navigation_ground equals mapground while terrain ROI is disabled; when
+      # enabled it substitutes only the surveyed ROI with high-resolution data.
+      ground_topic: "map1/navigation_ground"
     path_blocked_strategy:
       plugin: "perception_3d::PathBlockedStrategy"
-      check_radius: 0.1
+      check_radius: 0.40
     lidar:
       plugin: "perception_3d::MultiLayerSpinningLidar"
       is_local_planner: true
@@ -327,23 +558,61 @@ perception_3d_local:
       scan_effective_positive_end: 180.0
       scan_effective_negative_start: -30.0
       scan_effective_negative_end: -180.0
-      resolution: 0.05
+      xy_resolution: 0.05
       height_resolution: 0.05
-      marking_height: 2.0
+      # segmented_cloud_pure is already non-ground. Include the lower body and
+      # leg envelope instead of discarding everything below base_link + 5 cm.
+      marking_minimum_height: -0.20
+      marking_height: 0.60
       perception_window_size: 3.0 #the window for marking/clearing in meter, we dont casting to maximum range of the sensor even it is gbl map
       segmentation_ignore_ratio: 0.5 #f a segmentation match static pc with this ratio, we ignore it. ex: a wall
       expected_sensor_time: 0.2
+      # Expected-riser marking is opt-in and uses the same immutable terrain
+      # identity as planning. Unknown, dynamic, side-wall and cross-floor
+      # points remain obstacles.
+      stair_riser_marking:
+        enabled: false
+        fail_closed: true
+        expected_map_hash: ""
+        max_snapshot_age_sec: 0.0
+        minimum_stair_confidence: 0.0
+        max_node_match_distance_m: 0.0
+        riser_plane_tolerance_m: 0.0
+        riser_lateral_tolerance_m: 0.0
+        riser_vertical_tolerance_m: 0.0
+        surface_plane_tolerance_m: 0.0
+    terrain:
+      plugin: "perception_3d::TerrainLayer"
+      enabled: false
+      is_local_planner: true
+      publish_status: true
+      require_live_ground: true
+      require_live_obstacle_for_stairs: true
+      publish_debug_clouds: true
+      map_hash: ""
+      map_identity_topic: "map1/map_sha256"
+      terrain_ground_topic: "map1/terrain_ground"
+      live_ground_topic: "ground_cloud"
+      live_obstacle_topic: "segmented_cloud_pure"
+      max_age_sec: 0.20
+      robot_ground_z_offset_m: 0.24
+      rebuild_period_sec: 0.10
+      status_min_confidence: 0.90
+      status_min_support_ratio: 0.80
+      stair_ids: []
 
 perception_3d_global:
   ros__parameters:
     global_frame: "map"
     robot_base_frame: "base_link"
     max_obstacle_distance: 9999.0
-    inscribed_radius: 0.1
+    # Match the local centerline clearance; static walls retain measured
+    # horizontal distance and the local planner checks the oriented cuboid.
+    inscribed_radius: 0.40
     inflation_descending_rate: 2.0
-    inflation_radius: 0.1
+    inflation_radius: 1.5
     sensors_collected_frequency: 10.0
-    plugins: ["map", "lidar"]
+    plugins: ["map", "lidar", "terrain"]
     dgraph_publish_frequency: 1.0
     map:
       plugin: "perception_3d::StaticLayer"
@@ -354,8 +623,10 @@ perception_3d_global:
       intensity_search_radius: 3.0 #this value is suggested to be 1.0 meters, because if it is too large, the narrow passage will be miscalculated
       intensity_search_punish_weight: 0.1 #the weight for a node. Set this value higher means we dont like path planning cross a orphan node.
       static_imposing_radius: 1.5 #use map to add weight on each ground node
+      static_obstacle_min_points: 11
+      static_obstacle_xy_radius: 0.40
       map_topic: "map1/mapcloud"
-      ground_topic: "map1/mapground"
+      ground_topic: "map1/navigation_ground"
       support:
         mapping_mode: false
           #if mapping mode is true, edge detection is automatically disabled
@@ -383,15 +654,90 @@ perception_3d_global:
       perception_window_size: 5.0 #the window for marking/clearing in meter, we dont casting to maximum range of the sensor even it is gbl map
       segmentation_ignore_ratio: 1.1 #f a segmentation match static pc with this ratio, we ignore it. ex: a wall
       expected_sensor_time: 0.1
+      stair_riser_marking:
+        enabled: false
+        fail_closed: true
+        expected_map_hash: ""
+        max_snapshot_age_sec: 0.0
+        minimum_stair_confidence: 0.0
+        max_node_match_distance_m: 0.0
+        riser_plane_tolerance_m: 0.0
+        riser_lateral_tolerance_m: 0.0
+        riser_vertical_tolerance_m: 0.0
+        surface_plane_tolerance_m: 0.0
+    terrain:
+      plugin: "perception_3d::TerrainLayer"
+      enabled: false
+      is_local_planner: false
+      publish_status: false
+      require_live_ground: true
+      require_live_obstacle_for_stairs: true
+      publish_debug_clouds: false
+      map_hash: ""
+      map_identity_topic: "map1/map_sha256"
+      terrain_ground_topic: "map1/terrain_ground"
+      live_ground_topic: "ground_cloud"
+      live_obstacle_topic: "segmented_cloud_pure"
+      max_age_sec: 0.20
+      robot_ground_z_offset_m: 0.24
+      rebuild_period_sec: 0.10
+      status_min_confidence: 0.90
+      status_min_support_ratio: 0.80
+      stair_ids: []
 
 global_planner:
   ros__parameters:
     turning_weight: 0.1 #Punish the zig-zag path
     enable_detail_log: false
+    robot_ground_z_offset: 0.24
+    # Terrain planning is an explicit, fail-closed capability.  All physical
+    # envelopes remain zero until copied from a validated site profile.
+    terrain:
+      enabled: false
+      fail_closed: true
+      map_hash: ""
+      required_snapshot_version: 0
+      support_sample_spacing_m: 0.05
+      support_search_radius_m: 0.10
+      support_vertical_tolerance_m: 0.10
+      continuous_height_residual_m: 0.04
+      ground_index_alignment_tolerance_m: 0.01
+      max_up_slope_rad: 0.0
+      max_down_slope_rad: 0.0
+      max_cross_slope_rad: 0.0
+      max_roughness_m: 0.0
+      max_normal_change_rad: 0.0
+      max_step_up_m: 0.0
+      max_step_down_m: 0.0
+      min_support_ratio: 0.80
+      max_unknown_ratio: 0.0
+      min_confidence: 0.90
+      max_support_sample_spacing_m: 0.05
+      stair_enabled: false
+      allow_stair_up: false
+      allow_stair_down: false
+      require_manual_corridor: true
+      require_online_confirmation: true
+      max_step_index_delta: 1
+      max_stair_riser_height_m: 0.0
+      min_stair_tread_depth_m: 0.0
+      max_stair_tread_depth_m: 0.0
+      max_stair_riser_deviation_m: 0.0
+      max_stair_tread_deviation_m: 0.0
+      max_stair_heading_error_rad: 0.0
+      distance_cost_weight: 1.0
+      slope_cost_weight: 1.0
+      cross_slope_cost_weight: 1.0
+      roughness_cost_weight: 1.0
+      risk_cost_weight: 1.0
+      stair_transition_cost: 0.0
 
 #if we use get_dwa_plan in global_plan_manager, we setup parameters for dwa_global_planner
 dynamic_window_aware_global_planner:
   ros__parameters:
     look_ahead_distance: 2.0
     recompute_frequency: 10.0
+    # Ordinary gaps still use the existing splice limit. Only a uniquely
+    # mapped, snapshot-bound adjacent stair transition may exceed it.
+    terrain_transition_mapping_tolerance: 0.001
     

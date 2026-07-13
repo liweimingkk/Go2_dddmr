@@ -30,10 +30,18 @@
 */
 #include <global_planner/a_star_on_pc.h>
 
+#include <limits>
+
 AstarList::AstarList(pcl::PointCloud<pcl::PointXYZI>::Ptr& pc_original_z_up){
+  updateGraph(pc_original_z_up);
+}
+
+void AstarList::updateGraph(const pcl::PointCloud<pcl::PointXYZI>::Ptr& pc_original_z_up){
   pc_original_z_up_ = pc_original_z_up;
   kdtree_ground_.reset(new nanoflann::KdTreeFLANN<pcl::PointXYZI>());
-  kdtree_ground_->setInputCloud(pc_original_z_up_);
+  if (pc_original_z_up_ && !pc_original_z_up_->empty()) {
+    kdtree_ground_->setInputCloud(pc_original_z_up_);
+  }
 }
 
 void AstarList::Initial(){
@@ -68,23 +76,18 @@ void AstarList::updateNode(Node_t& a_node){
 }
 
 Node_t AstarList::getNode_wi_MinimumF(){
-  auto first_it = f_priority_set_.begin();
-  Node_t m_node = as_list_[(*first_it).second];
-  if(!m_node.is_closed){
+  // updateNode can leave stale entries behind. Drain them without dereferencing end().
+  while (!f_priority_set_.empty()) {
+    const auto first_it = f_priority_set_.begin();
+    const Node_t node = as_list_[first_it->second];
     f_priority_set_.erase(first_it);
-    return m_node;
+    if (!node.is_closed) {
+      return node;
+    }
   }
-  
-  //Because we updateNode node even when new g value is smaller than that in openlist
-  //We will have duplicate f value in the f_priority_set_
-  int concern_cnt = 0;
-  while(m_node.is_closed && !f_priority_set_.empty()){
-    concern_cnt++;
-    f_priority_set_.erase(first_it);
-    first_it = f_priority_set_.begin();
-    m_node = as_list_[(*first_it).second];
-  }
-  return m_node;
+  return Node_t{
+    std::numeric_limits<unsigned int>::max(), 0.0F, 0.0F, 0.0F,
+    std::numeric_limits<unsigned int>::max(), true, false};
 }
 
 bool AstarList::isClosed(unsigned int node_index){
@@ -103,11 +106,15 @@ bool AstarList::isFrontierEmpty(){
 
 A_Star_on_Graph::A_Star_on_Graph(pcl::PointCloud<pcl::PointXYZI>::Ptr pc_original_z_up, 
                                   std::shared_ptr<perception_3d::Perception3D_ROS> perception_ros,
-                                  double a_star_expanding_radius){
+                                  double a_star_expanding_radius,
+                                  const global_planner::TerrainEdgeValidatorConfig& terrain_edge_config)
+  : terrain_edge_validator_(terrain_edge_config)
+{
   
   perception_ros_ = perception_ros;
   pc_original_z_up_ = pc_original_z_up;
   a_star_expanding_radius_ = a_star_expanding_radius;
+  turning_weight_ = 0.0;
   ASLS_ = new AstarList(pc_original_z_up_);
 }
 
@@ -117,9 +124,12 @@ A_Star_on_Graph::~A_Star_on_Graph(){
 }
 
 void A_Star_on_Graph::updateGraph(pcl::PointCloud<pcl::PointXYZI>::Ptr pc_original_z_up){
-  ASLS_->pc_original_z_up_ = pc_original_z_up;
-  ASLS_->kdtree_ground_.reset(new nanoflann::KdTreeFLANN<pcl::PointXYZI>());
-  ASLS_->kdtree_ground_->setInputCloud(pc_original_z_up_);
+  pc_original_z_up_ = pc_original_z_up;
+  if (!ASLS_) {
+    ASLS_ = new AstarList(pc_original_z_up_);
+    return;
+  }
+  ASLS_->updateGraph(pc_original_z_up_);
 }
 
 double A_Star_on_Graph::getPitchFromParent2Expanding(pcl::PointXYZI m_pcl_current_parent, pcl::PointXYZI m_pcl_current, pcl::PointXYZI m_pcl_expanding){
@@ -199,7 +209,73 @@ bool A_Star_on_Graph::isLineOfSightClear(pcl::PointXYZI& pcl_current, pcl::Point
 
 void A_Star_on_Graph::getPath(
   unsigned int start, unsigned int goal,
-  std::vector<unsigned int>& path){
+  std::vector<unsigned int>& path,
+  const global_planner::planner_safety::PlanningDataBinding * expected_binding,
+  global_planner::TerrainEdgeRejectionStatistics * terrain_statistics){
+
+  path.clear();
+  if (terrain_statistics != nullptr) {
+    *terrain_statistics = global_planner::TerrainEdgeRejectionStatistics{};
+  }
+  if (!pc_original_z_up_ || pc_original_z_up_->empty() || !ASLS_ || !perception_ros_ ||
+    start >= pc_original_z_up_->points.size() || goal >= pc_original_z_up_->points.size())
+  {
+    RCLCPP_ERROR(rclcpp::get_logger("astar"), "Cannot plan on an invalid or stale graph");
+    return;
+  }
+
+  const auto shared_data = perception_ros_->getSharedDataPtr();
+  if (!shared_data) {
+    RCLCPP_ERROR(rclcpp::get_logger("astar"), "Cannot plan without shared perception data");
+    return;
+  }
+  std::unique_lock<std::recursive_mutex> perception_lock(
+    shared_data->ground_kdtree_cb_mutex_);
+
+  auto binding_is_current = [&]() {
+      if (expected_binding == nullptr) {
+        return true;
+      }
+      const auto observed = global_planner::capturePlanningDataBinding(
+        shared_data, expected_binding->terrain_enabled);
+      std::string rejection;
+      if (!global_planner::planner_safety::planningBindingsMatch(
+          *expected_binding, observed, &rejection))
+      {
+        RCLCPP_ERROR(
+          rclcpp::get_logger("astar"), "A* planning binding changed: %s",
+          rejection.c_str());
+        return false;
+      }
+      return true;
+    };
+  if (!binding_is_current()) {
+    return;
+  }
+
+  auto terrain_context = terrain_edge_validator_.beginSearch(shared_data);
+  auto log_terrain_statistics = [&]() {
+      if (terrain_statistics != nullptr) {
+        *terrain_statistics = terrain_context.statistics();
+      }
+      if (terrain_context.terrainEnabled()) {
+        RCLCPP_INFO(
+          rclcpp::get_logger("astar"), "%s",
+          terrain_context.statistics().toStructuredString().c_str());
+      }
+    };
+  if (terrain_context.terrainEnabled() && !terrain_context.ready()) {
+    log_terrain_statistics();
+    return;
+  }
+  if (!terrain_edge_validator_.validateEndpoint(
+      terrain_context, start, pc_original_z_up_->points[start]) ||
+    !terrain_edge_validator_.validateEndpoint(
+      terrain_context, goal, pc_original_z_up_->points[goal]))
+  {
+    log_terrain_statistics();
+    return;
+  }
 
   //RCLCPP_INFO(rclcpp::get_logger("astar"),"Start: %u, Goal: %u", start, goal);
 
@@ -218,19 +294,43 @@ void A_Star_on_Graph::getPath(
   double inscribed_radius = perception_ros_->getGlobalUtils()->getInscribedRadius();
   double inflation_descending_rate = perception_ros_->getGlobalUtils()->getInflationDescendingRate();
   double max_obstacle_distance = perception_ros_->getGlobalUtils()->getMaxObstacleDistance();
+  if (!std::isfinite(a_star_expanding_radius_) || a_star_expanding_radius_ <= 0.0 ||
+    !std::isfinite(turning_weight_) || turning_weight_ < 0.0 ||
+    !std::isfinite(inscribed_radius) || inscribed_radius <= 0.0 ||
+    !std::isfinite(inflation_descending_rate) || inflation_descending_rate < 0.0 ||
+    !std::isfinite(max_obstacle_distance) || max_obstacle_distance < inscribed_radius)
+  {
+    RCLCPP_ERROR(rclcpp::get_logger("astar"), "A* cost configuration is invalid");
+    log_terrain_statistics();
+    return;
+  }
   
   perception_ros_->getStackedPerception()->aggregateLethal();
+  if (!shared_data->aggregate_lethal_ || !shared_data->sGraph_ptr_) {
+    RCLCPP_ERROR(rclcpp::get_logger("astar"), "A* perception cost inputs are missing");
+    log_terrain_statistics();
+    return;
+  }
   //@ generate kd-tree and handle no point cloud edge case
   kdtree_lethal_.reset(new nanoflann::KdTreeFLANN<pcl::PointXYZI>());
   
-  if(perception_ros_->getSharedDataPtr()->aggregate_lethal_->points.size()>0){
-    kdtree_lethal_->setInputCloud(perception_ros_->getSharedDataPtr()->aggregate_lethal_);
+  if(shared_data->aggregate_lethal_->points.size()>0){
+    kdtree_lethal_->setInputCloud(shared_data->aggregate_lethal_);
   }
     
 
   while(!ASLS_->isFrontierEmpty()){ 
     /*Pop minimum F, we leverage prior queue, so we dont need to loop frontier everytime*/
     current_node = ASLS_->getNode_wi_MinimumF();
+    if (current_node.self_index >= pc_original_z_up_->points.size()) {
+      break;
+    }
+    if (current_node.parent_index >= pc_original_z_up_->points.size() ||
+      !std::isfinite(current_node.g) || current_node.g < 0.0F)
+    {
+      RCLCPP_ERROR(rclcpp::get_logger("astar"), "A* frontier contains an invalid cost state");
+      break;
+    }
 
     //RCLCPP_INFO(rclcpp::get_logger("astar"), "Expand node: %u", current_node.self_index);
     /*Get successors*/
@@ -245,26 +345,84 @@ void A_Star_on_Graph::getPath(
       std::vector<float> pointRadiusSquaredDistanceX2;
       //ASLS_->kdtree_ground_->nearestKSearch(pcl_now, 8, pointIdxRadiusX2Search, pointRadiusSquaredDistanceX2);
       ASLS_->kdtree_ground_->radiusSearch(pcl_now, 2*a_star_expanding_radius_, pointIdxRadiusX2Search, pointRadiusSquaredDistanceX2);
-      pointIdxRadiusSearch = pointIdxRadiusX2Search;
+      pointIdxRadiusSearch.swap(pointIdxRadiusX2Search);
+      pointRadiusSquaredDistance.swap(pointRadiusSquaredDistanceX2);
+    }
+
+    if(pointIdxRadiusSearch.empty() || pointIdxRadiusSearch.size() != pointRadiusSquaredDistance.size()){
+      RCLCPP_ERROR(rclcpp::get_logger("astar"),
+        "Invalid radius-search result at node %u: indices=%zu distances=%zu",
+        current_node.self_index, pointIdxRadiusSearch.size(), pointRadiusSquaredDistance.size());
+      ASLS_->closeNode(current_node);
+      continue;
     }
 
     //@ calculated average intensity, because we have sparse low cost orphan, and it is unlikely to have a low cost node surrounded by high cost nodes
-    float avg_intensity = 0.0;
+    float avg_intensity = 0.0F;
+    bool invalid_neighbor_cost = false;
     for(unsigned int it = 0; it!=pointIdxRadiusSearch.size(); it++){
-      avg_intensity += pc_original_z_up_->points[pointIdxRadiusSearch[it]].intensity;
+      const int neighbor_index = pointIdxRadiusSearch[it];
+      const float squared_distance = pointRadiusSquaredDistance[it];
+      if (neighbor_index < 0 ||
+        static_cast<std::size_t>(neighbor_index) >= pc_original_z_up_->points.size() ||
+        !std::isfinite(squared_distance) || squared_distance < 0.0F)
+      {
+        invalid_neighbor_cost = true;
+        break;
+      }
+      const float intensity = pc_original_z_up_->points[neighbor_index].intensity;
+      if (!std::isfinite(intensity) || intensity < 0.0F) {
+        invalid_neighbor_cost = true;
+        break;
+      }
+      avg_intensity += intensity;
+    }
+    if (invalid_neighbor_cost || !std::isfinite(avg_intensity)) {
+      RCLCPP_ERROR(
+        rclcpp::get_logger("astar"), "A* neighbor search returned an invalid edge cost");
+      ASLS_->closeNode(current_node);
+      continue;
     }
     avg_intensity = avg_intensity/pointIdxRadiusSearch.size();
 
     for(unsigned int it = 0; it!=pointIdxRadiusSearch.size(); it++){
       
-      int current_expanding_index = pointIdxRadiusSearch[it];
-      float current_expanding_g = sqrt(pointRadiusSquaredDistance[it]);
+      const int expanding_index = pointIdxRadiusSearch[it];
+      if (expanding_index < 0) {
+        continue;
+      }
+      unsigned int current_expanding_index = static_cast<unsigned int>(expanding_index);
+      if (current_expanding_index == current_node.self_index ||
+        current_expanding_index >= pc_original_z_up_->points.size() ||
+        !std::isfinite(pointRadiusSquaredDistance[it]) ||
+        pointRadiusSquaredDistance[it] <= 0.0F)
+      {
+        continue;
+      }
+      const float geometric_edge_length = sqrt(pointRadiusSquaredDistance[it]);
+      float current_expanding_g = geometric_edge_length;
 
       //@ dGraphValue is the distance to lethal
       double dGraphValue = perception_ros_->get_min_dGraphValue(current_expanding_index);
 
+      const bool dynamic_obstacle =
+        !std::isfinite(dGraphValue) || dGraphValue < inscribed_radius;
+      if (terrain_context.terrainEnabled()) {
+        const auto terrain_validation = terrain_edge_validator_.evaluate(
+          terrain_context, current_node.self_index, current_expanding_index,
+          pc_original_z_up_->points[current_node.self_index],
+          pc_original_z_up_->points[current_expanding_index], dynamic_obstacle);
+        if (!terrain_validation.policy_result.accepted) {
+          continue;
+        }
+        current_expanding_g = terrain_validation.policy_result.traversal_cost;
+      }
+      if (!std::isfinite(current_expanding_g) || current_expanding_g < 0.0F) {
+        continue;
+      }
+
       /*This is for lethal*/
-      if(dGraphValue<inscribed_radius){
+      if(dynamic_obstacle){
         //RCLCPP_DEBUG(rclcpp::get_logger("astar"), "%.2f,%.2f,%.2f, v: %.2f",pc_original_z_up_->points[(*it).first].x,pc_original_z_up_->points[(*it).first].y,pc_original_z_up_->points[(*it).first].z, dGraphValue);
         continue;
       }
@@ -274,7 +432,7 @@ void A_Star_on_Graph::getPath(
       pcl::PointXYZI pcl_expanding = pc_original_z_up_->points[current_expanding_index];
 
       //@ check line-of-sight when distance is 2 times larger than inscribed_radius
-      if(current_expanding_g>=2*inscribed_radius){
+      if(geometric_edge_length>=2*inscribed_radius){
         if(!isLineOfSightClear(pcl_current, pcl_expanding, inscribed_radius))
           continue;
       }
@@ -288,10 +446,21 @@ void A_Star_on_Graph::getPath(
       //  continue;
       
       float ground_edge_weight = avg_intensity;
-      float node_weight = perception_ros_->getSharedDataPtr()->sGraph_ptr_->getNodeWeight(current_expanding_index);
+      float node_weight = shared_data->sGraph_ptr_->getNodeWeight(current_expanding_index);
+      if (!std::isfinite(factor) || factor < 0.0 || !std::isfinite(theta) || theta < 0.0 ||
+        !std::isfinite(node_weight) || node_weight < 0.0F)
+      {
+        continue;
+      }
       float new_g = current_node.g + current_expanding_g + factor * 1.0 + node_weight + theta*turning_weight_ + ground_edge_weight;
       float new_h = sqrt(pcl::geometry::squaredDistance(pcl_expanding, pcl_goal));
       float new_f = new_g + new_h;
+      if (!std::isfinite(new_g) || new_g < 0.0F ||
+        !std::isfinite(new_h) || new_h < 0.0F ||
+        !std::isfinite(new_f) || new_f < 0.0F)
+      {
+        continue;
+      }
 
       Node_t new_node = {.self_index=(current_expanding_index), .g=new_g, .h=new_h, .f=new_f, .parent_index=current_node.self_index, .is_closed=false, .is_opened=true};
 
@@ -328,6 +497,12 @@ void A_Star_on_Graph::getPath(
     }
 
     /*Check if*/
+  }
+
+  log_terrain_statistics();
+
+  if (!binding_is_current()) {
+    path.clear();
   }
 
 }

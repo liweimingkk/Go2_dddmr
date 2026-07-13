@@ -49,7 +49,7 @@ class StaticGraph{
 
   public:
     StaticGraph();
-    ~StaticGraph();
+    ~StaticGraph() = default;
     void allocateGraph(unsigned long int m_size);
     void insertEdgeInNode(unsigned int node, edge_t& a_edge);
     void setPenality(unsigned int node, float weight);
@@ -57,11 +57,11 @@ class StaticGraph{
     edges_t getEdge(unsigned int node);
     float getNodeWeight(unsigned int node);
     void clear();
-    unsigned long getSize(){return graph_ptr_->size();};
+    unsigned long getSize() const {return graph_.size();};
     unsigned long getNodeWeightSize(){return node_penality_.size();};
 
   private:
-    graph_t* graph_ptr_;
+    graph_t graph_;
     std::unordered_map<unsigned int, float> node_penality_;
 
 };

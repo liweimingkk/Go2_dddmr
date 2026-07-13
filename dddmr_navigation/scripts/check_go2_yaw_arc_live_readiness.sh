@@ -114,6 +114,7 @@ check_topic_type() {
 }
 
 validate_nomotion_report() {
+  local expected_transform
   [[ -n "${NOMOTION_REPORT}" ]] || \
     die "GO2_YAW_ARC_NOMOTION_REPORT is required"
   [[ -f "${NOMOTION_REPORT}" ]] || \
@@ -128,12 +129,28 @@ validate_nomotion_report() {
   [[ -f "${RECOVERY_LOG:-}" ]] || die "missing RECOVERY_LOG from no-motion report"
   [[ -f "${STALE_LOG:-}" ]] || die "missing STALE_LOG from no-motion report"
 
-  rg -q --fixed-strings 'transformed_sport={"x":0.05,"y":0.0,"z":-0.15}' "${ALLOWED_LOG}" || \
-    die "allowed log does not prove x=0.05,z=-0.15 transform"
-  rg -q --fixed-strings 'shim=blocked_blocked_state=d_recovery_waitdone' "${RECOVERY_LOG}" || \
-    die "recovery log does not prove recovery state block"
-  rg -q --fixed-strings 'shim=blocked_stale_decision=d_align_heading' "${STALE_LOG}" || \
+  expected_transform="$(/usr/bin/python3 - "${FORWARD_X}" "${YAW}" "${MIN_ABS_YAW}" <<'PY'
+import json
+import math
+import sys
+
+x = float(sys.argv[1])
+yaw = float(sys.argv[2])
+min_abs_yaw = float(sys.argv[3])
+shim_yaw = math.copysign(max(abs(yaw), min_abs_yaw), yaw)
+print(json.dumps({"x": x, "y": 0.0, "z": shim_yaw}, separators=(",", ":")))
+PY
+)"
+  rg -q --fixed-strings "transformed_sport=${expected_transform}" "${ALLOWED_LOG}" || \
+    die "allowed log does not prove expected transform ${expected_transform}"
+  rg -q --fixed-strings 'shim=recovery_pure_yaw_no_arc' "${RECOVERY_LOG}" || \
+    die "recovery log does not prove pure-yaw pass without arc injection"
+  rg -q --fixed-strings 'motion decision gate blocked stale_decision=d_align_heading' "${STALE_LOG}" || \
     die "stale log does not prove stale decision block"
+  [[ ",${MOTION_ALLOWED_DECISIONS:-}," == *",d_recovery_waitdone,"* ]] || \
+    die "no-motion report does not allow d_recovery_waitdone"
+  [[ ",${MOTION_ALLOWED_DECISIONS:-}," != *",d_recovery_position_control_waitdone,"* ]] || \
+    die "no-motion report unexpectedly allows position-control recovery"
 }
 
 check_nav_live_nomotion_report_gate() {

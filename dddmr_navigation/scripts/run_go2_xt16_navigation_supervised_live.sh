@@ -40,14 +40,21 @@ Environment:
   GO2_YAW_ARC_NOMOTION_REPORT=<required when GO2_YAW_ARC_SHIM_MODE=live>
   GO2_DECISION_TOPIC=/dddmr_go2/p2p_decision
   GO2_DECISION_TIMEOUT_SEC=0.30
+  GO2_REQUIRE_MOTION_DECISION=true
+  GO2_MOTION_ALLOWED_DECISIONS=d_controlling,d_align_heading,d_align_goal_heading,d_recovery_waitdone
   GO2_ZERO_YAW_ONLY_WHEN_SHIM_DISALLOWED=true
   GO2_MAX_CONTINUOUS_YAW_ARC_SEC=4.0
+  GO2_EXPECTED_MODE=-1              # -1 latches the pre-motion value
+  GO2_EXPECTED_GAIT_TYPE=-1         # -1 latches the pre-motion value
+  GO2_GAIT_STATUS_TIMEOUT_SEC=0.30
+  GO2_GAIT_MONITOR_RATE_HZ=20.0
 
 Live runtime shape:
   Docker: DDDMR navigation/RViz publishes /dddmr_go2/dry_run_cmd_vel,
           then go2_nav_cmd_gate republishes /dddmr_go2/safe_cmd_vel.
-  Host:   timer-driven go2_sport_cmd_vel_adapter.py consumes safe_cmd_vel
-          and publishes /api/sport/request.
+  Host:   a read-only mode/gait monitor latches the pre-motion state, then the
+          timer-driven go2_sport_cmd_vel_adapter.py consumes safe_cmd_vel and
+          publishes only Move(1008)/StopMove(1003) to /api/sport/request.
 EOF
 }
 
@@ -79,6 +86,8 @@ WS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 GO2_SETUP="${GO2_SETUP:-/home/lin/go2_workspace/unitree_ros2/setup.sh}"
 DOCKER_WRAPPER="${WS_ROOT}/scripts/dddmr_docker_go2_xt16.sh"
 ADAPTER="${WS_ROOT}/src/dddmr_beginner_guide/scripts/go2_sport_cmd_vel_adapter.py"
+GAIT_MONITOR="${WS_ROOT}/src/dddmr_beginner_guide/scripts/go2_gait_state_monitor.py"
+API_AUDITOR="${WS_ROOT}/src/dddmr_beginner_guide/scripts/audit_go2_navigation_request_echo.py"
 CONFIRM_PHRASE="I_AM_SUPERVISING_GO2_NAV"
 YAW_ARC_CONFIRM_PHRASE="I_AM_SUPERVISING_GO2_YAW_ARC_SHIM"
 REAL_REQUEST_TOPIC="/api/sport/request"
@@ -99,8 +108,14 @@ yaw_arc_allowed_decisions="${GO2_YAW_ARC_ALLOWED_DECISIONS:-d_align_heading}"
 yaw_arc_nomotion_report="${GO2_YAW_ARC_NOMOTION_REPORT:-}"
 decision_topic="${GO2_DECISION_TOPIC:-/dddmr_go2/p2p_decision}"
 decision_timeout_sec="${GO2_DECISION_TIMEOUT_SEC:-0.30}"
+require_motion_decision="${GO2_REQUIRE_MOTION_DECISION:-true}"
+motion_allowed_decisions="${GO2_MOTION_ALLOWED_DECISIONS:-d_controlling,d_align_heading,d_align_goal_heading,d_recovery_waitdone}"
 zero_yaw_only_when_shim_disallowed="${GO2_ZERO_YAW_ONLY_WHEN_SHIM_DISALLOWED:-true}"
 max_continuous_yaw_arc_sec="${GO2_MAX_CONTINUOUS_YAW_ARC_SEC:-4.0}"
+expected_mode="${GO2_EXPECTED_MODE:--1}"
+expected_gait_type="${GO2_EXPECTED_GAIT_TYPE:--1}"
+gait_status_timeout_sec="${GO2_GAIT_STATUS_TIMEOUT_SEC:-0.30}"
+gait_monitor_rate_hz="${GO2_GAIT_MONITOR_RATE_HZ:-20.0}"
 rviz="${RVIZ:-true}"
 publish_static_tf="${PUBLISH_STATIC_TF:-true}"
 log_dir="${GO2_NAV_LOG_DIR:-/tmp}"
@@ -110,16 +125,30 @@ docker_name="go2_xt16_nav_live_${stamp}"
 docker_log="${log_dir}/go2_xt16_nav_live_${stamp}_docker.log"
 adapter_log="${log_dir}/go2_xt16_nav_live_${stamp}_adapter.log"
 request_echo_log="${log_dir}/go2_xt16_nav_live_${stamp}_request_echo.log"
+gait_monitor_log="${log_dir}/go2_xt16_nav_live_${stamp}_gait_monitor.log"
+api_audit_log="${log_dir}/go2_xt16_nav_live_${stamp}_api_audit.env"
 summary_log="${log_dir}/go2_xt16_nav_live_${stamp}_summary.env"
 docker_pid=""
 adapter_pid=""
+gait_monitor_pid=""
 echo_pid=""
 cleanup_started="false"
 live_runtime_started="false"
+api_audit_result="NOT_RUN"
+gait_audit_result="NOT_RUN"
+gait_monitor_alive_at_cleanup="false"
 
 die() {
   echo "ERROR: $*" >&2
   exit 1
+}
+
+process_is_running() {
+  local pid="$1"
+  local state=""
+  kill -0 "${pid}" >/dev/null 2>&1 || return 1
+  state="$(ps -o stat= -p "${pid}" 2>/dev/null || true)"
+  [[ -n "${state}" && ! "${state}" =~ ^[[:space:]]*Z ]]
 }
 
 cleanup() {
@@ -147,6 +176,33 @@ cleanup() {
     kill "${echo_pid}" >/dev/null 2>&1 || true
     wait "${echo_pid}" >/dev/null 2>&1 || true
   fi
+  if [[ -n "${gait_monitor_pid}" ]]; then
+    if process_is_running "${gait_monitor_pid}"; then
+      gait_monitor_alive_at_cleanup="true"
+    fi
+    kill "${gait_monitor_pid}" >/dev/null 2>&1 || true
+    wait "${gait_monitor_pid}" >/dev/null 2>&1 || true
+  fi
+
+  if [[ "${mode}" == "live" && -f "${request_echo_log}" ]]; then
+    if /usr/bin/python3 "${API_AUDITOR}" "${request_echo_log}" --require-stop \
+      >"${api_audit_log}" 2>&1; then
+      api_audit_result="PASS"
+    else
+      api_audit_result="FAIL"
+      status=1
+    fi
+  fi
+  if [[ "${mode}" == "live" && -f "${gait_monitor_log}" ]]; then
+    if [[ "${gait_monitor_alive_at_cleanup}" == "true" ]] && \
+       rg -q 'NORMAL_GAIT_CONTRACT reason=stable' "${gait_monitor_log}" && \
+       ! rg -q 'NORMAL_GAIT_CONTRACT reason=(mode_changed|gait_changed|invalid_status|time_regression|invalid_time|stale_status)' "${gait_monitor_log}"; then
+      gait_audit_result="PASS"
+    else
+      gait_audit_result="FAIL"
+      status=1
+    fi
+  fi
 
   if [[ "${mode}" == "live" ]]; then
     cat >"${summary_log}" <<EOF
@@ -157,6 +213,13 @@ DOCKER_NAME=${docker_name}
 DOCKER_LOG=${docker_log}
 ADAPTER_LOG=${adapter_log}
 REQUEST_ECHO_LOG=${request_echo_log}
+NORMAL_GAIT_API_AUDIT_LOG=${api_audit_log}
+NORMAL_GAIT_API_AUDIT=${api_audit_result}
+GAIT_MONITOR_LOG=${gait_monitor_log}
+GAIT_AUDIT=${gait_audit_result}
+GAIT_MONITOR_ALIVE_AT_CLEANUP=${gait_monitor_alive_at_cleanup}
+EXPECTED_MODE=${expected_mode}
+EXPECTED_GAIT_TYPE=${expected_gait_type}
 CMD_TOPIC=${CMD_TOPIC}
 REQUEST_TOPIC=${REAL_REQUEST_TOPIC}
 SPORT_PUBLISH_RATE_HZ=${sport_publish_rate_hz}
@@ -175,6 +238,8 @@ YAW_ARC_ALLOWED_DECISIONS=${yaw_arc_allowed_decisions}
 YAW_ARC_NOMOTION_REPORT=${yaw_arc_nomotion_report}
 DECISION_TOPIC=${decision_topic}
 DECISION_TIMEOUT_SEC=${decision_timeout_sec}
+REQUIRE_MOTION_DECISION=${require_motion_decision}
+MOTION_ALLOWED_DECISIONS=${motion_allowed_decisions}
 ZERO_YAW_ONLY_WHEN_SHIM_DISALLOWED=${zero_yaw_only_when_shim_disallowed}
 MAX_CONTINUOUS_YAW_ARC_SEC=${max_continuous_yaw_arc_sec}
 EOF
@@ -182,6 +247,10 @@ EOF
     echo "DOCKER_LOG=${docker_log}"
     echo "ADAPTER_LOG=${adapter_log}"
     echo "REQUEST_ECHO_LOG=${request_echo_log}"
+    echo "NORMAL_GAIT_API_AUDIT_LOG=${api_audit_log}"
+    echo "NORMAL_GAIT_API_AUDIT=${api_audit_result}"
+    echo "GAIT_MONITOR_LOG=${gait_monitor_log}"
+    echo "GAIT_AUDIT=${gait_audit_result}"
   fi
   exit "${status}"
 }
@@ -198,7 +267,7 @@ assert_no_conflicting_runtime() {
 
   local proc_matches
   proc_matches="$(ps -eo pid,args | \
-    rg 'go2_sport_cmd_vel_adapter|go2_sport_cmd_vel_dry_run|go2_xt16_navigation.launch|rviz2|p2p_move_base_node|ros2 topic pub|ros2 topic echo' | \
+    rg 'go2_gait_state_monitor|go2_sport_cmd_vel_adapter|go2_sport_cmd_vel_dry_run|go2_xt16_navigation.launch|rviz2|p2p_move_base_node|ros2 topic pub|ros2 topic echo' | \
     rg -v 'run_go2_xt16_navigation_supervised_live|dddmr_docker_go2_xt16|bash -lc|py_compile|sed -n|nl -ba|rg |ps -eo' || true)"
   if [[ -n "${proc_matches}" ]]; then
     echo "${proc_matches}" >&2
@@ -259,31 +328,28 @@ validate_probe_summary() {
   [[ -n "${REQUEST_ID_BASE:-}" ]] || die "probe summary missing REQUEST_ID_BASE"
   [[ -f "${REQUEST_ECHO_LOG:-}" ]] || die "probe summary missing REQUEST_ECHO_LOG file"
 
-  /usr/bin/python3 - "${REQUEST_ECHO_LOG}" "${REQUEST_ID_BASE}" <<'PY'
-import re
+  /usr/bin/python3 "${API_AUDITOR}" "${REQUEST_ECHO_LOG}" \
+    --minimum-request-id "${REQUEST_ID_BASE}" --require-move --require-stop
+}
+
+validate_gait_monitor_settings() {
+  [[ -x "${GAIT_MONITOR}" ]] || die "missing executable gait monitor: ${GAIT_MONITOR}"
+  [[ -x "${API_AUDITOR}" ]] || die "missing executable API auditor: ${API_AUDITOR}"
+  /usr/bin/python3 - "${expected_mode}" "${expected_gait_type}" \
+    "${gait_status_timeout_sec}" "${gait_monitor_rate_hz}" <<'PY'
+import math
 import sys
 
-path = sys.argv[1]
-base_id = int(sys.argv[2])
-text = open(path, encoding="utf-8").read()
-
-seen = []
-for block in re.split(r"\n---\s*\n", text):
-    id_match = re.search(r"^\s*id:\s*(-?\d+)\s*$", block, re.MULTILINE)
-    api_match = re.search(r"^\s*api_id:\s*(-?\d+)\s*$", block, re.MULTILINE)
-    if not id_match or not api_match:
-        continue
-    req_id = int(id_match.group(1))
-    api_id = int(api_match.group(1))
-    if req_id > base_id:
-        seen.append((req_id, api_id))
-
-if not any(api_id == 1008 for _, api_id in seen):
-    raise SystemExit(f"live probe summary did not prove Move api_id=1008; seen={seen}")
-if not any(api_id == 1003 for _, api_id in seen):
-    raise SystemExit(f"live probe summary did not prove StopMove api_id=1003; seen={seen}")
-
-print(f"validated live probe request ids: {seen}")
+expected_mode = int(sys.argv[1])
+expected_gait = int(sys.argv[2])
+timeout_sec = float(sys.argv[3])
+rate_hz = float(sys.argv[4])
+if expected_mode < -1 or expected_gait < -1:
+    raise SystemExit("expected mode/gait must be -1 or nonnegative")
+if not math.isfinite(timeout_sec) or timeout_sec <= 0.0:
+    raise SystemExit("GO2_GAIT_STATUS_TIMEOUT_SEC must be finite and positive")
+if not math.isfinite(rate_hz) or rate_hz <= 0.0:
+    raise SystemExit("GO2_GAIT_MONITOR_RATE_HZ must be finite and positive")
 PY
 }
 
@@ -336,7 +402,12 @@ PY
     true|false) ;;
     *) die "GO2_ZERO_YAW_ONLY_WHEN_SHIM_DISALLOWED must be true or false" ;;
   esac
+  case "${require_motion_decision}" in
+    true|false) ;;
+    *) die "GO2_REQUIRE_MOTION_DECISION must be true or false" ;;
+  esac
   validate_allowed_decisions "${yaw_arc_allowed_decisions}"
+  validate_allowed_decisions "${motion_allowed_decisions}"
 
   if [[ "${enable_yaw_arc_shim}" == "true" && "${yaw_arc_shim_mode}" == "live" ]]; then
     [[ "${GO2_YAW_ARC_SHIM_CONFIRM:-}" == "${YAW_ARC_CONFIRM_PHRASE}" ]] || \
@@ -366,7 +437,7 @@ validate_yaw_arc_nomotion_report() {
   rg -q --fixed-strings 'RESULT=GO2_YAW_ARC_SHIM_NOMOTION_PASS' "${report}" || \
     die "GO2_YAW_ARC_NOMOTION_REPORT did not pass: ${report}"
 
-  local allowed_log recovery_log stale_log report_forward_x report_min_abs_yaw report_allowed_decisions report_max_continuous report_yaw expected_transform
+  local allowed_log recovery_log stale_log report_forward_x report_min_abs_yaw report_allowed_decisions report_motion_allowed_decisions report_max_continuous report_yaw expected_transform
   allowed_log="$(awk -F= '$1=="ALLOWED_LOG"{print $2}' "${report}")"
   recovery_log="$(awk -F= '$1=="RECOVERY_LOG"{print $2}' "${report}")"
   stale_log="$(awk -F= '$1=="STALE_LOG"{print $2}' "${report}")"
@@ -374,6 +445,7 @@ validate_yaw_arc_nomotion_report() {
   report_forward_x="$(awk -F= '$1=="FORWARD_X"{print $2}' "${report}")"
   report_min_abs_yaw="$(awk -F= '$1=="MIN_ABS_YAW"{print $2}' "${report}")"
   report_allowed_decisions="$(awk -F= '$1=="ALLOWED_DECISIONS"{print $2}' "${report}")"
+  report_motion_allowed_decisions="$(awk -F= '$1=="MOTION_ALLOWED_DECISIONS"{print $2}' "${report}")"
   report_max_continuous="$(awk -F= '$1=="MAX_CONTINUOUS_YAW_ARC_SEC"{print $2}' "${report}")"
 
   [[ -f "${allowed_log}" ]] || die "missing allowed yaw-arc no-motion log: ${allowed_log}"
@@ -381,6 +453,8 @@ validate_yaw_arc_nomotion_report() {
   [[ -f "${stale_log}" ]] || die "missing stale yaw-arc no-motion log: ${stale_log}"
   [[ "${report_allowed_decisions}" == "${yaw_arc_allowed_decisions}" ]] || \
     die "GO2_YAW_ARC_NOMOTION_REPORT allowed decisions (${report_allowed_decisions}) do not match current (${yaw_arc_allowed_decisions})"
+  [[ "${report_motion_allowed_decisions}" == "${motion_allowed_decisions}" ]] || \
+    die "GO2_YAW_ARC_NOMOTION_REPORT motion decisions (${report_motion_allowed_decisions}) do not match current (${motion_allowed_decisions})"
   /usr/bin/python3 - "${report_forward_x}" "${yaw_arc_forward_x}" "${report_min_abs_yaw}" "${yaw_arc_min_abs_yaw}" "${report_max_continuous}" "${max_continuous_yaw_arc_sec}" <<'PY'
 import math
 import sys
@@ -418,9 +492,9 @@ PY
 
   rg -q --fixed-strings "transformed_sport=${expected_transform}" "${allowed_log}" || \
     die "allowed no-motion log does not show expected transform ${expected_transform}"
-  rg -q --fixed-strings 'shim=blocked_blocked_state=d_recovery_waitdone' "${recovery_log}" || \
-    die "recovery no-motion log does not show blocked recovery state"
-  rg -q --fixed-strings 'shim=blocked_stale_decision=d_align_heading' "${stale_log}" || \
+  rg -q --fixed-strings 'shim=recovery_pure_yaw_no_arc' "${recovery_log}" || \
+    die "recovery no-motion log does not show pure-yaw pass without an arc"
+  rg -q --fixed-strings 'motion decision gate blocked stale_decision=d_align_heading' "${stale_log}" || \
     die "stale no-motion log does not show blocked stale decision"
 
   echo "Validated yaw-arc no-motion report: ${report}"
@@ -498,6 +572,8 @@ start_adapter() {
     -p yaw_arc_allowed_decisions:="'${yaw_arc_allowed_decisions}'" \
     -p decision_topic:="${decision_topic}" \
     -p decision_timeout_sec:="${decision_timeout_sec}" \
+    -p require_motion_decision:="${require_motion_decision}" \
+    -p motion_allowed_decisions:="'${motion_allowed_decisions}'" \
     -p zero_yaw_only_when_shim_disallowed:="${zero_yaw_only_when_shim_disallowed}" \
     -p max_continuous_yaw_arc_sec:="${max_continuous_yaw_arc_sec}" \
     >"${adapter_log}" 2>&1 &
@@ -509,11 +585,68 @@ start_adapter() {
   fi
 }
 
+start_gait_monitor() {
+  echo "GAIT_MONITOR_LOG=${gait_monitor_log}"
+  /usr/bin/python3 "${GAIT_MONITOR}" \
+    --ros-args \
+    -p expected_mode:="${expected_mode}" \
+    -p expected_gait_type:="${expected_gait_type}" \
+    -p status_timeout_sec:="${gait_status_timeout_sec}" \
+    -p publish_rate_hz:="${gait_monitor_rate_hz}" \
+    >"${gait_monitor_log}" 2>&1 &
+  gait_monitor_pid="$!"
+  sleep 0.5
+  if ! process_is_running "${gait_monitor_pid}"; then
+    cat "${gait_monitor_log}" >&2 || true
+    die "read-only gait monitor exited during startup"
+  fi
+}
+
+wait_for_gait_monitor_stable() {
+  local deadline=$((SECONDS + 10))
+  local sample=""
+  while (( SECONDS < deadline )); do
+    sample="$(timeout 2 ros2 topic echo /dddmr_go2/gait_unchanged std_msgs/msg/Bool --once 2>&1 || true)"
+    if rg -q '^data: true$' <<<"${sample}"; then
+      echo "Normal gait baseline latched before navigation output."
+      return 0
+    fi
+  done
+  echo "${sample}" >&2
+  tail -n 30 "${gait_monitor_log}" >&2 || true
+  die "gait monitor did not establish a stable pre-motion baseline"
+}
+
 start_request_echo() {
   echo "REQUEST_ECHO_LOG=${request_echo_log}"
-  ros2 topic echo "${REAL_REQUEST_TOPIC}" unitree_api/msg/Request \
+  PYTHONUNBUFFERED=1 ros2 topic echo "${REAL_REQUEST_TOPIC}" unitree_api/msg/Request \
     >"${request_echo_log}" 2>&1 &
   echo_pid="$!"
+}
+
+wait_for_live_runtime() {
+  local docker_status=0
+  while process_is_running "${docker_pid}"; do
+    process_is_running "${adapter_pid}" || \
+      die "host Sport adapter exited while navigation was active"
+    process_is_running "${gait_monitor_pid}" || \
+      die "read-only gait monitor exited while navigation was active"
+    if rg -q 'NORMAL_GAIT_CONTRACT reason=(mode_changed|gait_changed|invalid_status|time_regression|invalid_time|stale_status)' "${gait_monitor_log}"; then
+      die "normal gait contract faulted while navigation was active"
+    fi
+    if awk '$1 == "api_id:" && $2 != "1003" && $2 != "1008" {found=1} END {exit !found}' \
+      "${request_echo_log}"; then
+      die "a non-Move/StopMove Sport API was observed while navigation was active"
+    fi
+    sleep 0.1
+  done
+
+  set +e
+  wait "${docker_pid}"
+  docker_status=$?
+  set -e
+  docker_pid=""
+  return "${docker_status}"
 }
 
 assert_no_conflicting_runtime
@@ -530,6 +663,7 @@ fi
   die "live navigation requires GO2_SPORT_PROBE_SUMMARY from the live adapter probe"
 validate_probe_summary "${GO2_SPORT_PROBE_SUMMARY}"
 validate_yaw_arc_settings
+validate_gait_monitor_settings
 
 source_host_go2_ros
 echo "RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-}"
@@ -541,6 +675,8 @@ check_topic_type "/lowstate" "unitree_go/msg/LowState"
 echo "LIVE NAVIGATION CAN MOVE THE GO2 AFTER RViz GOALS."
 echo "Launching Docker velocity source and host Sport adapter with request_id_base=${nav_request_id_base}."
 echo "Yaw arc shim: enabled=${enable_yaw_arc_shim} mode=${yaw_arc_shim_mode} allowed_decisions=${yaw_arc_allowed_decisions} decision_topic=${decision_topic}"
+start_gait_monitor
+wait_for_gait_monitor_stable
 start_docker_source
 wait_for_cmd_publisher
 start_request_echo
@@ -549,4 +685,4 @@ live_runtime_started="true"
 
 echo "RESULT: GO2_XT16_MIXED_LIVE_NAV_RUNNING"
 echo "Click only a short, nearby, clear-space RViz goal. Press Ctrl-C here to stop and send StopMove."
-wait "${docker_pid}"
+wait_for_live_runtime

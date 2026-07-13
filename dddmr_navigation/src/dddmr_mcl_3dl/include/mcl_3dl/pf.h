@@ -394,6 +394,10 @@ public:
   {
     return particles_[i].state_;
   }
+  FLT_TYPE getParticleProbability(const size_t i) const
+  {
+    return particles_[i].probability_;
+  }
   size_t getParticleSize() const
   {
     return particles_.size();

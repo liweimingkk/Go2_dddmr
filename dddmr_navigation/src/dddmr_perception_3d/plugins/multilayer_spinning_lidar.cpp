@@ -30,6 +30,10 @@
 */
 #include <perception_3d/multilayer_spinning_lidar.h>
 
+#include <cmath>
+#include <limits>
+#include <stdexcept>
+
 PLUGINLIB_EXPORT_CLASS(perception_3d::MultiLayerSpinningLidar, perception_3d::Sensor)
 
 namespace perception_3d
@@ -117,6 +121,13 @@ void MultiLayerSpinningLidar::onInitialize()
   node_->get_parameter(name_ + ".height_resolution", height_resolution_);
   RCLCPP_INFO(node_->get_logger().get_child(name_), "height_resolution: %.2f", height_resolution_);
 
+  if(resolution_ <= 0.0 || height_resolution_ <= 0.0){
+    RCLCPP_FATAL(node_->get_logger().get_child(name_),
+      "xy_resolution and height_resolution must be positive (xy=%.3f height=%.3f)",
+      resolution_, height_resolution_);
+    throw std::invalid_argument("LiDAR voxel resolutions must be positive");
+  }
+
   node_->declare_parameter(name_ + ".marking_height", rclcpp::ParameterValue(0.0));
   node_->get_parameter(name_ + ".marking_height", marking_height_);
   RCLCPP_INFO(node_->get_logger().get_child(name_), "marking_height: %.2f", marking_height_);
@@ -153,6 +164,76 @@ void MultiLayerSpinningLidar::onInitialize()
   node_->get_parameter(name_ + ".pub_gbl_marking_frequency", pub_gbl_marking_frequency_);
   RCLCPP_INFO(node_->get_logger().get_child(name_), "pub_gbl_marking_frequency: %.1f", pub_gbl_marking_frequency_);  
 
+  const std::string stair_prefix = name_ + ".stair_riser_marking.";
+  node_->declare_parameter(stair_prefix + "enabled", rclcpp::ParameterValue(false));
+  node_->get_parameter(stair_prefix + "enabled", stair_riser_marking_config_.enabled);
+  node_->declare_parameter(stair_prefix + "fail_closed", rclcpp::ParameterValue(true));
+  node_->get_parameter(stair_prefix + "fail_closed", stair_riser_marking_config_.fail_closed);
+  node_->declare_parameter(stair_prefix + "expected_map_hash", rclcpp::ParameterValue(""));
+  node_->get_parameter(
+    stair_prefix + "expected_map_hash", stair_riser_marking_config_.expected_map_hash);
+  double stair_max_snapshot_age_sec = 0.0;
+  double stair_minimum_confidence = 0.0;
+  double stair_node_match_distance_m = 0.0;
+  double stair_plane_tolerance_m = 0.0;
+  double stair_lateral_tolerance_m = 0.0;
+  double stair_vertical_tolerance_m = 0.0;
+  node_->declare_parameter(
+    stair_prefix + "max_snapshot_age_sec", rclcpp::ParameterValue(0.0));
+  node_->declare_parameter(
+    stair_prefix + "minimum_stair_confidence", rclcpp::ParameterValue(0.0));
+  node_->declare_parameter(
+    stair_prefix + "max_node_match_distance_m", rclcpp::ParameterValue(0.0));
+  node_->declare_parameter(
+    stair_prefix + "riser_plane_tolerance_m", rclcpp::ParameterValue(0.0));
+  node_->declare_parameter(
+    stair_prefix + "riser_lateral_tolerance_m", rclcpp::ParameterValue(0.0));
+  node_->declare_parameter(
+    stair_prefix + "riser_vertical_tolerance_m", rclcpp::ParameterValue(0.0));
+  node_->declare_parameter(
+    stair_prefix + "surface_plane_tolerance_m", rclcpp::ParameterValue(0.0));
+  node_->get_parameter(stair_prefix + "max_snapshot_age_sec", stair_max_snapshot_age_sec);
+  node_->get_parameter(
+    stair_prefix + "minimum_stair_confidence", stair_minimum_confidence);
+  node_->get_parameter(
+    stair_prefix + "max_node_match_distance_m", stair_node_match_distance_m);
+  node_->get_parameter(
+    stair_prefix + "riser_plane_tolerance_m", stair_plane_tolerance_m);
+  node_->get_parameter(
+    stair_prefix + "riser_lateral_tolerance_m", stair_lateral_tolerance_m);
+  node_->get_parameter(
+    stair_prefix + "riser_vertical_tolerance_m", stair_vertical_tolerance_m);
+  node_->get_parameter(
+    stair_prefix + "surface_plane_tolerance_m", terrain_surface_plane_tolerance_m_);
+  if(std::isfinite(stair_max_snapshot_age_sec) && stair_max_snapshot_age_sec > 0.0 &&
+    stair_max_snapshot_age_sec <=
+    static_cast<double>(std::numeric_limits<std::int64_t>::max()) / 1.0e9)
+  {
+    stair_riser_marking_config_.max_snapshot_age_nanoseconds =
+      static_cast<std::int64_t>(stair_max_snapshot_age_sec * 1.0e9);
+  }
+  stair_riser_marking_config_.minimum_stair_confidence =
+    static_cast<float>(stair_minimum_confidence);
+  stair_riser_marking_config_.max_node_match_distance_m =
+    static_cast<float>(stair_node_match_distance_m);
+  stair_riser_marking_config_.riser_plane_tolerance_m =
+    static_cast<float>(stair_plane_tolerance_m);
+  stair_riser_marking_config_.riser_lateral_tolerance_m =
+    static_cast<float>(stair_lateral_tolerance_m);
+  stair_riser_marking_config_.riser_vertical_tolerance_m =
+    static_cast<float>(stair_vertical_tolerance_m);
+  if(stair_riser_marking_config_.enabled){
+    std::string validation_error;
+    if(!StairRiserSemantics::validConfig(
+        stair_riser_marking_config_, &validation_error))
+    {
+      RCLCPP_ERROR(
+        node_->get_logger().get_child(name_),
+        "Stair riser graph marking is enabled but invalid; retaining all points "
+        "as obstacles: %s", validation_error.c_str());
+    }
+  }
+
   sensor_cb_group_ = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   rclcpp::SubscriptionOptions sub_options;
   sub_options.callback_group = sensor_cb_group_;
@@ -166,7 +247,9 @@ void MultiLayerSpinningLidar::onInitialize()
   pub_lethal_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>(pre_topic_name + "/lethal", 2);
 
   pct_marking_ = std::make_shared<Marking>(name_, &dGraph_, 
-        gbl_utils_->getInscribedRadius(), gbl_utils_->getInflationRadius(), shared_data_, resolution_, height_resolution_);
+        gbl_utils_->getInscribedRadius(), gbl_utils_->getInflationRadius(), shared_data_,
+        resolution_, height_resolution_, stair_riser_marking_config_,
+        terrain_surface_plane_tolerance_m_, clock_);
   get_first_tf_ = false;
   
   if(!is_local_planner_){
@@ -199,11 +282,13 @@ void MultiLayerSpinningLidar::cbSensor(const sensor_msgs::msg::PointCloud2::Shar
           topic_.c_str(), diff.seconds(), expected_sensor_time_);
   }
 
-  //@if not stitch, save copy time
-  pcl_msg_.reset(new pcl::PointCloud<pcl::PointXYZ>);
-  //pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_msg (new pcl::PointCloud<pcl::PointXYZ>);
+  // Build the next observation privately.  selfMark() runs in another callback
+  // group and must never observe a PointCloud while fromROSMsg/filtering is
+  // still updating its points and width/height metadata.
+  pcl::PointCloud<pcl::PointXYZ>::Ptr next_pcl_msg(
+    new pcl::PointCloud<pcl::PointXYZ>);
   if(stitcher_num_<=0){
-    pcl::fromROSMsg(*msg, *pcl_msg_);
+    pcl::fromROSMsg(*msg, *next_pcl_msg);
   }
   else{
     pcl::PointCloud<pcl::PointXYZ>::Ptr scan_msg (new pcl::PointCloud<pcl::PointXYZ>);
@@ -218,17 +303,19 @@ void MultiLayerSpinningLidar::cbSensor(const sensor_msgs::msg::PointCloud2::Shar
     }
     
     for(auto si=pcl_stitcher_.begin(); si!=pcl_stitcher_.end();si++){
-      *pcl_msg_ += (*si);
+      *next_pcl_msg += (*si);
     }
   }
 
   //@Create two trans, baselink->sensor and map->baselink
+  geometry_msgs::msg::TransformStamped next_trans_b2s;
+  geometry_msgs::msg::TransformStamped next_trans_gbl2b;
   try
   {
-    trans_b2s_ = gbl_utils_->tf2Buffer()->lookupTransform(
+    next_trans_b2s = gbl_utils_->tf2Buffer()->lookupTransform(
         gbl_utils_->getRobotFrame(), msg->header.frame_id, tf2::TimePointZero);
 
-    trans_gbl2b_ = gbl_utils_->tf2Buffer()->lookupTransform(
+    next_trans_gbl2b = gbl_utils_->tf2Buffer()->lookupTransform(
         gbl_utils_->getGblFrame(), gbl_utils_->getRobotFrame(), tf2::TimePointZero);
 
   }
@@ -238,8 +325,6 @@ void MultiLayerSpinningLidar::cbSensor(const sensor_msgs::msg::PointCloud2::Shar
     return;
   }
 
-  get_first_tf_ = true;
-  
   RCLCPP_INFO_THROTTLE(node_->get_logger().get_child(name_), *clock_, 60000, "Receiving Lidar topic: %s", topic_.c_str());
 
   //@Justify affine 3d
@@ -252,57 +337,80 @@ void MultiLayerSpinningLidar::cbSensor(const sensor_msgs::msg::PointCloud2::Shar
   //RCLCPP_INFO_STREAM(node_->get_logger().get_child(name_), "Rotation c: " << c.rotation());
   //RCLCPP_INFO_STREAM(node_->get_logger().get_child(name_), "Rotation d: " << d.rotation());
   
-  Eigen::Affine3d trans_b2s_af3 = tf2::transformToEigen(trans_b2s_);
-  pcl::transformPointCloud(*pcl_msg_, *pcl_msg_, trans_b2s_af3);
-  pcl_msg_->header.frame_id = gbl_utils_->getRobotFrame();
+  Eigen::Affine3d trans_b2s_af3 = tf2::transformToEigen(next_trans_b2s);
+  pcl::transformPointCloud(*next_pcl_msg, *next_pcl_msg, trans_b2s_af3);
+  next_pcl_msg->header.frame_id = gbl_utils_->getRobotFrame();
 
   std::vector<int> indices;
-  pcl_msg_->is_dense = false;
-  pcl::removeNaNFromPointCloud(*pcl_msg_, *pcl_msg_, indices);
+  next_pcl_msg->is_dense = false;
+  pcl::removeNaNFromPointCloud(*next_pcl_msg, *next_pcl_msg, indices);
 
   //@Get affine tf from gbl to sensor
-  Eigen::Affine3d trans_gbl2b_af3 = tf2::transformToEigen(trans_gbl2b_);
-  trans_gbl2s_af3_ = trans_gbl2b_af3*trans_b2s_af3;
-  trans_gbl2s_ = tf2::eigenToTransform (trans_gbl2s_af3_);
+  Eigen::Affine3d trans_gbl2b_af3 = tf2::transformToEigen(next_trans_gbl2b);
+  Eigen::Affine3d next_trans_gbl2s_af3 = trans_gbl2b_af3*trans_b2s_af3;
+  geometry_msgs::msg::TransformStamped next_trans_gbl2s =
+    tf2::eigenToTransform(next_trans_gbl2s_af3);
 
   pcl::PassThrough<pcl::PointXYZ> pass;
-  pass.setInputCloud (pcl_msg_);
+  pass.setInputCloud (next_pcl_msg);
   pass.setFilterFieldName ("x");
   pass.setFilterLimits (-perception_window_size_, perception_window_size_);
-  pass.filter (*pcl_msg_);
-  pass.setInputCloud (pcl_msg_);
+  pass.filter (*next_pcl_msg);
+  pass.setInputCloud (next_pcl_msg);
   pass.setFilterFieldName ("y");
-  pass.filter (*pcl_msg_);
-  pass.setInputCloud (pcl_msg_);
+  pass.filter (*next_pcl_msg);
+  pass.setInputCloud (next_pcl_msg);
   pass.setFilterFieldName ("z");
   pass.setFilterLimits (marking_minimum_height_, marking_height_);
-  pass.filter (*pcl_msg_);
+  pass.filter (*next_pcl_msg);
 
   pcl::VoxelGrid<pcl::PointXYZ> sor;
-  sor.setInputCloud (pcl_msg_);
+  sor.setInputCloud (next_pcl_msg);
   sor.setLeafSize (0.1f, 0.1f, 0.1f);
-  sor.filter (*pcl_msg_);
+  sor.filter (*next_pcl_msg);
 
-  //@Protect Mark/Clear functions
-  std::unique_lock<std::recursive_mutex> lock(shared_data_->ground_kdtree_cb_mutex_);
-
-  //pcl_msg_.reset(new pcl::PointCloud<pcl::PointXYZ>);
-  //pcl_msg_ = pcl_msg;
+  // Filtering above produces an unorganized cloud.  Normalize its layout so
+  // PCL's out-of-place transform cannot divide by a zero or stale width.
+  const size_t point_count = next_pcl_msg->points.size();
+  const size_t declared_count =
+    static_cast<size_t>(next_pcl_msg->width) * next_pcl_msg->height;
+  if(point_count > 0 &&
+      (next_pcl_msg->width == 0 || next_pcl_msg->height == 0 ||
+       declared_count != point_count)){
+    RCLCPP_WARN_THROTTLE(node_->get_logger().get_child(name_), *clock_, 5000,
+      "Normalizing inconsistent point-cloud layout: points=%zu width=%u height=%u",
+      point_count, next_pcl_msg->width, next_pcl_msg->height);
+    next_pcl_msg->width = static_cast<uint32_t>(point_count);
+    next_pcl_msg->height = 1;
+  }
 
   if(is_local_planner_){
     //@ put to current observation, different for global/local
-    Eigen::Affine3d trans_gbl2b_af3 = tf2::transformToEigen(trans_gbl2b_);
-    pcl::transformPointCloud(*pcl_msg_, *pcl_msg_, trans_gbl2b_af3);
-    pcl_msg_->header.frame_id = gbl_utils_->getGblFrame();
-    pcl::copyPointCloud(*pcl_msg_, *sensor_current_observation_);
+    pcl::transformPointCloud(*next_pcl_msg, *next_pcl_msg, trans_gbl2b_af3);
+    next_pcl_msg->header.frame_id = gbl_utils_->getGblFrame();
   }
 
-  //@ update time
-  last_observation_time_ = clock_->now();
+  // Publish the complete observation to the perception update thread as one
+  // atomic pointer/state change.  The old frame remains valid for any reader
+  // that already holds the same recursive mutex.
+  {
+    std::unique_lock<std::recursive_mutex> lock(
+      shared_data_->ground_kdtree_cb_mutex_);
+    pcl_msg_ = next_pcl_msg;
+    trans_b2s_ = next_trans_b2s;
+    trans_gbl2b_ = next_trans_gbl2b;
+    trans_gbl2s_af3_ = next_trans_gbl2s_af3;
+    trans_gbl2s_ = next_trans_gbl2s;
+    get_first_tf_ = true;
+    if(is_local_planner_){
+      pcl::copyPointCloud(*pcl_msg_, *sensor_current_observation_);
+    }
+    last_observation_time_ = clock_->now();
+  }
 
   if(pub_current_observation_->get_subscription_count()>0){
     sensor_msgs::msg::PointCloud2 ros_pc2_msg;
-    pcl::toROSMsg(*pcl_msg_, ros_pc2_msg);
+    pcl::toROSMsg(*next_pcl_msg, ros_pc2_msg);
     pub_current_observation_->publish(ros_pc2_msg);
   }
 
@@ -355,6 +463,15 @@ void MultiLayerSpinningLidar::selfMark(){
 
   if(pcl_msg_->points.size()<=5)
     return;
+  const size_t declared_count =
+    static_cast<size_t>(pcl_msg_->width) * pcl_msg_->height;
+  if(pcl_msg_->width == 0 || pcl_msg_->height == 0 ||
+      declared_count != pcl_msg_->points.size()){
+    RCLCPP_ERROR_THROTTLE(node_->get_logger().get_child(name_), *clock_, 5000,
+      "Rejecting inconsistent point-cloud layout before marking: points=%zu width=%u height=%u",
+      pcl_msg_->points.size(), pcl_msg_->width, pcl_msg_->height);
+    return;
+  }
   //@ Transform into global frame
   pcl_msg_gbl_.reset(new pcl::PointCloud<pcl::PointXYZ>);
   Eigen::Affine3d trans_gbl2b_af3 = tf2::transformToEigen(trans_gbl2b_);
@@ -948,7 +1065,9 @@ void MultiLayerSpinningLidar::resetdGraph(){
   dGraph_.clear();
   dGraph_.initial(shared_data_->static_ground_size_, gbl_utils_->getMaxObstacleDistance());
   pct_marking_ = std::make_shared<Marking>(name_, &dGraph_, 
-        gbl_utils_->getInscribedRadius(), gbl_utils_->getInflationRadius(), shared_data_, resolution_, height_resolution_);
+        gbl_utils_->getInscribedRadius(), gbl_utils_->getInflationRadius(), shared_data_,
+        resolution_, height_resolution_, stair_riser_marking_config_,
+        terrain_surface_plane_tolerance_m_, clock_);
   RCLCPP_INFO(node_->get_logger().get_child(name_), "%s done dynamic graph regeneration.", name_.c_str());
 }
 

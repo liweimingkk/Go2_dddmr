@@ -5,7 +5,26 @@ geometry_msgs/PoseStamped start
 bool activate_threading
 ---
 #result definition
+uint16 STATUS_SUCCESS=0
+uint16 STATUS_DEACTIVATED=1
+uint16 STATUS_INPUT_NOT_READY=2
+uint16 STATUS_START_GOAL_UNSUPPORTED=3
+uint16 STATUS_NO_PATH=4
+uint16 STATUS_PATH_INVALID=5
+uint16 STATUS_INPUT_CHANGED=6
+uint16 STATUS_DWA_NOT_READY=7
+uint16 STATUS_INTERNAL_ERROR=8
 nav_msgs/Path path
 builtin_interfaces/Duration planning_time
+uint16 status_code
+string status_reason
+bool terrain_enabled
+uint64 static_ground_generation
+string map_hash
+uint64 terrain_snapshot_version
+uint64 evaluated_edge_count
+uint64 accepted_edge_count
+uint64 rejected_edge_count
+string rejection_statistics
 ---
 #feedback definition

@@ -23,6 +23,10 @@ Common environment overrides:
   GO2_NET_IFACE=enp46s0      Network interface used for Go2 DDS.
   MOUTH_MAX_TIME_DIFF=0.15
   MOUTH_TIME_OFFSET_SEC=0.03424
+  AUTO_MEASURE_ODOM_TIME_OFFSET=true
+                             Measure and inject the odom/XT16 clock offset first.
+  ODOM_OFFSET_MEASURE_SECONDS=8
+  ODOM_TIME_OFFSET_SEC=...    Explicit override; skips automatic measurement.
   NAV_CONFIG=...             Navigation YAML to update.
 
 Safety:
@@ -32,7 +36,8 @@ Safety:
 EOF
 }
 
-if [[ "${1:-}" == "-h" || "${1:-}" == "--help" || "${1:-}" == "help" ]]; then
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]] &&
+   [[ "${1:-}" == "-h" || "${1:-}" == "--help" || "${1:-}" == "help" ]]; then
   usage
   exit 0
 fi
@@ -57,6 +62,18 @@ PUBLISH_STATIC_TF_VALUE="${PUBLISH_STATIC_TF:-true}"
 MAPPING_SECONDS_VALUE="${MAPPING_SECONDS:-}"
 MOUTH_MAX_TIME_DIFF_VALUE="${MOUTH_MAX_TIME_DIFF:-0.15}"
 MOUTH_TIME_OFFSET_SEC_VALUE="${MOUTH_TIME_OFFSET_SEC:-0.03424}"
+AUTO_MEASURE_ODOM_TIME_OFFSET_VALUE="${AUTO_MEASURE_ODOM_TIME_OFFSET:-true}"
+ODOM_TIME_OFFSET_SEC_VALUE="${ODOM_TIME_OFFSET_SEC:-}"
+ODOM_OFFSET_MEASURE_SECONDS_VALUE="${ODOM_OFFSET_MEASURE_SECONDS:-8}"
+ODOM_OFFSET_MEASURE_ATTEMPTS_VALUE="${ODOM_OFFSET_MEASURE_ATTEMPTS:-2}"
+ODOM_OFFSET_MIN_PAIRS_VALUE="${ODOM_OFFSET_MIN_PAIRS:-20}"
+ODOM_OFFSET_ARRIVAL_WINDOW_SEC_VALUE="${ODOM_OFFSET_ARRIVAL_WINDOW_SEC:-0.03}"
+ODOM_OFFSET_STABLE_STDEV_SEC_VALUE="${ODOM_OFFSET_STABLE_STDEV_SEC:-0.02}"
+ODOM_OFFSET_STABLE_RANGE_SEC_VALUE="${ODOM_OFFSET_STABLE_RANGE_SEC:-0.08}"
+ODOM_SYNC_TOLERANCE_SEC_VALUE="${ODOM_SYNC_TOLERANCE_SEC:-0.05}"
+ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE="${ODOM_SYNC_WAIT_TIMEOUT_SEC:-0.1}"
+ODOM_TOPIC_VALUE="${ODOM_TOPIC:-/utlidar/robot_odom}"
+XT16_TOPIC_VALUE="${XT16_TOPIC:-/lidar_points}"
 NAV_CONFIG="${NAV_CONFIG:-${WS_ROOT}/src/dddmr_beginner_guide/config/go2_xt16_navigation.yaml}"
 NAV_MAP_ROOT="${NAV_MAP_ROOT:-/root/dddmr_bags}"
 MAP_PREFIX="${MAP_PREFIX:-go2_xt16_mouth_mapping}"
@@ -91,6 +108,14 @@ require_file() {
 
 require_docker_image() {
   docker image inspect "${IMAGE}" >/dev/null 2>&1 || die "Docker image ${IMAGE} not found."
+}
+
+is_number() {
+  [[ "$1" =~ ^[+-]?(([0-9]+([.][0-9]*)?)|([.][0-9]+))([eE][+-]?[0-9]+)?$ ]]
+}
+
+is_positive_integer() {
+  [[ "$1" =~ ^[1-9][0-9]*$ ]]
 }
 
 nav_container_names() {
@@ -326,6 +351,86 @@ print_summary() {
   fi
 }
 
+measure_odom_time_offset() {
+  if [[ -n "${ODOM_TIME_OFFSET_SEC_VALUE}" ]]; then
+    is_number "${ODOM_TIME_OFFSET_SEC_VALUE}" || \
+      die "ODOM_TIME_OFFSET_SEC must be a finite number: ${ODOM_TIME_OFFSET_SEC_VALUE}"
+    log "Using explicit odom time offset: ${ODOM_TIME_OFFSET_SEC_VALUE}s"
+    return 0
+  fi
+
+  case "${AUTO_MEASURE_ODOM_TIME_OFFSET_VALUE}" in
+    true)
+      ;;
+    false)
+      die "Automatic odom offset measurement is disabled; set ODOM_TIME_OFFSET_SEC explicitly."
+      ;;
+    *)
+      die "AUTO_MEASURE_ODOM_TIME_OFFSET must be true or false."
+      ;;
+  esac
+
+  require_file "${SCRIPT_DIR}/measure_go2_odom_xt16_time_offset.py"
+  is_number "${ODOM_OFFSET_MEASURE_SECONDS_VALUE}" || \
+    die "ODOM_OFFSET_MEASURE_SECONDS must be numeric."
+  is_positive_integer "${ODOM_OFFSET_MEASURE_ATTEMPTS_VALUE}" || \
+    die "ODOM_OFFSET_MEASURE_ATTEMPTS must be a positive integer."
+  is_positive_integer "${ODOM_OFFSET_MIN_PAIRS_VALUE}" || \
+    die "ODOM_OFFSET_MIN_PAIRS must be a positive integer."
+
+  local attempt report rc stable measured_offset
+  for ((attempt = 1; attempt <= ODOM_OFFSET_MEASURE_ATTEMPTS_VALUE; ++attempt)); do
+    log "Measuring odom/XT16 time offset (${attempt}/${ODOM_OFFSET_MEASURE_ATTEMPTS_VALUE}, ${ODOM_OFFSET_MEASURE_SECONDS_VALUE}s)..."
+    set +e
+    report="$(docker run --rm \
+      --network=host \
+      -e "ROS_DOMAIN_ID=${ROS_DOMAIN_ID_VALUE}" \
+      -e "GO2_DDS_IP=${GO2_DDS_IP_VALUE}" \
+      -e "GO2_NET_IFACE=${GO2_NET_IFACE_VALUE}" \
+      -e "RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}" \
+      -e "ODOM_TOPIC=${ODOM_TOPIC_VALUE}" \
+      -e "XT16_TOPIC=${XT16_TOPIC_VALUE}" \
+      -e "MEASURE_SECONDS=${ODOM_OFFSET_MEASURE_SECONDS_VALUE}" \
+      -e "MIN_PAIRS=${ODOM_OFFSET_MIN_PAIRS_VALUE}" \
+      -e "ARRIVAL_WINDOW_SEC=${ODOM_OFFSET_ARRIVAL_WINDOW_SEC_VALUE}" \
+      -e "STABLE_STDEV_SEC=${ODOM_OFFSET_STABLE_STDEV_SEC_VALUE}" \
+      -e "STABLE_RANGE_SEC=${ODOM_OFFSET_STABLE_RANGE_SEC_VALUE}" \
+      -v "${WS_ROOT}:/root/dddmr_navigation:ro" \
+      "${IMAGE}" \
+      bash -lc 'set -eo pipefail
+set +u
+source /opt/ros/humble/setup.bash
+source /root/dddmr_navigation/scripts/setup_go2_dds_env.sh
+set -u
+exec python3 /root/dddmr_navigation/scripts/measure_go2_odom_xt16_time_offset.py \
+  --odom-topic "${ODOM_TOPIC}" \
+  --xt16-topic "${XT16_TOPIC}" \
+  --duration "${MEASURE_SECONDS}" \
+  --min-pairs "${MIN_PAIRS}" \
+  --arrival-window "${ARRIVAL_WINDOW_SEC}" \
+  --stable-stdev "${STABLE_STDEV_SEC}" \
+  --stable-range "${STABLE_RANGE_SEC}"' 2>&1)"
+    rc=$?
+    set -e
+
+    printf '%s\n' "${report}"
+    stable="$(awk -F= '$1 == "OFFSET_STABLE_FOR_MAPPING" {print $2}' <<<"${report}" | tail -n 1)"
+    measured_offset="$(awk -F= '$1 == "recommended_odom_time_offset_sec" {print $2}' <<<"${report}" | tail -n 1)"
+    if [[ "${rc}" -eq 0 && "${stable}" == "True" ]] && is_number "${measured_offset}"; then
+      ODOM_TIME_OFFSET_SEC_VALUE="${measured_offset}"
+      export ODOM_TIME_OFFSET_SEC="${ODOM_TIME_OFFSET_SEC_VALUE}"
+      log "Automatic odom time offset accepted and injected: ${ODOM_TIME_OFFSET_SEC_VALUE}s"
+      return 0
+    fi
+
+    if (( attempt < ODOM_OFFSET_MEASURE_ATTEMPTS_VALUE )); then
+      log "Offset measurement was unavailable or unstable (exit ${rc}); retrying..."
+    fi
+  done
+
+  die "Could not obtain a stable odom/XT16 time offset after ${ODOM_OFFSET_MEASURE_ATTEMPTS_VALUE} attempt(s). Check both topics and timestamps, or set ODOM_TIME_OFFSET_SEC explicitly."
+}
+
 start_mapping_container() {
   mkdir -p "${BAGS_DIR}"
 
@@ -362,14 +467,20 @@ source /root/dddmr_navigation/${INSTALL_BASE_VALUE}/setup.bash
 set -u
 echo 'MOUTH_MAPPING_CONTRACT mouth_cloud_topic=/utlidar/cloud_base mouth_filter_frame=base_link'
 echo 'MOUTH_MAPPING_TIMING mouth_max_time_diff=${MOUTH_MAX_TIME_DIFF_VALUE} mouth_time_offset_sec=${MOUTH_TIME_OFFSET_SEC_VALUE}'
+echo 'ODOM_MAPPING_TIMING odom_topic=${ODOM_TOPIC_VALUE} xt16_topic=${XT16_TOPIC_VALUE} odom_sync_tolerance_sec=${ODOM_SYNC_TOLERANCE_SEC_VALUE} odom_sync_wait_timeout_sec=${ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE} odom_time_offset_sec=${ODOM_TIME_OFFSET_SEC_VALUE}'
 exec ros2 launch lego_loam_bor lego_loam_go2_xt16_mouth.launch \
   rviz:=${RVIZ_VALUE} \
   rviz_config:=/root/dddmr_navigation/src/dddmr_lego_loam/lego_loam_bor/rviz/go2_xt16_mouth_validation.rviz \
   publish_static_tf:=${PUBLISH_STATIC_TF_VALUE} \
+  xt16_topic:=${XT16_TOPIC_VALUE} \
+  odom_topic:=${ODOM_TOPIC_VALUE} \
   mouth_cloud_topic:=/utlidar/cloud_base \
   mouth_filter_frame:=base_link \
   mouth_max_time_diff:=${MOUTH_MAX_TIME_DIFF_VALUE} \
-  mouth_time_offset_sec:=${MOUTH_TIME_OFFSET_SEC_VALUE}" >/dev/null
+  mouth_time_offset_sec:=${MOUTH_TIME_OFFSET_SEC_VALUE} \
+  odom_sync_tolerance_sec:=${ODOM_SYNC_TOLERANCE_SEC_VALUE} \
+  odom_sync_wait_timeout_sec:=${ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE} \
+  odom_time_offset_sec:=${ODOM_TIME_OFFSET_SEC_VALUE}" >/dev/null
 }
 
 main() {
@@ -383,6 +494,7 @@ main() {
     if docker ps -a --format '{{.Names}}' | grep -Fxq "${CONTAINER_NAME}"; then
       die "Container already exists: ${CONTAINER_NAME}"
     fi
+    measure_odom_time_offset
     start_mapping_container
   else
     docker ps --format '{{.Names}}' | grep -Fxq "${CONTAINER_NAME}" || die "Mapping container is not running: ${CONTAINER_NAME}"
@@ -449,4 +561,6 @@ main() {
   fi
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi

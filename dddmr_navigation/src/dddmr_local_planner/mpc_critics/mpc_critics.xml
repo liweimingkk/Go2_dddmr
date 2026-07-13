@@ -29,6 +29,9 @@
       <description>TBW</description>
     </class>
 
+    <class type="mpc_critics::TerrainSupportModel"  base_class_type="mpc_critics::ScoringModel">
+      <description>Fail-closed terrain support, surface continuity, and stair-step critic.</description>
+    </class>
+
   </library>
 </class_libraries>
-

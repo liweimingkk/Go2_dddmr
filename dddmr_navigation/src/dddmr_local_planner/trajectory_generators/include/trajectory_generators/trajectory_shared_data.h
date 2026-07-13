@@ -44,6 +44,7 @@
 
 /*For robot state*/
 #include "nav_msgs/msg/odometry.hpp"
+#include "nav_msgs/msg/path.hpp"
 #include "ackermann_msgs/msg/ackermann_drive_stamped.hpp"
 
 /*Stamped cmd*/
@@ -53,6 +54,13 @@
 #include <tf2_eigen/tf2_eigen.hpp>
 #include <Eigen/Core>
 
+#include <perception_3d/terrain_model.h>
+#include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
+#include <trajectory_generators/terrain_trajectory_projector.h>
+
+#include <atomic>
+#include <cstdint>
 #include <math.h>
 
 namespace trajectory_generators
@@ -77,6 +85,18 @@ class TrajectoryGeneratorSharedData{
     geometry_msgs::msg::TwistStamped ref_twist_for_trajectory_generation_;
     
     std::string global_frame_, base_frame_;
+
+    // Terrain-following generators explicitly request this data.  The local
+    // planner then deep-copies mapground while holding the perception ground
+    // mutex and atomically publishes one immutable context.  A generator keeps
+    // the returned pointer for its complete generation cycle.
+    void requestTerrainProjectionData() noexcept;
+    bool terrainProjectionDataRequested() const noexcept;
+    void updateTerrainProjectionData(
+      perception_3d::TerrainSnapshotConstPtr snapshot,
+      const pcl::PointCloud<pcl::PointXYZI>::ConstPtr & ground,
+      std::uint64_t static_ground_generation);
+    TerrainProjectionContextConstPtr terrainProjectionData() const noexcept;
 
 
     void updateGoalatRobotFrame(){
@@ -105,6 +125,8 @@ class TrajectoryGeneratorSharedData{
   private:
 
     std::shared_ptr<tf2_ros::Buffer> tf2Buffer_; 
+    std::atomic<bool> terrain_projection_data_requested_{false};
+    TerrainProjectionContextConstPtr terrain_projection_context_;
     
 
 };

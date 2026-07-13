@@ -75,6 +75,15 @@ lego_loam_fa:
         edge_threshold: 0.1
         surf_threshold: 0.1
         nearest_feature_search_distance: 5.0
+        # Require an odometry pose aligned to each XT16 frame. If the two
+        # drivers use different clock epochs, measure the stable offset and
+        # set odom_time_offset_sec explicitly; an unmatched frame is rejected.
+        odom_sync_enabled: true
+        odom_sync_tolerance_sec: 0.05
+        odom_buffer_duration_sec: 5.0
+        odom_interpolation_max_gap_sec: 0.05
+        odom_sync_wait_timeout_sec: 0.1
+        odom_time_offset_sec: 0.0
 
     mapping:
         to_map_optimization: true
@@ -84,7 +93,7 @@ lego_loam_mo:
     use_sim_time: false
 
     mapping:
-        distance_between_key_frame: 0.15
+        distance_between_key_frame: 0.5
         angle_between_key_frame: 0.5
         enable_loop_closure: false
         surrounding_keyframe_search_num: 50
@@ -93,6 +102,27 @@ lego_loam_mo:
         history_keyframe_fitness_score: 0.5
         ground_voxel_size: 0.3
         broadcast_external_odom_tf: true
+        # Eigen returns ascending eigenvalues with eigenvectors in columns.
+        # The full 6DoF diagnostic still uses these thresholds; axis-split
+        # mode solves its world-Z column conditionally instead of projecting it.
+        degeneracy_eigenvalue_thresholds: [100.0, 100.0, 100.0, 100.0, 100.0, 100.0]
+        # Keep the measured approximately 2 m stair rise from scan/ground geometry.
+        # Odom/IMU supplies rotation and world X/Y, never world Z.
+        axis_split_factor_enabled: true
+        axis_split_scan_z_variance: 0.01
+        axis_split_unobservable_z_variance: 1000000.0
+        axis_split_scan_z_min_information: 10.0
+        # Per LM iteration; diagnostics report whether any iteration was clamped.
+        axis_split_scan_z_max_iteration_step: 0.15
+        external_odom_factor_enabled: false
+        external_odom_rotation_variance: 0.0025
+        external_odom_translation_variance: 0.01
+        # Mutually exclusive with the axis-split factor: this legacy prior
+        # would pull Z back to the nearly planar external odometry trajectory.
+        planar_constraint_enabled: false
+        planar_roll_pitch_variance: 0.0025
+        planar_z_variance: 0.01
+        planar_unconstrained_variance: 1000000.0
 
 lego_loam_map_visualization:
   ros__parameters:

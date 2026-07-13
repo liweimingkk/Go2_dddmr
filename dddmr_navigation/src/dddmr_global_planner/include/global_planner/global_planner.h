@@ -32,6 +32,10 @@
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
 
+#include <cstdint>
+#include <mutex>
+#include <string>
+
 #include "sensor_msgs/msg/point_cloud2.hpp"
 
 /*Fast triangulation of unordered point clouds*/
@@ -51,6 +55,7 @@ type edge_t is inside here
 */
 #include <global_planner/a_star_on_pc.h>
 #include <global_planner/a_star_on_pre_graph.h>
+#include <global_planner/planner_safety.h>
 #include <set>
 
 /*For distance calculation*/
@@ -81,6 +86,32 @@ type edge_t is inside here
 namespace global_planner
 {
 
+enum class PlanStatusCode : std::uint16_t
+{
+  SUCCESS = 0U,
+  DEACTIVATED = 1U,
+  INPUT_NOT_READY = 2U,
+  START_GOAL_UNSUPPORTED = 3U,
+  NO_PATH = 4U,
+  PATH_INVALID = 5U,
+  INPUT_CHANGED = 6U,
+  DWA_NOT_READY = 7U,
+  INTERNAL_ERROR = 8U
+};
+
+struct BoundGlobalPlan
+{
+  nav_msgs::msg::Path path;
+  planner_safety::PlanningDataBinding binding;
+  PlanStatusCode status_code{PlanStatusCode::INPUT_NOT_READY};
+  std::string status_reason{"PLANNING_INPUT_NOT_READY"};
+  TerrainEdgeRejectionStatistics terrain_statistics;
+};
+
+void populateGetPlanResult(
+  const BoundGlobalPlan & plan,
+  dddmr_sys_core::action::GetPlan::Result & result);
+
 class GlobalPlanner : public rclcpp::Node {
     public:
       GlobalPlanner(const std::string& name);
@@ -89,8 +120,16 @@ class GlobalPlanner : public rclcpp::Node {
       void initial(const std::shared_ptr<perception_3d::Perception3D_ROS>& perception_3d);
       
       nav_msgs::msg::Path makeROSPlan(const geometry_msgs::msg::PoseStamped& start, const geometry_msgs::msg::PoseStamped& goal);
-      std::shared_ptr<dddmr_sys_core::action::GetPlan::Result> global_plan_result_;
-
+      BoundGlobalPlan makeROSPlanWithBinding(
+        const geometry_msgs::msg::PoseStamped& start,
+        const geometry_msgs::msg::PoseStamped& goal);
+      bool isPlanningBindingCurrent(
+        const planner_safety::PlanningDataBinding & binding,
+        std::string * rejection_reason = nullptr) const;
+      bool terrainValidationEnabled() const noexcept
+      {
+        return terrain_edge_config_.policy.enabled;
+      }
     private:
 
       bool is_active(const std::shared_ptr<rclcpp_action::ServerGoalHandle<dddmr_sys_core::action::GetPlan>> handle) const
@@ -128,9 +167,20 @@ class GlobalPlanner : public rclcpp::Node {
       double turning_weight_;
       bool enable_detail_log_;
       double a_star_expanding_radius_;
-      size_t static_ground_size_;
+      std::uint64_t static_ground_generation_;
       bool use_pre_graph_;
       double find_start_tolerance_;
+      double find_goal_tolerance_;
+      double max_vertical_search_distance_;
+      double ground_layer_separation_;
+      double layer_ambiguity_xy_distance_;
+      double robot_ground_z_offset_;
+      double raw_goal_support_radius_;
+      double raw_goal_support_z_tolerance_;
+      int raw_goal_minimum_support_points_;
+      int raw_goal_minimum_support_sectors_;
+      double path_interpolation_resolution_;
+      global_planner::TerrainEdgeValidatorConfig terrain_edge_config_;
       
       /*Original point cloud*/
       pcl::PointCloud<pcl::PointXYZI>::Ptr pcl_ground_;
@@ -168,11 +218,23 @@ class GlobalPlanner : public rclcpp::Node {
       bool getStartGoalID(const geometry_msgs::msg::PoseStamped& start, const geometry_msgs::msg::PoseStamped& goal, 
                           unsigned int& start_id, unsigned int& goal_id);
 
+      bool isRawGoalSupported(
+        const geometry_msgs::msg::PoseStamped& goal, unsigned int goal_id,
+        const planner_safety::PlanningDataBinding & binding);
+
       void pubStaticGraph();
-      void getROSPath(std::vector<unsigned int>& path_id, nav_msgs::msg::Path& ros_path);
+      bool getROSPath(
+        const std::vector<unsigned int>& path_id,
+        const planner_safety::PlanningDataBinding & binding,
+        nav_msgs::msg::Path& ros_path);
       void pubWeight();
+      void declareTerrainParameters();
+      planner_safety::PlanningDataBinding captureCurrentPlanningBindingLocked() const;
+      bool isPlanningBindingCurrentLocked(
+        const planner_safety::PlanningDataBinding & binding,
+        std::string * rejection_reason = nullptr) const;
       
-      std::mutex protect_kdtree_ground_;
+      mutable std::mutex protect_kdtree_ground_;
 
     protected:
       std::shared_ptr<tf2_ros::Buffer> tf2Buffer_;

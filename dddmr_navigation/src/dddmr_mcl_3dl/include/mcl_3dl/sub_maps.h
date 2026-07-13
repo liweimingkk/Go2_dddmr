@@ -31,7 +31,9 @@
 
 #include "utilities.h"
 
+#include <atomic>
 #include <mutex>
+#include <vector>
 
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 #include <tf2_sensor_msgs/tf2_sensor_msgs.hpp>
@@ -69,6 +71,9 @@ class SubMaps  : public rclcpp::Node
 private:
   
   void keyPosesCb(const geometry_msgs::msg::PoseArray::SharedPtr msg);
+  void globalMapCb(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
+  void globalGroundCb(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
+  void prepareGlobalMapLocked();
   void syncMapThread();
 
   std::string pg_map_server_name_;
@@ -85,6 +90,8 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_sub_ground_warmup_;
   
   rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr sub_key_poses_;
+  rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_global_map_;
+  rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_global_ground_;
   rclcpp::Client<dddmr_sys_core::srv::GetKeyFrameCloud>::SharedPtr get_key_frame_cloud_client_;
 
   geometry_msgs::msg::PoseWithCovarianceStamped robot_pose_;
@@ -102,8 +109,15 @@ private:
   bool is_initial_;
   bool is_current_ready_;
   bool key_poses_received_;
+  std::vector<geometry_msgs::msg::Pose> key_poses_;
   pcl::PointCloud<pcl_t>::Ptr poses_pcl_t_;
   pcl::KdTreeFLANN<mcl_3dl::pcl_t>::Ptr kdtree_poses_;
+
+  pcl::PointCloud<pcl_t>::Ptr map_global_;
+  pcl::PointCloud<pcl_t>::Ptr ground_global_;
+  bool global_map_received_;
+  bool global_ground_received_;
+  std::atomic_bool is_global_ready_;
 
   pcl::PointCloud<pcl_t>::Ptr map_warmup_;
   pcl::PointCloud<pcl_t>::Ptr ground_warmup_;
@@ -129,6 +143,8 @@ public:
   
   void warmUpThread();
   bool isCurrentReady(){return is_current_ready_;};
+  bool isGlobalReady() const {return is_global_ready_.load();};
+  std::vector<geometry_msgs::msg::Pose> getKeyPoses();
 
   // Provide a typedef to ease future code maintenance
   typedef std::recursive_mutex sub_maps_mutex_t;
@@ -145,6 +161,10 @@ public:
   pcl::KdTreeFLANN<mcl_3dl::pcl_t> kdtree_map_warmup_;
   pcl::KdTreeFLANN<mcl_3dl::pcl_t> kdtree_ground_warmup_;
   pcl::PointCloud<pcl::Normal> normals_ground_warmup_;
+
+  pcl::KdTreeFLANN<mcl_3dl::pcl_t> kdtree_map_global_;
+  pcl::KdTreeFLANN<mcl_3dl::pcl_t> kdtree_ground_global_;
+  pcl::PointCloud<pcl::Normal> normals_ground_global_;
   
 };
 }  // namespace mcl_3dl

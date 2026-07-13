@@ -43,6 +43,8 @@ Environment:
   GO2_YAW_ARC_ALLOWED_DECISIONS=d_align_heading
   GO2_DECISION_TOPIC=/dddmr_go2/p2p_decision
   GO2_DECISION_TIMEOUT_SEC=0.30
+  GO2_REQUIRE_MOTION_DECISION=false
+  GO2_MOTION_ALLOWED_DECISIONS=d_controlling,d_align_heading,d_align_goal_heading,d_recovery_waitdone
   GO2_ZERO_YAW_ONLY_WHEN_SHIM_DISALLOWED=true
   GO2_MAX_CONTINUOUS_YAW_ARC_SEC=4.0
 
@@ -114,6 +116,8 @@ yaw_arc_trigger_abs_yaw="${GO2_YAW_ARC_TRIGGER_ABS_YAW:-0.03}"
 yaw_arc_allowed_decisions="${GO2_YAW_ARC_ALLOWED_DECISIONS:-d_align_heading}"
 decision_topic="${GO2_DECISION_TOPIC:-/dddmr_go2/p2p_decision}"
 decision_timeout_sec="${GO2_DECISION_TIMEOUT_SEC:-0.30}"
+require_motion_decision="${GO2_REQUIRE_MOTION_DECISION:-false}"
+motion_allowed_decisions="${GO2_MOTION_ALLOWED_DECISIONS:-d_controlling,d_align_heading,d_align_goal_heading,d_recovery_waitdone}"
 zero_yaw_only_when_shim_disallowed="${GO2_ZERO_YAW_ONLY_WHEN_SHIM_DISALLOWED:-true}"
 max_continuous_yaw_arc_sec="${GO2_MAX_CONTINUOUS_YAW_ARC_SEC:-4.0}"
 skip_live_topic_check="${GO2_SPORT_SKIP_LIVE_TOPIC_CHECK:-false}"
@@ -244,6 +248,11 @@ validate_yaw_arc_settings() {
     true|false) ;;
     *) die "GO2_ZERO_YAW_ONLY_WHEN_SHIM_DISALLOWED must be true or false" ;;
   esac
+  case "${require_motion_decision}" in
+    true|false) ;;
+    *) die "GO2_REQUIRE_MOTION_DECISION must be true or false" ;;
+  esac
+  validate_allowed_decisions "${motion_allowed_decisions}"
 
   /usr/bin/python3 - \
     "${yaw_arc_forward_x}" \
@@ -417,6 +426,8 @@ start_adapter() {
     -p yaw_arc_allowed_decisions:="'${yaw_arc_allowed_decisions}'" \
     -p decision_topic:="${decision_topic}" \
     -p decision_timeout_sec:="${decision_timeout_sec}" \
+    -p require_motion_decision:="${require_motion_decision}" \
+    -p motion_allowed_decisions:="'${motion_allowed_decisions}'" \
     -p zero_yaw_only_when_shim_disallowed:="${zero_yaw_only_when_shim_disallowed}" \
     -p max_continuous_yaw_arc_sec:="${max_continuous_yaw_arc_sec}" \
     >"${adapter_log}" 2>&1 &
@@ -617,6 +628,8 @@ YAW_ARC_ALLOWED_DECISIONS=${yaw_arc_allowed_decisions}
 DECISION_TOPIC=${decision_topic}
 DECISION_TIMEOUT_SEC=${decision_timeout_sec}
 ZERO_YAW_ONLY_WHEN_SHIM_DISALLOWED=${zero_yaw_only_when_shim_disallowed}
+REQUIRE_MOTION_DECISION=${require_motion_decision}
+MOTION_ALLOWED_DECISIONS=${motion_allowed_decisions}
 MAX_CONTINUOUS_YAW_ARC_SEC=${max_continuous_yaw_arc_sec}
 SKIP_LIVE_TOPIC_CHECK=${skip_live_topic_check}
 EOF

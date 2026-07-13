@@ -28,6 +28,9 @@
       <description>TBW</description>
     </class>
 
+    <class type="perception_3d::TerrainLayer"  base_class_type="perception_3d::Sensor">
+      <description>Fail-closed terrain model, ramp constraints, and manually annotated stair corridors.</description>
+    </class>
+
   </library>
 </class_libraries>
-

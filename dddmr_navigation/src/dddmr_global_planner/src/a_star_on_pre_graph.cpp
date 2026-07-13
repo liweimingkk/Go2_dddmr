@@ -30,6 +30,8 @@
 */
 #include <global_planner/a_star_on_pre_graph.h>
 
+#include <limits>
+
 AstarListPreGraph::AstarListPreGraph(perception_3d::StaticGraph& static_graph){
   static_graph_ = static_graph;
 }
@@ -72,23 +74,18 @@ void AstarListPreGraph::updateNode(NodePreGraph_t& a_node){
 }
 
 NodePreGraph_t AstarListPreGraph::getNode_wi_MinimumF(){
-  auto first_it = f_priority_set_.begin();
-  NodePreGraph_t m_node = as_list_[(*first_it).second];
-  if(!m_node.is_closed){
+  // updateNode can leave stale entries behind. Drain them without dereferencing end().
+  while (!f_priority_set_.empty()) {
+    const auto first_it = f_priority_set_.begin();
+    const NodePreGraph_t node = as_list_[first_it->second];
     f_priority_set_.erase(first_it);
-    return m_node;
+    if (!node.is_closed) {
+      return node;
+    }
   }
-  
-  //Because we updateNode node even when new g value is smaller than that in openlist
-  //We will have duplicate f value in the f_priority_set_
-  int concern_cnt = 0;
-  while(m_node.is_closed && !f_priority_set_.empty()){
-    concern_cnt++;
-    f_priority_set_.erase(first_it);
-    first_it = f_priority_set_.begin();
-    m_node = as_list_[(*first_it).second];
-  }
-  return m_node;
+  return NodePreGraph_t{
+    std::numeric_limits<unsigned int>::max(), 0.0F, 0.0F, 0.0F,
+    std::numeric_limits<unsigned int>::max(), true, false};
 }
 
 bool AstarListPreGraph::isClosed(unsigned int node_index){
@@ -108,10 +105,14 @@ bool AstarListPreGraph::isFrontierEmpty(){
 A_Star_on_PreGraph::A_Star_on_PreGraph(pcl::PointCloud<pcl::PointXYZI>::Ptr pc_original_z_up, 
                                   perception_3d::StaticGraph& static_graph, 
                                   std::shared_ptr<perception_3d::Perception3D_ROS> perception_ros,
-                                  double a_star_expanding_radius){
+                                  double a_star_expanding_radius,
+                                  const global_planner::TerrainEdgeValidatorConfig& terrain_edge_config)
+  : terrain_edge_validator_(terrain_edge_config)
+{
   static_graph_ = static_graph;
   perception_ros_ = perception_ros;
   a_star_expanding_radius_ = a_star_expanding_radius;
+  turning_weight_ = 0.0;
   pc_original_z_up_ = pc_original_z_up;
   ASLS_ = new AstarListPreGraph(static_graph_);
 }
@@ -123,11 +124,13 @@ A_Star_on_PreGraph::~A_Star_on_PreGraph(){
 
 void A_Star_on_PreGraph::updateGraph(pcl::PointCloud<pcl::PointXYZI>::Ptr pc_original_z_up, 
                                   perception_3d::StaticGraph& static_graph){
-  
-  
   static_graph_ = static_graph;
   pc_original_z_up_ = pc_original_z_up;
-  ASLS_->setGraph(static_graph_);
+  if (!ASLS_) {
+    ASLS_ = new AstarListPreGraph(static_graph_);
+  } else {
+    ASLS_->setGraph(static_graph_);
+  }
 }
 
 double A_Star_on_PreGraph::getThetaFromParent2Expanding(pcl::PointXYZI m_pcl_current_parent, pcl::PointXYZI m_pcl_current, pcl::PointXYZI m_pcl_expanding){
@@ -190,7 +193,73 @@ bool A_Star_on_PreGraph::isLineOfSightClear(pcl::PointXYZI& pcl_current, pcl::Po
 
 void A_Star_on_PreGraph::getPath(
   unsigned int start, unsigned int goal,
-  std::vector<unsigned int>& path){
+  std::vector<unsigned int>& path,
+  const global_planner::planner_safety::PlanningDataBinding * expected_binding,
+  global_planner::TerrainEdgeRejectionStatistics * terrain_statistics){
+
+  path.clear();
+  if (terrain_statistics != nullptr) {
+    *terrain_statistics = global_planner::TerrainEdgeRejectionStatistics{};
+  }
+  if (!pc_original_z_up_ || pc_original_z_up_->empty() || !ASLS_ || !perception_ros_ ||
+    start >= pc_original_z_up_->points.size() || goal >= pc_original_z_up_->points.size())
+  {
+    RCLCPP_ERROR(rclcpp::get_logger("astar"), "Cannot plan on an invalid or stale pre-graph");
+    return;
+  }
+
+  const auto shared_data = perception_ros_->getSharedDataPtr();
+  if (!shared_data) {
+    RCLCPP_ERROR(rclcpp::get_logger("astar"), "Cannot plan without shared perception data");
+    return;
+  }
+  std::unique_lock<std::recursive_mutex> perception_lock(
+    shared_data->ground_kdtree_cb_mutex_);
+
+  auto binding_is_current = [&]() {
+      if (expected_binding == nullptr) {
+        return true;
+      }
+      const auto observed = global_planner::capturePlanningDataBinding(
+        shared_data, expected_binding->terrain_enabled);
+      std::string rejection;
+      if (!global_planner::planner_safety::planningBindingsMatch(
+          *expected_binding, observed, &rejection))
+      {
+        RCLCPP_ERROR(
+          rclcpp::get_logger("astar"), "Pre-graph A* planning binding changed: %s",
+          rejection.c_str());
+        return false;
+      }
+      return true;
+    };
+  if (!binding_is_current()) {
+    return;
+  }
+
+  auto terrain_context = terrain_edge_validator_.beginSearch(shared_data);
+  auto log_terrain_statistics = [&]() {
+      if (terrain_statistics != nullptr) {
+        *terrain_statistics = terrain_context.statistics();
+      }
+      if (terrain_context.terrainEnabled()) {
+        RCLCPP_INFO(
+          rclcpp::get_logger("astar"), "%s",
+          terrain_context.statistics().toStructuredString().c_str());
+      }
+    };
+  if (terrain_context.terrainEnabled() && !terrain_context.ready()) {
+    log_terrain_statistics();
+    return;
+  }
+  if (!terrain_edge_validator_.validateEndpoint(
+      terrain_context, start, pc_original_z_up_->points[start]) ||
+    !terrain_edge_validator_.validateEndpoint(
+      terrain_context, goal, pc_original_z_up_->points[goal]))
+  {
+    log_terrain_statistics();
+    return;
+  }
 
   //RCLCPP_INFO(rclcpp::get_logger("astar"),"Start: %u, Goal: %u", start, goal);
 
@@ -209,15 +278,44 @@ void A_Star_on_PreGraph::getPath(
   double inscribed_radius = perception_ros_->getGlobalUtils()->getInscribedRadius();
   double inflation_descending_rate = perception_ros_->getGlobalUtils()->getInflationDescendingRate();
   double max_obstacle_distance = perception_ros_->getGlobalUtils()->getMaxObstacleDistance();
+  if (!std::isfinite(a_star_expanding_radius_) || a_star_expanding_radius_ <= 0.0 ||
+    !std::isfinite(turning_weight_) || turning_weight_ < 0.0 ||
+    !std::isfinite(inscribed_radius) || inscribed_radius <= 0.0 ||
+    !std::isfinite(inflation_descending_rate) || inflation_descending_rate < 0.0 ||
+    !std::isfinite(max_obstacle_distance) || max_obstacle_distance < inscribed_radius)
+  {
+    RCLCPP_ERROR(rclcpp::get_logger("astar"), "Pre-graph A* cost configuration is invalid");
+    log_terrain_statistics();
+    return;
+  }
 
   while(!ASLS_->isFrontierEmpty()){ 
     /*Pop minimum F, we leverage prior queue, so we dont need to loop frontier everytime*/
     current_node = ASLS_->getNode_wi_MinimumF();
+    if (current_node.self_index >= pc_original_z_up_->points.size()) {
+      break;
+    }
+    if (current_node.parent_index >= pc_original_z_up_->points.size() ||
+      !std::isfinite(current_node.g) || current_node.g < 0.0F)
+    {
+      RCLCPP_ERROR(
+        rclcpp::get_logger("astar"), "Pre-graph frontier contains an invalid cost state");
+      break;
+    }
     //ROS_DEBUG("Expand node: %u", current_node.self_index);
     /*Get successors*/
     auto successors = static_graph_.getEdge(current_node.self_index);
     
     for(auto it = successors.begin(); it!=successors.end(); it++){
+
+      if ((*it).first == current_node.self_index ||
+        (*it).first >= pc_original_z_up_->points.size() ||
+        !std::isfinite((*it).second) || (*it).second <= 0.0)
+      {
+        RCLCPP_ERROR(
+          rclcpp::get_logger("astar"), "Pre-graph contains an invalid edge or edge cost");
+        continue;
+      }
       
       if((*it).second>a_star_expanding_radius_){
         continue;
@@ -225,14 +323,29 @@ void A_Star_on_PreGraph::getPath(
       //@ dGraphValue is the distance to lethal
       double dGraphValue = perception_ros_->get_min_dGraphValue((*it).first);
 
+      const bool dynamic_obstacle =
+        !std::isfinite(dGraphValue) || dGraphValue < inscribed_radius;
+      float current_expanding_g = (*it).second;
+      if (terrain_context.terrainEnabled()) {
+        const auto terrain_validation = terrain_edge_validator_.evaluate(
+          terrain_context, current_node.self_index, (*it).first,
+          pc_original_z_up_->points[current_node.self_index],
+          pc_original_z_up_->points[(*it).first], dynamic_obstacle);
+        if (!terrain_validation.policy_result.accepted) {
+          continue;
+        }
+        current_expanding_g = terrain_validation.policy_result.traversal_cost;
+      }
+      if (!std::isfinite(current_expanding_g) || current_expanding_g < 0.0F) {
+        continue;
+      }
+
       /*This is for lethal*/
-      if(dGraphValue<inscribed_radius){
+      if(dynamic_obstacle){
         //ROS_DEBUG("%.2f,%.2f,%.2f, v: %.2f",pc_original_z_up_->points[(*it).first].x,pc_original_z_up_->points[(*it).first].y,pc_original_z_up_->points[(*it).first].z, dGraphValue);
         continue;
       }
       
-      float current_expanding_g = (*it).second;
-
       pcl::PointXYZI pcl_current = pc_original_z_up_->points[current_node.self_index];
       pcl::PointXYZI pcl_current_parent = pc_original_z_up_->points[current_node.parent_index];
       pcl::PointXYZI pcl_expanding = pc_original_z_up_->points[(*it).first];
@@ -242,11 +355,23 @@ void A_Star_on_PreGraph::getPath(
       //@ get current_parent, current, expanding to compute theta od expanding
       double theta = getThetaFromParent2Expanding(pcl_current_parent, pcl_current, pcl_expanding);
 
-      float new_g = current_node.g + (*it).second + factor * 1.0 + 
-                      theta*turning_weight_ + pc_original_z_up_->points[current_node.self_index].intensity;
+      const float point_cost = pc_original_z_up_->points[current_node.self_index].intensity;
+      if (!std::isfinite(factor) || factor < 0.0 || !std::isfinite(theta) || theta < 0.0 ||
+        !std::isfinite(point_cost) || point_cost < 0.0F)
+      {
+        continue;
+      }
+      float new_g = current_node.g + current_expanding_g + factor * 1.0 +
+                      theta*turning_weight_ + point_cost;
 
       float new_h = sqrt(pcl::geometry::squaredDistance(pcl_expanding, pcl_goal));
       float new_f = new_g + new_h;
+      if (!std::isfinite(new_g) || new_g < 0.0F ||
+        !std::isfinite(new_h) || new_h < 0.0F ||
+        !std::isfinite(new_f) || new_f < 0.0F)
+      {
+        continue;
+      }
 
       NodePreGraph_t new_node = {.self_index=((*it).first), .g=new_g, .h=new_h, .f=new_f, .parent_index=current_node.self_index, .is_closed=false, .is_opened=true};
 
@@ -284,6 +409,12 @@ void A_Star_on_PreGraph::getPath(
     }
 
     /*Check if*/
+  }
+
+  log_terrain_statistics();
+
+  if (!binding_is_current()) {
+    path.clear();
   }
 
 }

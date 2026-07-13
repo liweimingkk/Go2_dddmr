@@ -46,6 +46,8 @@
 /*For trajectory generators plugin*/
 #include <trajectory_generators/trajectory_generators_ros.h>
 
+#include <local_planner/in_place_rotation_hysteresis.h>
+
 /*For edge markers*/
 #include <visualization_msgs/msg/marker.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
@@ -69,9 +71,10 @@ class Local_Planner : public rclcpp::Node {
 
       ~Local_Planner();
 
-      void setPlan(const std::vector<geometry_msgs::msg::PoseStamped>& orig_global_plan);
+      bool setPlan(const std::vector<geometry_msgs::msg::PoseStamped>& orig_global_plan);
       dddmr_sys_core::PlannerState computeVelocityCommand(std::string traj_gen_name, base_trajectory::Trajectory& best_traj);
       void getBestTrajectory(std::string traj_gen_name, base_trajectory::Trajectory& best_traj);
+      void resetInPlaceRotationHysteresis();
 
       //@ shared data for trajectory generator, we manage the variables by this way for future changed to ROS2
       std::shared_ptr<trajectory_generators::TrajectoryGeneratorSharedData> traj_shared_data_;
@@ -158,15 +161,23 @@ class Local_Planner : public rclcpp::Node {
          The variable should be adapt to vehicle speed!!!
       */
       double forward_prune_, backward_prune_, heading_tracking_distance_, heading_align_angle_;
+      double plan_max_segment_length_{0.75};
 
       /*Timer for robust system design*/
       double prune_plane_timeout_;
       rclcpp::Time last_valid_prune_plan_;
       bool got_odom_;
 
-      double xy_goal_tolerance_, yaw_goal_tolerance_;
+      double xy_goal_tolerance_, z_goal_tolerance_, yaw_goal_tolerance_;
+      bool goal_surface_match_required_{false};
+      double goal_terrain_search_radius_{0.35};
+      double robot_ground_z_offset_{0.24};
       double controller_frequency_;
       bool debug_rejection_report_;
+
+      bool in_place_direction_hysteresis_enabled_;
+      std::string in_place_direction_hysteresis_generator_;
+      InPlaceRotationHysteresis in_place_rotation_hysteresis_;
 
       rclcpp::Time control_loop_time_;
 

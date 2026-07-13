@@ -30,6 +30,9 @@
 */
 #include <recovery_behaviors/rotate_inplace_behavior.h>
 
+#include <cmath>
+#include <stdexcept>
+
 PLUGINLIB_EXPORT_CLASS(recovery_behaviors::RotateInPlaceBehavior, recovery_behaviors::RobotBehavior)
 
 namespace recovery_behaviors
@@ -53,6 +56,45 @@ void RotateInPlaceBehavior::onInitialize(){
   node_->declare_parameter(name_ + ".tolerance", rclcpp::ParameterValue(0.3));
   node_->get_parameter(name_ + ".tolerance", tolerance_);
   RCLCPP_INFO(node_->get_logger().get_child(name_), "tolerance: %.2f", tolerance_);
+
+  node_->declare_parameter(name_ + ".transform_timeout", rclcpp::ParameterValue(2.0));
+  node_->get_parameter(name_ + ".transform_timeout", transform_timeout_);
+  RCLCPP_INFO(
+    node_->get_logger().get_child(name_), "transform_timeout: %.2f",
+    transform_timeout_);
+
+  node_->declare_parameter(name_ + ".odom_timeout", rclcpp::ParameterValue(0.5));
+  node_->get_parameter(name_ + ".odom_timeout", odom_timeout_);
+  RCLCPP_INFO(
+    node_->get_logger().get_child(name_), "odom_timeout: %.2f", odom_timeout_);
+
+  node_->declare_parameter(name_ + ".future_tolerance", rclcpp::ParameterValue(0.1));
+  node_->get_parameter(name_ + ".future_tolerance", future_tolerance_);
+  RCLCPP_INFO(
+    node_->get_logger().get_child(name_), "future_tolerance: %.2f",
+    future_tolerance_);
+
+  node_->declare_parameter(name_ + ".progress_timeout", rclcpp::ParameterValue(3.0));
+  node_->get_parameter(name_ + ".progress_timeout", progress_timeout_);
+  RCLCPP_INFO(
+    node_->get_logger().get_child(name_), "progress_timeout: %.2f",
+    progress_timeout_);
+
+  node_->declare_parameter(name_ + ".progress_angle", rclcpp::ParameterValue(0.05));
+  node_->get_parameter(name_ + ".progress_angle", progress_angle_);
+  RCLCPP_INFO(
+    node_->get_logger().get_child(name_), "progress_angle: %.2f", progress_angle_);
+
+  if(!std::isfinite(frequency_) || frequency_ <= 0.0 ||
+     !std::isfinite(transform_timeout_) || transform_timeout_ <= 0.0 ||
+     !std::isfinite(odom_timeout_) || odom_timeout_ <= 0.0 ||
+     !std::isfinite(future_tolerance_) || future_tolerance_ < 0.0 ||
+     !std::isfinite(progress_timeout_) || progress_timeout_ <= 0.0 ||
+     !std::isfinite(progress_angle_) || progress_angle_ <= 0.0){
+    throw std::invalid_argument(
+      "rotate_inplace recovery timing/progress parameters must be finite and positive; "
+      "future_tolerance must be finite and non-negative");
+  }
 
   node_->declare_parameter(name_ + ".trajectory_generator_name", rclcpp::ParameterValue("differential_drive_rotate_inplace"));
   node_->get_parameter(name_ + ".trajectory_generator_name", trajectory_generator_name_);
@@ -128,6 +170,15 @@ void RotateInPlaceBehavior::pubZeroVelocity(){
   cmd_vel_pub_->publish(cmd_vel);
 }
 
+bool RotateInPlaceBehavior::isStampFresh(
+  const builtin_interfaces::msg::Time & stamp,
+  double timeout) const
+{
+  const rclcpp::Time message_time(stamp, clock_->get_clock_type());
+  const double age = (clock_->now() - message_time).seconds();
+  return std::isfinite(age) && age >= -future_tolerance_ && age <= timeout;
+}
+
 dddmr_sys_core::RecoveryState RotateInPlaceBehavior::runBehavior(
     const std::shared_ptr<rclcpp_action::ServerGoalHandle<dddmr_sys_core::action::RecoveryBehaviors>> goal_handle){
 
@@ -141,7 +192,20 @@ dddmr_sys_core::RecoveryState RotateInPlaceBehavior::runBehavior(
 
   geometry_msgs::msg::PoseStamped global_pose;
   geometry_msgs::msg::TransformStamped trans_gbl2b;
+  trans_gbl2b = geometry_msgs::msg::TransformStamped{};
   perception_3d_ros_->getGlobalPose(trans_gbl2b);
+  if(trans_gbl2b.header.frame_id.empty() ||
+     !isStampFresh(trans_gbl2b.header.stamp, transform_timeout_) ||
+     shared_data_->robot_state_.header.frame_id.empty() ||
+     !isStampFresh(shared_data_->robot_state_.header.stamp, odom_timeout_)){
+    pubZeroVelocity();
+    auto result = std::make_shared<dddmr_sys_core::action::RecoveryBehaviors::Result>();
+    goal_handle->abort(result);
+    RCLCPP_ERROR(
+      node_->get_logger().get_child(name_),
+      "Recovery refused to start because TF or odometry is missing/stale.");
+    return dddmr_sys_core::RecoveryState::RECOVERY_FAIL;
+  }
   trans2Pose(trans_gbl2b, global_pose);
   
   tf2::Quaternion global_pose_orientation_initial(
@@ -154,10 +218,13 @@ dddmr_sys_core::RecoveryState RotateInPlaceBehavior::runBehavior(
   double start_angle = current_angle;
 
   bool got_180 = false;
+  double last_progress_angle = current_angle;
+  rclcpp::Time last_progress_time = clock_->now();
   
   rclcpp::Time last_valid_control_ = clock_->now();
   
-  dddmr_sys_core::RecoveryState m_recovery_result;
+  dddmr_sys_core::RecoveryState m_recovery_result =
+    dddmr_sys_core::RecoveryState::RECOVERY_FAIL;
   auto result = std::make_shared<dddmr_sys_core::action::RecoveryBehaviors::Result>();
   while (rclcpp::ok() &&
          (!got_180 ||
@@ -180,6 +247,27 @@ dddmr_sys_core::RecoveryState RotateInPlaceBehavior::runBehavior(
       
     }
 
+    if(!perception_3d_ros_->getStackedPerception()->isSensorOK()){
+      pubZeroVelocity();
+      goal_handle->abort(result);
+      RCLCPP_ERROR(
+        node_->get_logger().get_child(name_),
+        "Recovery aborted because perception data is stale.");
+      m_recovery_result = dddmr_sys_core::RecoveryState::RECOVERY_FAIL;
+      break;
+    }
+
+    if(shared_data_->robot_state_.header.frame_id.empty() ||
+       !isStampFresh(shared_data_->robot_state_.header.stamp, odom_timeout_)){
+      pubZeroVelocity();
+      goal_handle->abort(result);
+      RCLCPP_ERROR(
+        node_->get_logger().get_child(name_),
+        "Recovery aborted because odometry is missing/stale.");
+      m_recovery_result = dddmr_sys_core::RecoveryState::RECOVERY_FAIL;
+      break;
+    }
+
     // Update Current Angle
     std::unique_lock<perception_3d::StackedPerception::mutex_t> pct_lock(*(perception_3d_ros_->getStackedPerception()->getMutex()));
 
@@ -188,7 +276,20 @@ dddmr_sys_core::RecoveryState RotateInPlaceBehavior::runBehavior(
     perception_3d_ros_->getStackedPerception()->aggregateObservations();
     //pub_aggregate_observation_.publish(aggregate_observation_);
 
+    // getGlobalPose() reports failure by leaving its output untouched. Clear the
+    // previous transform first so a lookup failure cannot reuse a stale pose.
+    trans_gbl2b = geometry_msgs::msg::TransformStamped{};
     perception_3d_ros_->getGlobalPose(trans_gbl2b);
+    if(trans_gbl2b.header.frame_id.empty() ||
+       !isStampFresh(trans_gbl2b.header.stamp, transform_timeout_)){
+      pubZeroVelocity();
+      goal_handle->abort(result);
+      RCLCPP_ERROR(
+        node_->get_logger().get_child(name_),
+        "Recovery aborted because the global TF is missing/stale.");
+      m_recovery_result = dddmr_sys_core::RecoveryState::RECOVERY_FAIL;
+      break;
+    }
     trans2Pose(trans_gbl2b, global_pose);
 
     tf2::Quaternion global_pose_orientation(
@@ -198,6 +299,22 @@ dddmr_sys_core::RecoveryState RotateInPlaceBehavior::runBehavior(
     global_pose.pose.orientation.w);
 
     current_angle = tf2::impl::getYaw(global_pose_orientation);
+
+    const double progress = std::fabs(
+      angles::shortest_angular_distance(last_progress_angle, current_angle));
+    if(progress >= progress_angle_){
+      last_progress_angle = current_angle;
+      last_progress_time = clock_->now();
+    }else if((clock_->now() - last_progress_time).seconds() > progress_timeout_){
+      pubZeroVelocity();
+      goal_handle->abort(result);
+      RCLCPP_ERROR(
+        node_->get_logger().get_child(name_),
+        "Recovery aborted after %.2f seconds without %.3f rad of yaw progress.",
+        progress_timeout_, progress_angle_);
+      m_recovery_result = dddmr_sys_core::RecoveryState::RECOVERY_FAIL;
+      break;
+    }
 
     // compute the distance left to rotate
     double dist_left;
