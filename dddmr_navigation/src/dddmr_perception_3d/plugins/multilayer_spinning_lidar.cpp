@@ -30,6 +30,8 @@
 */
 #include <perception_3d/multilayer_spinning_lidar.h>
 
+#include <cmath>
+#include <limits>
 #include <stdexcept>
 
 PLUGINLIB_EXPORT_CLASS(perception_3d::MultiLayerSpinningLidar, perception_3d::Sensor)
@@ -162,6 +164,76 @@ void MultiLayerSpinningLidar::onInitialize()
   node_->get_parameter(name_ + ".pub_gbl_marking_frequency", pub_gbl_marking_frequency_);
   RCLCPP_INFO(node_->get_logger().get_child(name_), "pub_gbl_marking_frequency: %.1f", pub_gbl_marking_frequency_);  
 
+  const std::string stair_prefix = name_ + ".stair_riser_marking.";
+  node_->declare_parameter(stair_prefix + "enabled", rclcpp::ParameterValue(false));
+  node_->get_parameter(stair_prefix + "enabled", stair_riser_marking_config_.enabled);
+  node_->declare_parameter(stair_prefix + "fail_closed", rclcpp::ParameterValue(true));
+  node_->get_parameter(stair_prefix + "fail_closed", stair_riser_marking_config_.fail_closed);
+  node_->declare_parameter(stair_prefix + "expected_map_hash", rclcpp::ParameterValue(""));
+  node_->get_parameter(
+    stair_prefix + "expected_map_hash", stair_riser_marking_config_.expected_map_hash);
+  double stair_max_snapshot_age_sec = 0.0;
+  double stair_minimum_confidence = 0.0;
+  double stair_node_match_distance_m = 0.0;
+  double stair_plane_tolerance_m = 0.0;
+  double stair_lateral_tolerance_m = 0.0;
+  double stair_vertical_tolerance_m = 0.0;
+  node_->declare_parameter(
+    stair_prefix + "max_snapshot_age_sec", rclcpp::ParameterValue(0.0));
+  node_->declare_parameter(
+    stair_prefix + "minimum_stair_confidence", rclcpp::ParameterValue(0.0));
+  node_->declare_parameter(
+    stair_prefix + "max_node_match_distance_m", rclcpp::ParameterValue(0.0));
+  node_->declare_parameter(
+    stair_prefix + "riser_plane_tolerance_m", rclcpp::ParameterValue(0.0));
+  node_->declare_parameter(
+    stair_prefix + "riser_lateral_tolerance_m", rclcpp::ParameterValue(0.0));
+  node_->declare_parameter(
+    stair_prefix + "riser_vertical_tolerance_m", rclcpp::ParameterValue(0.0));
+  node_->declare_parameter(
+    stair_prefix + "surface_plane_tolerance_m", rclcpp::ParameterValue(0.0));
+  node_->get_parameter(stair_prefix + "max_snapshot_age_sec", stair_max_snapshot_age_sec);
+  node_->get_parameter(
+    stair_prefix + "minimum_stair_confidence", stair_minimum_confidence);
+  node_->get_parameter(
+    stair_prefix + "max_node_match_distance_m", stair_node_match_distance_m);
+  node_->get_parameter(
+    stair_prefix + "riser_plane_tolerance_m", stair_plane_tolerance_m);
+  node_->get_parameter(
+    stair_prefix + "riser_lateral_tolerance_m", stair_lateral_tolerance_m);
+  node_->get_parameter(
+    stair_prefix + "riser_vertical_tolerance_m", stair_vertical_tolerance_m);
+  node_->get_parameter(
+    stair_prefix + "surface_plane_tolerance_m", terrain_surface_plane_tolerance_m_);
+  if(std::isfinite(stair_max_snapshot_age_sec) && stair_max_snapshot_age_sec > 0.0 &&
+    stair_max_snapshot_age_sec <=
+    static_cast<double>(std::numeric_limits<std::int64_t>::max()) / 1.0e9)
+  {
+    stair_riser_marking_config_.max_snapshot_age_nanoseconds =
+      static_cast<std::int64_t>(stair_max_snapshot_age_sec * 1.0e9);
+  }
+  stair_riser_marking_config_.minimum_stair_confidence =
+    static_cast<float>(stair_minimum_confidence);
+  stair_riser_marking_config_.max_node_match_distance_m =
+    static_cast<float>(stair_node_match_distance_m);
+  stair_riser_marking_config_.riser_plane_tolerance_m =
+    static_cast<float>(stair_plane_tolerance_m);
+  stair_riser_marking_config_.riser_lateral_tolerance_m =
+    static_cast<float>(stair_lateral_tolerance_m);
+  stair_riser_marking_config_.riser_vertical_tolerance_m =
+    static_cast<float>(stair_vertical_tolerance_m);
+  if(stair_riser_marking_config_.enabled){
+    std::string validation_error;
+    if(!StairRiserSemantics::validConfig(
+        stair_riser_marking_config_, &validation_error))
+    {
+      RCLCPP_ERROR(
+        node_->get_logger().get_child(name_),
+        "Stair riser graph marking is enabled but invalid; retaining all points "
+        "as obstacles: %s", validation_error.c_str());
+    }
+  }
+
   sensor_cb_group_ = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   rclcpp::SubscriptionOptions sub_options;
   sub_options.callback_group = sensor_cb_group_;
@@ -175,7 +247,9 @@ void MultiLayerSpinningLidar::onInitialize()
   pub_lethal_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>(pre_topic_name + "/lethal", 2);
 
   pct_marking_ = std::make_shared<Marking>(name_, &dGraph_, 
-        gbl_utils_->getInscribedRadius(), gbl_utils_->getInflationRadius(), shared_data_, resolution_, height_resolution_);
+        gbl_utils_->getInscribedRadius(), gbl_utils_->getInflationRadius(), shared_data_,
+        resolution_, height_resolution_, stair_riser_marking_config_,
+        terrain_surface_plane_tolerance_m_, clock_);
   get_first_tf_ = false;
   
   if(!is_local_planner_){
@@ -991,7 +1065,9 @@ void MultiLayerSpinningLidar::resetdGraph(){
   dGraph_.clear();
   dGraph_.initial(shared_data_->static_ground_size_, gbl_utils_->getMaxObstacleDistance());
   pct_marking_ = std::make_shared<Marking>(name_, &dGraph_, 
-        gbl_utils_->getInscribedRadius(), gbl_utils_->getInflationRadius(), shared_data_, resolution_, height_resolution_);
+        gbl_utils_->getInscribedRadius(), gbl_utils_->getInflationRadius(), shared_data_,
+        resolution_, height_resolution_, stair_riser_marking_config_,
+        terrain_surface_plane_tolerance_m_, clock_);
   RCLCPP_INFO(node_->get_logger().get_child(name_), "%s done dynamic graph regeneration.", name_.c_str());
 }
 

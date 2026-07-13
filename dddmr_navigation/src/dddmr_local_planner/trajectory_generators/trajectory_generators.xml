@@ -17,6 +17,9 @@
       <description>TBW</description>
     </class>
 
+    <class type="trajectory_generators::TerrainFollowingDDTheory"  base_class_type="trajectory_generators::TrajectoryGeneratorTheory">
+      <description>Optional fail-closed DD generator that projects every future pose onto one immutable terrain snapshot and static-ground generation.</description>
+    </class>
+
   </library>
 </class_libraries>
-

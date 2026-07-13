@@ -30,6 +30,8 @@
 */
 #include <perception_3d/cluster_marking.h>
 
+#include <cmath>
+
 
 namespace perception_3d
 {
@@ -51,10 +53,103 @@ void Marking::computeMinDistanceFromObstacle2GroundNodes(
   const pcl::ModelCoefficients::Ptr& pcplaneptr,
   std::unordered_map<int, float>& nodes_of_min_distance){
 
+  if(!shared_data_){
+    return;
+  }
+  // Some callers already hold this recursive ground lock.  Reacquiring it is
+  // intentional and guarantees direct/unit-test callers receive the same
+  // immutable ground/KD-tree contract.  Terrain identity is acquired second,
+  // matching StaticLayer's update order.
+  std::unique_lock<std::recursive_mutex> ground_lock(
+    shared_data_->ground_kdtree_cb_mutex_);
+  std::unique_lock<std::mutex> terrain_identity_lease;
+  if(stair_riser_semantics_.enabled){
+    terrain_identity_lease = shared_data_->acquireTerrainIdentityLease();
+  }
+  (void)terrain_identity_lease;
+
+  pcl::PointCloud<pcl::PointXYZI>::Ptr marking_cloud = pcptr;
+  const auto scoring_snapshot = stair_riser_semantics_.enabled && shared_data_ ?
+    shared_data_->getTerrainSnapshot() : TerrainSnapshotConstPtr{};
+  std::string config_error;
+  const bool semantic_filter_ready =
+    stair_riser_semantics_.enabled && clock_ && shared_data_ && scoring_snapshot &&
+    shared_data_->pcl_ground_ && shared_data_->kdtree_ground_ &&
+    scoring_snapshot->nodes().size() == shared_data_->pcl_ground_->size() &&
+    std::isfinite(terrain_surface_plane_tolerance_m_) &&
+    terrain_surface_plane_tolerance_m_ > 0.0 &&
+    StairRiserSemantics::validConfig(stair_riser_semantics_, &config_error);
+  if(stair_riser_semantics_.enabled && !semantic_filter_ready && clock_){
+    RCLCPP_WARN_THROTTLE(
+      rclcpp::get_logger(name_), *clock_, 2000,
+      "stair_riser_marking_fail_closed: semantic prerequisites unavailable (%s); "
+      "retaining every cluster point as an obstacle",
+      config_error.empty() ? "snapshot/ground unavailable" : config_error.c_str());
+  }
+  if(semantic_filter_ready){
+    auto filtered = std::make_shared<pcl::PointCloud<pcl::PointXYZI>>();
+    filtered->header = pcptr->header;
+    filtered->reserve(pcptr->size());
+    std::size_t passthrough_count = 0U;
+    for(const auto& point : pcptr->points){
+      std::vector<int> terrain_indices(1);
+      std::vector<float> squared_distances(1);
+      StairRiserSemanticResult classification;
+      if(shared_data_->kdtree_ground_->nearestKSearch(
+          point, 1, terrain_indices, squared_distances) > 0 &&
+        terrain_indices.front() >= 0 &&
+        static_cast<std::size_t>(terrain_indices.front()) < shared_data_->pcl_ground_->size())
+      {
+        const std::size_t terrain_index =
+          static_cast<std::size_t>(terrain_indices.front());
+        const auto& terrain_point = shared_data_->pcl_ground_->points[terrain_index];
+        StairRiserObservation observation;
+        observation.snapshot = scoring_snapshot;
+        observation.terrain_ground_version = scoring_snapshot->version();
+        observation.now_nanoseconds = clock_->now().nanoseconds();
+        observation.terrain_node_index = terrain_index;
+        observation.terrain_node_position = Eigen::Vector3f(
+          terrain_point.x, terrain_point.y, terrain_point.z);
+        observation.obstacle_position = Eigen::Vector3f(point.x, point.y, point.z);
+        // No temporal dynamic label is present in the legacy cluster point
+        // type.  This is "not confirmed dynamic", not proof of static state.
+        // Non-coincident geometry stays lethal; a perfectly co-planar return
+        // cannot be distinguished until a tracker supplies explicit evidence.
+        observation.dynamic_obstacle_confirmed = false;
+        classification = StairRiserSemantics::classify(
+          stair_riser_semantics_, observation);
+      }
+      if(classification.expected_riser){
+        ++passthrough_count;
+      }else{
+        filtered->push_back(point);
+      }
+    }
+    // Never apply a classification computed against a snapshot that was
+    // replaced while iterating.  The original cluster remains untouched and
+    // is used for fail-closed marking in that case.
+    if(shared_data_->getTerrainSnapshot() == scoring_snapshot){
+      marking_cloud = std::move(filtered);
+      if(passthrough_count > 0U){
+        RCLCPP_DEBUG_THROTTLE(
+          rclcpp::get_logger(name_), *clock_, 1000,
+          "stair_riser_marking_passthrough points=%zu retained_obstacles=%zu "
+          "(raw cluster retained for debug)",
+          passthrough_count, marking_cloud->size());
+      }
+    }
+  }
+  const bool semantic_association_ready = semantic_filter_ready &&
+    shared_data_->getTerrainSnapshot() == scoring_snapshot;
+
+  if(marking_cloud->empty()){
+    return;
+  }
+
   pcl::PointCloud<pcl::PointXYZI>::Ptr projected_cloud_cluster (new pcl::PointCloud<pcl::PointXYZI>);
   pcl::ProjectInliers<pcl::PointXYZI> proj;
   proj.setModelType (pcl::SACMODEL_PLANE);
-  proj.setInputCloud (pcptr);
+  proj.setInputCloud (marking_cloud);
   proj.setModelCoefficients (pcplaneptr);
   proj.filter (*projected_cloud_cluster);
 
@@ -71,9 +166,52 @@ void Marking::computeMinDistanceFromObstacle2GroundNodes(
 
     std::vector<int> id_tmp;
     std::vector<float> sqdist_tmp;
+    const TerrainNode* reference_node = nullptr;
+    pcl::PointXYZI reference_ground_point;
+    if(semantic_association_ready){
+      std::vector<int> reference_indices(1);
+      std::vector<float> reference_squared_distances(1);
+      if(shared_data_->kdtree_ground_->nearestKSearch(
+          pt, 1, reference_indices, reference_squared_distances) > 0 &&
+        reference_indices.front() >= 0 &&
+        static_cast<std::size_t>(reference_indices.front()) <
+        shared_data_->pcl_ground_->size())
+      {
+        const std::size_t reference_index =
+          static_cast<std::size_t>(reference_indices.front());
+        reference_node = scoring_snapshot->nodeAt(reference_index);
+        reference_ground_point = shared_data_->pcl_ground_->points[reference_index];
+        if(!reference_node || reference_node->surface_id < 0 ||
+          !reference_node->normal.allFinite() ||
+          reference_node->normal.norm() <= 1.0e-6F)
+        {
+          reference_node = nullptr;
+        }
+      }
+    }
     //@ We mark lethal
     if(shared_data_->kdtree_ground_->radiusSearch(pt, inflation_radius_, id_tmp, sqdist_tmp)){
       for(int i=0;i<id_tmp.size();i++){
+        if(semantic_association_ready && reference_node){
+          const std::size_t candidate_index = static_cast<std::size_t>(id_tmp[i]);
+          const TerrainNode* candidate_node = scoring_snapshot->nodeAt(candidate_index);
+          if(!candidate_node){
+            continue;
+          }
+          const auto& candidate_ground = shared_data_->pcl_ground_->points[candidate_index];
+          if(!terrainSurfaceProjectionCompatible(
+              *reference_node,
+              Eigen::Vector3f(
+                reference_ground_point.x, reference_ground_point.y,
+                reference_ground_point.z),
+              *candidate_node,
+              Eigen::Vector3f(
+                candidate_ground.x, candidate_ground.y, candidate_ground.z),
+              static_cast<float>(terrain_surface_plane_tolerance_m_)))
+          {
+            continue;
+          }
+        }
         float dx = pt.x - shared_data_->pcl_ground_->points[id_tmp[i]].x;
         float dy = pt.y - shared_data_->pcl_ground_->points[id_tmp[i]].y;
         float dz = pt.z - shared_data_->pcl_ground_->points[id_tmp[i]].z;

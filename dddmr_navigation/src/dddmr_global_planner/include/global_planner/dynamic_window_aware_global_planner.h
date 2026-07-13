@@ -32,6 +32,9 @@
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
 
+#include <mutex>
+#include <string>
+
 #include "sensor_msgs/msg/point_cloud2.hpp"
 
 /*global planner*/
@@ -111,10 +114,21 @@ class DWA_GlobalPlanner : public rclcpp::Node {
       std::string robot_frame_;
       geometry_msgs::msg::PoseStamped new_goal_;
       geometry_msgs::msg::PoseStamped current_goal_;
+      bool has_current_goal_;
       nav_msgs::msg::Path global_path_;
       nav_msgs::msg::Path global_dwa_path_;
+      planner_safety::PlanningDataBinding global_path_binding_;
+      planner_safety::PlanningDataBinding global_dwa_path_binding_;
+      TerrainEdgeRejectionStatistics global_path_terrain_statistics_;
+      TerrainEdgeRejectionStatistics global_dwa_path_terrain_statistics_;
+      std::string last_dwa_rejection_reason_;
+      // makePlan runs on a detached action thread while determineDWAPlan runs
+      // on the executor timer.  Keep each Path and its sidecar binding atomic.
+      std::recursive_mutex path_state_mutex_;
       double look_ahead_distance_;
       double recompute_frequency_;
+      double maximum_splice_segment_length_;
+      double terrain_transition_mapping_tolerance_;
       
       pcl::KdTreeFLANN<pcl::PointXYZ>::Ptr kdtree_global_path_; 
       pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_global_path_;
@@ -123,6 +137,7 @@ class DWA_GlobalPlanner : public rclcpp::Node {
       void makePlan(const std::shared_ptr<rclcpp_action::ServerGoalHandle<dddmr_sys_core::action::GetPlan>> goal_handle);
       bool isNewGoal();
       void determineDWAPlan();
+      void failClosedDWAPlan(const std::string& reason);
 
 };
 

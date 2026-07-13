@@ -1,0 +1,168 @@
+# Offline site-profile template for ramp and manually annotated stair tests.
+#
+# This file is deliberately NOT a ROS launch-ready configuration.  Copy it to
+# a site-specific, non-template filename, replace every null measurement with
+# data from the actual map/site, validate it, and then transfer only reviewed
+# values to the runtime ROS parameters.  Empty/null geometry is intentional:
+# no example coordinates are provided because they could be mistaken for a
+# real stair corridor.
+
+schema_version: 1
+
+profile:
+  enabled: false
+  site_id: null
+  capability_profile_version: null
+  software_commit: null
+
+map:
+  frame_id: map
+  sha256: null
+  complete_ground_voxel_size_m: null
+
+terrain_roi:
+  enabled: false
+  source_map_sha256: null
+  frame_id: map
+  voxel_size_m: null
+  min_xyz: null
+  max_xyz: null
+
+terrain:
+  enabled: false
+  fail_closed: true
+  source_map_sha256: null
+  model:
+    normal_radius_m: 0.30
+    min_neighbors: 8
+    max_plane_residual_m: 0.04
+    edge_sample_spacing_m: 0.05
+    support_radius_m: 0.10
+    min_support_ratio: 0.80
+    min_confidence: 0.90
+    max_unknown_ratio: 0.0
+    max_age_s: 0.20
+  traversal:
+    max_roughness_m: 0.0
+    max_normal_change_deg: 0.0
+    max_body_roll_deg: 0.0
+    max_body_pitch_deg: 0.0
+    ramp:
+      enabled: false
+      max_up_slope_deg: 0.0
+      max_down_slope_deg: 0.0
+      max_cross_slope_deg: 0.0
+      max_up_speed_mps: 0.0
+      max_down_speed_mps: 0.0
+      max_yaw_rps: 0.0
+    generic:
+      max_step_up_m: 0.0
+      max_step_down_m: 0.0
+
+ramp_capability:
+  verified: false
+  source_map_sha256: null
+  max_up_slope_deg: null
+  max_down_slope_deg: null
+  max_cross_slope_deg: null
+  max_roughness_m: null
+  max_normal_change_deg: null
+  max_body_roll_deg: null
+  max_body_pitch_deg: null
+  minimum_observed_support_ratio: null
+  v_exec_min_mps: null
+  max_up_speed_mps: null
+  max_down_speed_mps: null
+  max_yaw_rps: null
+  evidence_ids: []
+
+stair:
+  enabled: false
+  require_manual_corridor: true
+  require_online_confirmation: true
+  min_confidence: 0.90
+  max_riser_height_m: 0.0
+  min_tread_depth_m: 0.0
+  max_tread_depth_m: 0.0
+  max_riser_deviation_m: 0.0
+  max_tread_deviation_m: 0.0
+  step_count_semantics: riser_count
+  highest_tread_semantics: level_with_upper_landing
+  # Must not exceed the runtime model tolerance max(0.02 m, 10% of riser).
+  max_height_closure_error_m: 0.02
+  max_heading_error_deg: 8.0
+  max_lateral_error_m: 0.10
+  max_body_roll_deg: 0.0
+  max_body_pitch_deg: 0.0
+  v_exec_min_mps: 0.0
+  max_up_speed_mps: 0.0
+  max_down_speed_mps: 0.0
+  max_committed_yaw_rps: 0.0
+  max_step_index_delta: 1
+  allow_in_place_rotation: false
+  allow_replanning_while_committed: false
+  normal_gait_constraint:
+    enabled: false
+    policy: latch_normal_navigation_gait_at_test_start
+    allow_gait_change_requests: false
+    require_state_monitor: true
+    require_sport_request_audit: true
+    expected_gait_type: null
+  riser_semantics:
+    enabled: false
+    max_snapshot_age_s: null
+    max_node_match_distance_m: null
+    riser_plane_tolerance_m: null
+    riser_lateral_tolerance_m: null
+    riser_vertical_tolerance_m: null
+    surface_plane_tolerance_m: null
+    leg_envelope_min_xyz: null
+    leg_envelope_max_xyz: null
+    max_support_xy_distance_m: null
+    min_body_clearance_m: null
+    max_body_clearance_m: null
+  corridors:
+    # This disabled record documents the required shape without inventing a
+    # usable site.  Fill measured values, then enable the record explicitly.
+    - enabled: false
+      id: null
+      source_map_sha256: null
+      capability_profile_version: null
+      up_axis_xyz: null
+      # Surveyed center of the first vertical riser face.  Runtime ROS
+      # parameter: terrain.stairs.<id>.first_riser_center.
+      first_riser_center_xyz: null
+      corridor_polygon_xy: []
+      lower_landing:
+        center_xyz: null
+        polygon_xy: []
+      upper_landing:
+        center_xyz: null
+        polygon_xy: []
+      width_m: null
+      riser_height_m: null
+      tread_depth_m: null
+      step_count: null
+      confidence: null
+      maximum_surface_roughness_m: null
+      minimum_observed_support_ratio: null
+      geometry_evidence_ids: []
+      allow_up: false
+      allow_down: false
+      normal_gait_up_evidence_ids: []
+      normal_gait_down_evidence_ids: []
+
+runtime_activation:
+  # These switches describe the reviewed runtime configuration as a single
+  # activation contract.  The validator requires the relevant switches to be
+  # true for a ramp/stair readiness target, but never changes ROS parameters.
+  terrain_layers_enabled: false
+  global_edge_policy_enabled: false
+  terrain_trajectory_generator_enabled: false
+  local_support_critic_enabled: false
+  goal_surface_match_enabled: false
+  stair_supervisor_enabled: false
+  stair_riser_collision_semantics_enabled: false
+  stair_riser_marking_enabled: false
+  terrain_command_gate_enabled: false
+  gait_monitor_enabled: false

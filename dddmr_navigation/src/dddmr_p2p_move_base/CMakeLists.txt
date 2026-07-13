@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.5)
 project(p2p_move_base)
 
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
@@ -69,6 +73,14 @@ ament_target_dependencies(p2p_state
   ${dependencies}
 )
 
+add_library(stair_traversal_supervisor SHARED
+  src/stair_traversal_supervisor.cpp
+)
+target_include_directories(stair_traversal_supervisor PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
 # p2p_global_plan_manager
 add_library(p2p_global_plan_manager SHARED
   src/p2p_global_plan_manager.cpp
@@ -87,6 +99,7 @@ add_library(p2p_mov2_base SHARED
 target_link_libraries(p2p_mov2_base
   p2p_state
   p2p_global_plan_manager
+  stair_traversal_supervisor
 )
 ament_target_dependencies(p2p_mov2_base
   ${dependencies}
@@ -107,6 +120,7 @@ install(TARGETS
   p2p_state
   p2p_mov2_base
   p2p_global_plan_manager
+  stair_traversal_supervisor
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
@@ -143,10 +157,25 @@ if(BUILD_TESTING)
   target_include_directories(test_local_failure_debounce PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
   )
+
+  ament_add_gtest(test_stair_traversal_supervisor
+    test/test_stair_traversal_supervisor.cpp
+  )
+  target_link_libraries(test_stair_traversal_supervisor
+    stair_traversal_supervisor
+  )
+  target_include_directories(test_stair_traversal_supervisor PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
 endif()
 
 
 ament_export_include_directories(include)
-ament_export_libraries(p2p_state p2p_mov2_base p2p_global_plan_manager)
+ament_export_libraries(
+  p2p_state
+  p2p_mov2_base
+  p2p_global_plan_manager
+  stair_traversal_supervisor
+)
 ament_export_dependencies(${dependencies})
 ament_package()

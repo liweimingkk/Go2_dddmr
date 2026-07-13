@@ -27,6 +27,7 @@ find_package(angles REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(base_trajectory REQUIRED)
+find_package(perception_3d REQUIRED)
 
 find_package(PCL REQUIRED)
 
@@ -52,6 +53,7 @@ set(dependencies
   pcl_conversions
   angles
   base_trajectory
+  perception_3d
 )
 
 include_directories(
@@ -95,6 +97,8 @@ ament_target_dependencies(mpc_critics_ros
 
 # critics
 add_library(critics SHARED
+  src/stair_collision_policy.cpp
+  src/terrain_support_policy.cpp
   models/pure_pursuit_model.cpp
   models/collision_model.cpp
   models/collision_min_max_model.cpp
@@ -102,6 +106,7 @@ add_library(critics SHARED
   models/stick_path_model.cpp
   models/toward_global_plan_model.cpp
   models/twirling_model.cpp
+  models/terrain_support_model.cpp
 )
 target_link_libraries(critics
   mpc_critics_ros
@@ -160,6 +165,26 @@ if(BUILD_TESTING)
     critics
   )
   ament_target_dependencies(test_collision_model
+    ${dependencies}
+  )
+
+  ament_add_gtest(test_terrain_support_policy
+    test/test_terrain_support_policy.cpp
+  )
+  target_link_libraries(test_terrain_support_policy
+    critics
+  )
+  ament_target_dependencies(test_terrain_support_policy
+    ${dependencies}
+  )
+
+  ament_add_gtest(test_stair_collision_policy
+    test/test_stair_collision_policy.cpp
+  )
+  target_link_libraries(test_stair_collision_policy
+    critics
+  )
+  ament_target_dependencies(test_stair_collision_policy
     ${dependencies}
   )
 endif()

@@ -23,6 +23,7 @@ find_package(tf2 REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(tf2_eigen REQUIRED)
 find_package(pluginlib REQUIRED)
+find_package(dddmr_sys_core REQUIRED)
 
 set(dependencies
   rclcpp
@@ -42,6 +43,7 @@ set(dependencies
   tf2_geometry_msgs
   tf2_eigen
   pluginlib
+  dddmr_sys_core
 )
 
 include_directories(
@@ -61,10 +63,14 @@ install(TARGETS
 #install node
 
 install(PROGRAMS
+  scripts/audit_go2_navigation_request_echo.py
+  scripts/go2_gait_monitor_policy.py
+  scripts/go2_gait_state_monitor.py
   scripts/go2_nav_cmd_gate.py
   scripts/go2_nav_gate_policy.py
   scripts/go2_sport_cmd_vel_dry_run.py
   scripts/go2_sport_cmd_vel_adapter.py
+  scripts/go2_sport_request_policy.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -74,6 +80,21 @@ if(BUILD_TESTING)
     NAME test_go2_nav_gate_policy
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/test/test_go2_nav_gate_policy.py
+  )
+  add_test(
+    NAME test_go2_gait_monitor_policy
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/test/test_go2_gait_monitor_policy.py
+  )
+  add_test(
+    NAME test_go2_sport_request_policy
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/test/test_go2_sport_request_policy.py
+  )
+  add_test(
+    NAME test_go2_xt16_terrain_site_profile
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/test/test_go2_xt16_terrain_site_profile.py
   )
 endif()
 

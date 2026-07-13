@@ -32,6 +32,7 @@
 #define PERCEPTION_3D_CLUSTER_MARKING_H_
 
 #include <perception_3d/sensor.h>
+#include <perception_3d/stair_riser_semantics.h>
 
 #include <sensor_msgs/msg/point_cloud2.hpp>
 /*Point cloud library*/
@@ -51,6 +52,7 @@
 /*For map*/
 #include <map>
 #include <set>
+#include <utility>
 
 /*For sqrt*/
 #include <math.h> 
@@ -100,8 +102,24 @@ class Marking{
 
   public:
 
-    Marking(std::string m_name, DynamicGraph* dg, double inscribed_radius, double inflation_radius, const std::shared_ptr<perception_3d::SharedData>& shared_data, double xy_resolution, double height_resolution):
-      name_(m_name), dGraph_(dg), inscribed_radius_(inscribed_radius), inflation_radius_(inflation_radius), shared_data_(shared_data), xy_resolution_(xy_resolution), height_resolution_(height_resolution){};
+    Marking(
+      std::string m_name,
+      DynamicGraph* dg,
+      double inscribed_radius,
+      double inflation_radius,
+      const std::shared_ptr<perception_3d::SharedData>& shared_data,
+      double xy_resolution,
+      double height_resolution,
+      StairRiserSemanticsConfig stair_riser_semantics = {},
+      double terrain_surface_plane_tolerance_m = 0.0,
+      rclcpp::Clock::SharedPtr clock = nullptr):
+      name_(std::move(m_name)), dGraph_(dg),
+      xy_resolution_(xy_resolution), height_resolution_(height_resolution),
+      inflation_radius_(inflation_radius), inscribed_radius_(inscribed_radius),
+      shared_data_(shared_data),
+      stair_riser_semantics_(std::move(stair_riser_semantics)),
+      terrain_surface_plane_tolerance_m_(terrain_surface_plane_tolerance_m),
+      clock_(std::move(clock)){};
     
     ~Marking();
 
@@ -154,6 +172,10 @@ class Marking{
     rclcpp::Time last_observation_time_;
 
     std::shared_ptr<perception_3d::SharedData> shared_data_;
+
+    StairRiserSemanticsConfig stair_riser_semantics_;
+    double terrain_surface_plane_tolerance_m_{0.0};
+    rclcpp::Clock::SharedPtr clock_;
 
 };
 

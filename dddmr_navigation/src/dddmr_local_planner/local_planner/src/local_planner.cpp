@@ -29,6 +29,8 @@
 * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 #include <local_planner/local_planner.h>
+#include <local_planner/goal_tolerance.h>
+#include <local_planner/plan_validation.h>
 
 #include <chrono>
 #include <cmath>
@@ -88,13 +90,36 @@ void Local_Planner::initial(
   this->get_parameter("prune_plane_timeout", prune_plane_timeout_);
   RCLCPP_INFO(this->get_logger(), "prune_plane_timeout: %.2f", prune_plane_timeout_);
 
+  plan_max_segment_length_ = this->declare_parameter<double>(
+    "plan_max_segment_length", 0.75);
+  if (!std::isfinite(plan_max_segment_length_) || plan_max_segment_length_ <= 0.0) {
+    throw std::invalid_argument("plan_max_segment_length must be finite and positive");
+  }
+
   declare_parameter("xy_goal_tolerance", rclcpp::ParameterValue(0.3));
   this->get_parameter("xy_goal_tolerance", xy_goal_tolerance_);
   RCLCPP_INFO(this->get_logger(), "xy_goal_tolerance: %.2f", xy_goal_tolerance_);
 
+  declare_parameter("z_goal_tolerance", rclcpp::ParameterValue(0.2));
+  this->get_parameter("z_goal_tolerance", z_goal_tolerance_);
+  RCLCPP_INFO(this->get_logger(), "z_goal_tolerance: %.2f", z_goal_tolerance_);
+
   declare_parameter("yaw_goal_tolerance", rclcpp::ParameterValue(0.3));
   this->get_parameter("yaw_goal_tolerance", yaw_goal_tolerance_);
   RCLCPP_INFO(this->get_logger(), "yaw_goal_tolerance: %.2f", yaw_goal_tolerance_);
+  goal_surface_match_required_ = this->declare_parameter<bool>(
+    "goal_surface_match_required", false);
+  goal_terrain_search_radius_ = this->declare_parameter<double>(
+    "goal_terrain_search_radius", 0.35);
+  robot_ground_z_offset_ = this->declare_parameter<double>(
+    "robot_ground_z_offset", 0.24);
+  if(!std::isfinite(xy_goal_tolerance_) || xy_goal_tolerance_ < 0.0 ||
+     !std::isfinite(z_goal_tolerance_) || z_goal_tolerance_ < 0.0 ||
+     !std::isfinite(yaw_goal_tolerance_) || yaw_goal_tolerance_ < 0.0 ||
+     !std::isfinite(goal_terrain_search_radius_) || goal_terrain_search_radius_ <= 0.0 ||
+     !std::isfinite(robot_ground_z_offset_) || robot_ground_z_offset_ < 0.0){
+    throw std::invalid_argument("goal tolerances must be finite and non-negative");
+  }
 
   declare_parameter("controller_frequency", rclcpp::ParameterValue(10.0));
   this->get_parameter("controller_frequency", controller_frequency_);
@@ -315,7 +340,7 @@ double Local_Planner::getShortestAngleFromPose2RobotHeading(tf2::Transform m_pos
 bool Local_Planner::isInitialHeadingAligned(){
 
   prunePlan(heading_tracking_distance_, 0.0);
-  if(prune_plan_.poses.size()<3){
+  if(prune_plan_.poses.size()<2){
     RCLCPP_WARN_THROTTLE(this->get_logger().get_child(name_), *clock_, 5000, "Prune plan is too short when checking initial heading.");
     return false;
   }
@@ -415,38 +440,100 @@ bool Local_Planner::isGoalReached(){
   final_pose = global_plan_.back();
   double dx = trans_gbl2b_.transform.translation.x - final_pose.pose.position.x;
   double dy = trans_gbl2b_.transform.translation.y - final_pose.pose.position.y;
-  double dz = trans_gbl2b_.transform.translation.z - final_pose.pose.position.z;
-  double distance = sqrt(dx*dx + dy*dy + dz*dz);
-  if(xy_goal_tolerance_>distance)
-    return true;
-  else
+  // Global-plan samples lie on mapground while the tracked robot transform is
+  // base_link.  Compare ground elevations instead of rejecting every flat
+  // goal by the nominal body clearance.
+  double dz = trans_gbl2b_.transform.translation.z - robot_ground_z_offset_ -
+    final_pose.pose.position.z;
+  if (!withinGoalTolerance(
+      dx, dy, dz, xy_goal_tolerance_, z_goal_tolerance_))
+  {
     return false;
-}
-
-void Local_Planner::setPlan(const std::vector<geometry_msgs::msg::PoseStamped>& orig_global_plan) {
-
-  if(orig_global_plan.size()<3){
-    RCLCPP_ERROR(this->get_logger().get_child(name_), "Size of global plan is smaller than 3.");
-    return;
+  }
+  if (!goal_surface_match_required_) {
+    return true;
+  }
+  if (!perception_3d_ros_ || !perception_3d_ros_->getSharedDataPtr()) {
+    return false;
+  }
+  const auto shared = perception_3d_ros_->getSharedDataPtr();
+  std::unique_lock<std::recursive_mutex> lock(shared->ground_kdtree_cb_mutex_);
+  const auto snapshot = shared->getTerrainSnapshot();
+  if (!snapshot || !snapshot->valid() || !shared->pcl_ground_ ||
+    !shared->kdtree_ground_ || snapshot->nodes().size() != shared->pcl_ground_->size())
+  {
+    return false;
   }
 
-  global_plan_.clear();
-  global_plan_ = orig_global_plan;
+  pcl::PointXYZI robot_ground;
+  robot_ground.x = static_cast<float>(trans_gbl2b_.transform.translation.x);
+  robot_ground.y = static_cast<float>(trans_gbl2b_.transform.translation.y);
+  robot_ground.z = static_cast<float>(
+    trans_gbl2b_.transform.translation.z - robot_ground_z_offset_);
+  pcl::PointXYZI goal_ground;
+  goal_ground.x = static_cast<float>(final_pose.pose.position.x);
+  goal_ground.y = static_cast<float>(final_pose.pose.position.y);
+  goal_ground.z = static_cast<float>(final_pose.pose.position.z);
+  std::vector<int> robot_indices(1);
+  std::vector<float> robot_distances(1);
+  std::vector<int> goal_indices(1);
+  std::vector<float> goal_distances(1);
+  if (shared->kdtree_ground_->nearestKSearch(
+      robot_ground, 1, robot_indices, robot_distances) != 1 ||
+    shared->kdtree_ground_->nearestKSearch(
+      goal_ground, 1, goal_indices, goal_distances) != 1 ||
+    robot_indices.front() < 0 || goal_indices.front() < 0 ||
+    robot_distances.front() > goal_terrain_search_radius_ * goal_terrain_search_radius_ ||
+    goal_distances.front() > goal_terrain_search_radius_ * goal_terrain_search_radius_)
+  {
+    return false;
+  }
+  return terrainGoalMatches(
+    snapshot->nodeAt(static_cast<std::size_t>(robot_indices.front())),
+    snapshot->nodeAt(static_cast<std::size_t>(goal_indices.front())));
+}
 
-  pcl_global_plan_.reset(new pcl::PointCloud<pcl::PointXYZ>);
-  for(auto gbl_it = global_plan_.begin(); gbl_it!=global_plan_.end();gbl_it++){
+bool Local_Planner::setPlan(
+  const std::vector<geometry_msgs::msg::PoseStamped>& orig_global_plan)
+{
+  std::string validation_error;
+  const std::string expected_frame = perception_3d_ros_ ?
+    perception_3d_ros_->getGlobalUtils()->getGblFrame() : std::string{};
+  if (!validGlobalPlan(
+      orig_global_plan, expected_frame, plan_max_segment_length_, &validation_error))
+  {
+    // Never retain a previously valid route after receiving an invalid
+    // replacement.  The caller must Stop and request a new bound plan.
+    global_plan_.clear();
+    prune_plan_.poses.clear();
+    pcl_prune_plan_.clear();
+    pcl_global_plan_ = std::make_shared<pcl::PointCloud<pcl::PointXYZ>>();
+    kdtree_global_plan_ = std::make_shared<pcl::KdTreeFLANN<pcl::PointXYZ>>();
+    RCLCPP_ERROR(
+      this->get_logger().get_child(name_), "Rejected global plan: %s",
+      validation_error.c_str());
+    return false;
+  }
+
+  auto next_cloud = std::make_shared<pcl::PointCloud<pcl::PointXYZ>>();
+  next_cloud->reserve(orig_global_plan.size());
+  for (auto gbl_it = orig_global_plan.begin(); gbl_it != orig_global_plan.end(); ++gbl_it) {
     pcl::PointXYZ pt;
     pt.x = (*gbl_it).pose.position.x;
     pt.y = (*gbl_it).pose.position.y;
     pt.z = (*gbl_it).pose.position.z;
-    pcl_global_plan_->push_back(pt);
+    next_cloud->push_back(pt);
   }
 
-  kdtree_global_plan_.reset(new pcl::KdTreeFLANN<pcl::PointXYZ>());
-  kdtree_global_plan_->setInputCloud (pcl_global_plan_);
+  auto next_tree = std::make_shared<pcl::KdTreeFLANN<pcl::PointXYZ>>();
+  next_tree->setInputCloud(next_cloud);
+  global_plan_ = orig_global_plan;
+  pcl_global_plan_ = std::move(next_cloud);
+  kdtree_global_plan_ = std::move(next_tree);
   RCLCPP_INFO_THROTTLE(this->get_logger().get_child(name_), *clock_, 10000, "Recieve new global plan.");
   //RCLCPP_INFO(this->get_logger().get_child(name_), "Recieve new global plan: %.2f, %.2f", 
   //    global_plan_.back().pose.position.x, global_plan_.back().pose.position.y);
+  return true;
 }
 
 double Local_Planner::getDistanceBTWPoseStamp(const geometry_msgs::msg::PoseStamped& a, const geometry_msgs::msg::PoseStamped& b){
@@ -479,7 +566,7 @@ geometry_msgs::msg::TransformStamped Local_Planner::getGlobalPose(){
 
 void Local_Planner::prunePlan(double forward_distance, double backward_distance){
 
-  if(pcl_global_plan_->points.size()<3){
+  if(pcl_global_plan_->points.size()<2){
     RCLCPP_WARN_THROTTLE(
       this->get_logger().get_child(name_), *clock_, 1000,
       "prune_plan_empty reason=global_plan_too_small pcl_global_plan_size=%zu",
@@ -495,7 +582,7 @@ void Local_Planner::prunePlan(double forward_distance, double backward_distance)
   pcl::PointXYZ robot_pose;
   robot_pose.x = trans_gbl2b_.transform.translation.x;
   robot_pose.y = trans_gbl2b_.transform.translation.y;
-  robot_pose.z = trans_gbl2b_.transform.translation.z;
+  robot_pose.z = trans_gbl2b_.transform.translation.z - robot_ground_z_offset_;
 
   if ( kdtree_global_plan_->nearestKSearch (robot_pose, 1, pointIdxNKNSearch, pointNKNSquaredDistance) <= 0 ){
     RCLCPP_WARN_THROTTLE(
@@ -741,13 +828,28 @@ dddmr_sys_core::PlannerState Local_Planner::computeVelocityCommand(std::string t
 
   //Do not create a function to set the parameters unless a nice structure is found
   //Below assignment of variables is useful when migrate to ROS2
-  trajectory_generators_ros_->getSharedDataPtr()->robot_pose_ = trans_gbl2b_;
-  trajectory_generators_ros_->getSharedDataPtr()->robot_state_ = robot_state_;
-  trajectory_generators_ros_->getSharedDataPtr()->ackermann_drive_state_ = ackermann_drive_state_;
-  trajectory_generators_ros_->getSharedDataPtr()->prune_plan_ = prune_plan_;
+  const auto trajectory_shared_data = trajectory_generators_ros_->getSharedDataPtr();
+  trajectory_shared_data->robot_pose_ = trans_gbl2b_;
+  trajectory_shared_data->robot_state_ = robot_state_;
+  trajectory_shared_data->ackermann_drive_state_ = ackermann_drive_state_;
+  trajectory_shared_data->prune_plan_ = prune_plan_;
   //@ change max speed from perception shared data framework
-  trajectory_generators_ros_->getSharedDataPtr()->current_allowed_max_linear_speed_ 
+  trajectory_shared_data->current_allowed_max_linear_speed_
                   = perception_3d_ros_->getSharedDataPtr()->current_allowed_max_linear_speed_;
+
+  // A terrain-following generator opts in explicitly.  Deep-copy mapground and
+  // pair it with the snapshot/static generation while the producer mutex is
+  // held; the generator then leases this immutable context for every point in
+  // every candidate returned during this generation cycle.
+  if(trajectory_shared_data->terrainProjectionDataRequested()){
+    const auto perception_shared_data = perception_3d_ros_->getSharedDataPtr();
+    std::unique_lock<std::recursive_mutex> ground_lock(
+      perception_shared_data->ground_kdtree_cb_mutex_);
+    trajectory_shared_data->updateTerrainProjectionData(
+      perception_shared_data->getTerrainSnapshot(),
+      perception_shared_data->pcl_ground_,
+      perception_shared_data->getStaticGroundGeneration());
+  }
 
   trajectory_generators_ros_->initializeTheories_wi_Shared_data();
 
@@ -792,13 +894,29 @@ dddmr_sys_core::PlannerState Local_Planner::computeVelocityCommand(std::string t
 
   //@Update data for critics
   std::unique_lock<mpc_critics::StackedScoringModel::model_mutex_t> critics_lock(*(mpc_critics_ros_->getStackedScoringModelPtr()->getMutex()));
+  const auto perception_shared_data = perception_3d_ros_->getSharedDataPtr();
+  const auto critic_shared_data = mpc_critics_ros_->getSharedDataPtr();
   //@ unless we come up with a better strcuture
   //@ keep below for easy migration for ROS2
-  mpc_critics_ros_->getSharedDataPtr()->robot_pose_ = trans_gbl2b_;
-  mpc_critics_ros_->getSharedDataPtr()->robot_state_ = robot_state_;
-  mpc_critics_ros_->getSharedDataPtr()->ackermann_drive_state_ = ackermann_drive_state_;
-  mpc_critics_ros_->getSharedDataPtr()->pcl_perception_ = perception_3d_ros_->getSharedDataPtr()->aggregate_observation_;
-  mpc_critics_ros_->getSharedDataPtr()->prune_plan_ = prune_plan_;
+  critic_shared_data->robot_pose_ = trans_gbl2b_;
+  critic_shared_data->robot_state_ = robot_state_;
+  critic_shared_data->ackermann_drive_state_ = ackermann_drive_state_;
+  critic_shared_data->pcl_perception_ = perception_shared_data->aggregate_observation_;
+  critic_shared_data->prune_plan_ = prune_plan_;
+
+  // TerrainSnapshot nodes and mapground points share one strict index.  Copy
+  // them while the producer's ground mutex is held so every trajectory in this
+  // scoring cycle sees one immutable version and a KD-tree built from exactly
+  // that cloud.  Missing snapshots remain explicit and are rejected whenever
+  // TerrainSupportModel is enabled.
+  if(critic_shared_data->terrainSupportDataRequested()){
+    std::unique_lock<std::recursive_mutex> ground_lock(
+      perception_shared_data->ground_kdtree_cb_mutex_);
+    const auto terrain_snapshot = perception_shared_data->getTerrainSnapshot();
+    const auto terrain_version = terrain_snapshot ? terrain_snapshot->version() : 0U;
+    critic_shared_data->updateTerrainData(
+      terrain_snapshot, perception_shared_data->pcl_ground_, terrain_version);
+  }
   //@ Below function transform prune_plane from nav::msg to pcl type
   //@ Below function generate kd-tree using aggregate observation
   mpc_critics_ros_->updateSharedData();

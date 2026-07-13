@@ -6,6 +6,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(ament_cmake REQUIRED)
+find_package(eigen3_cmake_module REQUIRED)
+find_package(Eigen3 REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
@@ -27,6 +29,7 @@ find_package(angles REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(base_trajectory REQUIRED)
+find_package(perception_3d REQUIRED)
 
 find_package(PCL REQUIRED)
 
@@ -53,6 +56,7 @@ set(dependencies
   pcl_conversions
   angles
   base_trajectory
+  perception_3d
 )
 
 include_directories(
@@ -61,11 +65,24 @@ include_directories(
   ${base_trajectory_INCLUDE_DIRS}
 )
 
+# Pure terrain projection policy and immutable mapground/snapshot context.
+add_library(terrain_trajectory_projector SHARED
+  src/terrain_trajectory_projector.cpp
+)
+target_link_libraries(terrain_trajectory_projector
+  Eigen3::Eigen
+)
+ament_target_dependencies(terrain_trajectory_projector
+  perception_3d
+)
+
 # trajectory_generator_theory
 add_library(trajectory_generator_theory SHARED
   src/trajectory_generator_theory.cpp
+  src/trajectory_shared_data.cpp
 )
 target_link_libraries(trajectory_generator_theory
+  terrain_trajectory_projector
   ${PCL_LIBRARIES}
 )
 ament_target_dependencies(trajectory_generator_theory
@@ -100,6 +117,7 @@ add_library(theories SHARED
   theories/dd_simple_trajectory_generator_theory.cpp
   theories/omni_simple_trajectory_generator_theory.cpp
   theories/one_state_trajectory_generator_theory.cpp
+  theories/terrain_following_dd_theory.cpp
 )
 target_link_libraries(theories
   trajectory_generator_ros
@@ -121,6 +139,7 @@ ament_target_dependencies(trajectory_generators_node
 )
 
 install(TARGETS
+  terrain_trajectory_projector
   trajectory_generator_theory
   stacked_generator
   trajectory_generator_ros
@@ -171,10 +190,21 @@ if(BUILD_TESTING)
   ament_target_dependencies(test_dd_rotate_inplace_collision_horizon
     ${dependencies}
   )
+
+  ament_add_gtest(test_terrain_trajectory_projector
+    test/test_terrain_trajectory_projector.cpp
+  )
+  target_link_libraries(test_terrain_trajectory_projector
+    terrain_trajectory_projector
+    Eigen3::Eigen
+  )
+  ament_target_dependencies(test_terrain_trajectory_projector
+    perception_3d
+  )
 endif()
 
 ament_export_include_directories(include)
-ament_export_libraries(trajectory_generator_theory stacked_generator trajectory_generator_ros theories)
-ament_export_dependencies(${dependencies})
+ament_export_libraries(terrain_trajectory_projector trajectory_generator_theory stacked_generator trajectory_generator_ros theories)
+ament_export_dependencies(eigen3_cmake_module Eigen3 ${dependencies})
 pluginlib_export_plugin_description_file(trajectory_generators trajectory_generators.xml)
 ament_package()

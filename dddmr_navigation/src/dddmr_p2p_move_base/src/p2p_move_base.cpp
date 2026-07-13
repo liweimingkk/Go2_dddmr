@@ -30,6 +30,30 @@
 */
 #include <p2p_move_base/p2p_move_base.h>
 
+#include <algorithm>
+#include <cmath>
+#include <limits>
+
+namespace
+{
+
+const char * stairStateName(p2p_move_base::StairTraversalState state)
+{
+  using p2p_move_base::StairTraversalState;
+  switch (state) {
+    case StairTraversalState::NORMAL: return "NORMAL";
+    case StairTraversalState::PRECHECK: return "STAIR_PRECHECK";
+    case StairTraversalState::APPROACH: return "STAIR_APPROACH";
+    case StairTraversalState::ALIGN: return "STAIR_ALIGN";
+    case StairTraversalState::COMMITTED: return "STAIR_COMMITTED";
+    case StairTraversalState::LANDING_VERIFY: return "STAIR_LANDING_VERIFY";
+    case StairTraversalState::FAULT_LATCH: return "STAIR_FAULT_LATCH";
+  }
+  return "UNKNOWN";
+}
+
+}  // namespace
+
 namespace p2p_move_base
 {
 
@@ -93,6 +117,56 @@ void P2PMoveBase::initial(const std::shared_ptr<local_planner::Local_Planner>& l
   RCLCPP_INFO(
     this->get_logger(), "local_failure_confirmation_cycles: %ld",
     static_cast<long>(local_failure_confirmation_cycles));
+
+  terrain_supervisor_enabled_ = this->declare_parameter<bool>(
+    "terrain_supervisor_enabled", false);
+  stair_align_trajectory_generator_ = this->declare_parameter<std::string>(
+    "stair_align_trajectory_generator", "differential_drive_stair_align");
+  if (stair_align_trajectory_generator_.empty()) {
+    throw std::invalid_argument("stair_align_trajectory_generator cannot be empty");
+  }
+  const auto terrain_status_topic = this->declare_parameter<std::string>(
+    "terrain_status_topic", "/dddmr_terrain/status");
+  const auto terrain_supervised_status_topic = this->declare_parameter<std::string>(
+    "terrain_supervised_status_topic", "/dddmr_terrain/supervised_status");
+  const auto gait_unchanged_topic = this->declare_parameter<std::string>(
+    "gait_unchanged_topic", "/dddmr_go2/gait_unchanged");
+  require_gait_monitor_ = this->declare_parameter<bool>(
+    "require_gait_monitor", true);
+  gait_monitor_timeout_sec_ = this->declare_parameter<double>(
+    "gait_monitor_timeout_sec", 0.30);
+  terrain_status_timeout_sec_ = this->declare_parameter<double>(
+    "terrain_status_timeout_sec", 0.30);
+  if (!std::isfinite(terrain_status_timeout_sec_) || terrain_status_timeout_sec_ <= 0.0) {
+    throw std::invalid_argument("terrain_status_timeout_sec must be finite and positive");
+  }
+  if (!std::isfinite(gait_monitor_timeout_sec_) || gait_monitor_timeout_sec_ <= 0.0) {
+    throw std::invalid_argument("gait_monitor_timeout_sec must be finite and positive");
+  }
+
+  StairSupervisorConfig stair_config;
+  stair_config.enabled = terrain_supervisor_enabled_;
+  const auto confirmation_cycles = this->declare_parameter<int64_t>(
+    "stair_confirmation_cycles", 5);
+  if (confirmation_cycles <= 0) {
+    throw std::invalid_argument("stair_confirmation_cycles must be positive");
+  }
+  stair_config.confirmation_cycles = static_cast<std::size_t>(confirmation_cycles);
+  stair_config.min_confidence = this->declare_parameter<double>(
+    "stair_min_confidence", 0.90);
+  stair_config.min_support_ratio = this->declare_parameter<double>(
+    "stair_min_support_ratio", 0.80);
+  stair_config.max_heading_error_rad = this->declare_parameter<double>(
+    "stair_max_heading_error_rad", 0.13962634015954636);
+  stair_config.max_lateral_error_m = this->declare_parameter<double>(
+    "stair_max_lateral_error_m", 0.10);
+  stair_config.align_max_forward_mps = this->declare_parameter<double>(
+    "stair_align_max_forward_mps", 0.0);
+  stair_config.align_max_yaw_rps = this->declare_parameter<double>(
+    "stair_align_max_yaw_rps", 0.25);
+  stair_config.committed_max_yaw_rps = this->declare_parameter<double>(
+    "stair_committed_max_yaw_rps", 0.0);
+  stair_supervisor_.configure(stair_config);
   
   if(STATE_->use_twist_stamped_){
     stamped_cmd_vel_pub_ = this->create_publisher<geometry_msgs::msg::TwistStamped>("cmd_vel_stamped", 1);
@@ -101,6 +175,32 @@ void P2PMoveBase::initial(const std::shared_ptr<local_planner::Local_Planner>& l
     cmd_vel_pub_ = this->create_publisher<geometry_msgs::msg::Twist>("cmd_vel", 1);
   }
   decision_pub_ = this->create_publisher<std_msgs::msg::String>("/dddmr_go2/p2p_decision", 1);
+  terrain_traversal_state_pub_ = this->create_publisher<std_msgs::msg::String>(
+    "/dddmr_terrain/traversal_state", 1);
+  terrain_supervised_status_pub_ =
+    this->create_publisher<dddmr_sys_core::msg::TerrainStatus>(
+      terrain_supervised_status_topic, 10);
+  terrain_status_sub_ = this->create_subscription<dddmr_sys_core::msg::TerrainStatus>(
+    terrain_status_topic, 10,
+    std::bind(&P2PMoveBase::terrainStatusCb, this, std::placeholders::_1));
+  gait_unchanged_sub_ = this->create_subscription<std_msgs::msg::Bool>(
+    gait_unchanged_topic, 10,
+    std::bind(&P2PMoveBase::gaitUnchangedCb, this, std::placeholders::_1));
+  reset_stair_fault_service_ = this->create_service<std_srvs::srv::Trigger>(
+    "/dddmr_terrain/reset_stair_fault",
+    std::bind(
+      &P2PMoveBase::resetStairFaultCb, this,
+      std::placeholders::_1, std::placeholders::_2));
+
+  RCLCPP_WARN(
+    this->get_logger(),
+    "Terrain stair supervisor enabled=%d topic=%s timeout=%.3f. "
+    "This supervisor constrains Move/Stop commands and never changes gait.",
+    terrain_supervisor_enabled_, terrain_status_topic.c_str(),
+    terrain_status_timeout_sec_);
+  RCLCPP_WARN(
+    this->get_logger(), "Gait monitor required=%d topic=%s timeout=%.3f",
+    require_gait_monitor_, gait_unchanged_topic.c_str(), gait_monitor_timeout_sec_);
   
 
   tf_listener_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
@@ -139,6 +239,19 @@ P2PMoveBase::~P2PMoveBase(){
   tfl_.reset();
   LP_.reset();
   GPM_.reset();
+}
+
+std::string P2PMoveBase::selectControllingTrajectoryGenerator() const
+{
+  std::lock_guard<std::mutex> lock(terrain_supervisor_mutex_);
+  if (terrain_supervisor_enabled_ &&
+    stair_supervisor_.state() == StairTraversalState::ALIGN)
+  {
+    // This generator is scored as pure yaw before the supervisor sees it; no
+    // post-score velocity reshaping is permitted.
+    return stair_align_trajectory_generator_;
+  }
+  return STATE_->main_trajectory_generator_;
 }
 
 bool P2PMoveBase::isQuaternionValid(const geometry_msgs::msg::Quaternion& q){
@@ -186,13 +299,37 @@ void P2PMoveBase::publishZeroVelocity(){
   else{
     cmd_vel_pub_->publish(cmd_vel);
   }
+  last_command_stopped_.store(true, std::memory_order_release);
 }
 
 void P2PMoveBase::publishVelocity(double vx, double vy, double angular_z){
+  refreshTerrainSupervisor();
+  StairCommandDecision stair_decision;
+  bool command_fault_latched = false;
+  {
+    std::lock_guard<std::mutex> lock(terrain_supervisor_mutex_);
+    stair_decision = stair_supervisor_.filterCommand(vx, vy, angular_z);
+    if (!stair_decision.allowed && stair_decision.latch_fault) {
+      stair_supervisor_.latchExternalFault(stair_decision.reason);
+      command_fault_latched = true;
+    }
+  }
+  if (!stair_decision.allowed) {
+    RCLCPP_ERROR_THROTTLE(
+      this->get_logger(), *clock_, 1000,
+      "Terrain supervisor blocked velocity: %s", stair_decision.reason.c_str());
+    publishZeroVelocity();
+    if (command_fault_latched) {
+      publishTerrainTraversalState();
+      publishSupervisedTerrainStatus();
+    }
+    return;
+  }
+
   geometry_msgs::msg::Twist cmd_vel;
-  cmd_vel.linear.x = vx;
-  cmd_vel.linear.y = vy;
-  cmd_vel.angular.z = angular_z;
+  cmd_vel.linear.x = stair_decision.x;
+  cmd_vel.linear.y = stair_decision.y;
+  cmd_vel.angular.z = stair_decision.yaw;
   if(STATE_->use_twist_stamped_){
     geometry_msgs::msg::TwistStamped stamped_cmd_vel;
     stamped_cmd_vel.header.frame_id = LP_->getControlFrame();
@@ -203,6 +340,9 @@ void P2PMoveBase::publishVelocity(double vx, double vy, double angular_z){
   else{
     cmd_vel_pub_->publish(cmd_vel);
   }
+  last_command_stopped_.store(
+    stair_decision.x == 0.0 && stair_decision.y == 0.0 && stair_decision.yaw == 0.0,
+    std::memory_order_release);
 }
 
 void P2PMoveBase::publishDecisionState(){
@@ -212,6 +352,230 @@ void P2PMoveBase::publishDecisionState(){
   std_msgs::msg::String msg;
   msg.data = STATE_->getCurrentDecision();
   decision_pub_->publish(msg);
+}
+
+void P2PMoveBase::publishTerrainTraversalState()
+{
+  if (!terrain_traversal_state_pub_) {
+    return;
+  }
+  std_msgs::msg::String msg;
+  {
+    std::lock_guard<std::mutex> lock(terrain_supervisor_mutex_);
+    msg.data = stairStateName(stair_supervisor_.state());
+    if (stair_supervisor_.faultLatched()) {
+      msg.data += ":" + stair_supervisor_.faultReason();
+    } else if (terrain_supervisor_enabled_ && !stair_supervisor_.inputReady()) {
+      msg.data += ":HOLD:" + stair_supervisor_.inputHoldReason();
+    }
+  }
+  terrain_traversal_state_pub_->publish(msg);
+}
+
+void P2PMoveBase::publishSupervisedTerrainStatus()
+{
+  if (!terrain_supervised_status_pub_) {
+    return;
+  }
+  dddmr_sys_core::msg::TerrainStatus status;
+  {
+    std::lock_guard<std::mutex> lock(terrain_supervisor_mutex_);
+    if (!has_terrain_status_) {
+      return;
+    }
+    status = latest_terrain_status_;
+    const auto now = clock_->now();
+    status.header.stamp = now;
+    status.traversal_state = static_cast<std::uint8_t>(stair_supervisor_.state());
+    const double receive_age = (now - last_terrain_status_time_).seconds();
+    const double reported_age = static_cast<double>(latest_terrain_status_.data_age_sec);
+    const bool terrain_fresh = std::isfinite(receive_age) && receive_age >= 0.0 &&
+      receive_age <= terrain_status_timeout_sec_ && std::isfinite(reported_age) &&
+      reported_age >= 0.0 && reported_age <= terrain_status_timeout_sec_;
+    const auto observation = toStairObservation(latest_terrain_status_, terrain_fresh);
+    status.gait_unchanged = observation.gait_fresh && observation.gait_unchanged;
+    status.data_age_sec =
+      std::isfinite(receive_age) && receive_age >= 0.0 &&
+      std::isfinite(reported_age) && reported_age >= 0.0 ?
+      static_cast<float>(std::max(receive_age, reported_age)) :
+      std::numeric_limits<float>::infinity();
+    if (terrain_supervisor_enabled_ &&
+      (!stair_supervisor_.inputReady() || stair_supervisor_.faultLatched()))
+    {
+      status.allow_forward = false;
+      status.allow_reverse = false;
+      status.rejection_reason = stair_supervisor_.faultLatched() ?
+        stair_supervisor_.faultReason() : stair_supervisor_.inputHoldReason();
+    }
+  }
+  terrain_supervised_status_pub_->publish(status);
+}
+
+StairObservation P2PMoveBase::toStairObservation(
+  const dddmr_sys_core::msg::TerrainStatus & msg, bool fresh) const
+{
+  StairObservation observation;
+  observation.fresh = fresh;
+  observation.stair_candidate =
+    msg.staircase_id >= 0 ||
+    msg.terrain_class == dddmr_sys_core::msg::TerrainStatus::TERRAIN_STAIR_TREAD ||
+    msg.terrain_class == dddmr_sys_core::msg::TerrainStatus::TERRAIN_STAIR_RISER;
+  observation.entry_valid = msg.entry_valid;
+  observation.at_entry = msg.at_entry;
+  observation.on_stair = msg.on_stair;
+  observation.landing_valid = msg.landing_valid;
+  observation.full_body_on_landing = msg.full_body_on_landing;
+  observation.terrain_accepted = msg.rejection_code == 0U;
+  observation.allow_forward = msg.allow_forward;
+  observation.drop_detected = msg.drop_detected;
+  observation.dynamic_obstacle = msg.dynamic_obstacle;
+  bool monitored_gait_fresh = true;
+  bool monitored_gait_unchanged = true;
+  if (require_gait_monitor_) {
+    const double gait_age = has_gait_status_ ?
+      (clock_->now() - last_gait_status_time_).seconds() :
+      std::numeric_limits<double>::infinity();
+    monitored_gait_fresh = has_gait_status_ &&
+      std::isfinite(gait_age) && gait_age >= 0.0 &&
+      gait_age <= gait_monitor_timeout_sec_;
+    monitored_gait_unchanged = monitored_gait_fresh && latest_gait_unchanged_;
+  }
+  observation.gait_fresh = monitored_gait_fresh;
+  observation.gait_unchanged = msg.gait_unchanged && monitored_gait_unchanged;
+  observation.staircase_id = msg.staircase_id;
+  observation.step_index = msg.step_index;
+  observation.step_count = msg.step_count;
+  observation.snapshot_version = msg.snapshot_version;
+  observation.static_ground_generation = msg.static_ground_generation;
+  observation.confidence = msg.confidence;
+  observation.support_ratio = msg.support_ratio;
+  observation.heading_error_rad = msg.heading_error_rad;
+  observation.lateral_error_m = msg.lateral_error_m;
+  return observation;
+}
+
+void P2PMoveBase::terrainStatusCb(
+  const dddmr_sys_core::msg::TerrainStatus::SharedPtr msg)
+{
+  const double reported_age = static_cast<double>(msg->data_age_sec);
+  const bool fresh = std::isfinite(reported_age) && reported_age >= 0.0 &&
+    reported_age <= terrain_status_timeout_sec_;
+  StairTraversalState old_state;
+  StairTraversalState new_state;
+  bool new_ready;
+  {
+    std::lock_guard<std::mutex> lock(terrain_supervisor_mutex_);
+    latest_terrain_status_ = *msg;
+    last_terrain_status_time_ = clock_->now();
+    has_terrain_status_ = true;
+    old_state = stair_supervisor_.state();
+    new_state = stair_supervisor_.update(toStairObservation(*msg, fresh));
+    new_ready = stair_supervisor_.inputReady();
+  }
+  if (old_state != new_state) {
+    RCLCPP_WARN(
+      this->get_logger(), "Stair traversal state: %s -> %s",
+      stairStateName(old_state), stairStateName(new_state));
+  }
+  if (terrain_supervisor_enabled_ &&
+    (!new_ready || new_state == StairTraversalState::FAULT_LATCH))
+  {
+    publishZeroVelocity();
+  }
+  publishTerrainTraversalState();
+  publishSupervisedTerrainStatus();
+}
+
+void P2PMoveBase::gaitUnchangedCb(const std_msgs::msg::Bool::SharedPtr msg)
+{
+  {
+    std::lock_guard<std::mutex> lock(terrain_supervisor_mutex_);
+    latest_gait_unchanged_ = msg->data;
+    has_gait_status_ = true;
+    last_gait_status_time_ = clock_->now();
+  }
+  refreshTerrainSupervisor();
+  publishSupervisedTerrainStatus();
+}
+
+void P2PMoveBase::refreshTerrainSupervisor()
+{
+  if (!terrain_supervisor_enabled_) {
+    return;
+  }
+  StairTraversalState old_state;
+  StairTraversalState new_state;
+  bool old_ready;
+  bool new_ready;
+  {
+    std::lock_guard<std::mutex> lock(terrain_supervisor_mutex_);
+    old_state = stair_supervisor_.state();
+    old_ready = stair_supervisor_.inputReady();
+    if (!has_terrain_status_) {
+      new_state = stair_supervisor_.refreshInputHealth(false, false, false);
+    } else {
+      const double receive_age = (clock_->now() - last_terrain_status_time_).seconds();
+      const double reported_age = static_cast<double>(latest_terrain_status_.data_age_sec);
+      const bool terrain_fresh = std::isfinite(receive_age) && receive_age >= 0.0 &&
+        receive_age <= terrain_status_timeout_sec_ && std::isfinite(reported_age) &&
+        reported_age >= 0.0 && reported_age <= terrain_status_timeout_sec_;
+      const auto observation = toStairObservation(latest_terrain_status_, terrain_fresh);
+      new_state = stair_supervisor_.refreshInputHealth(
+        observation.fresh, observation.gait_fresh, observation.gait_unchanged);
+    }
+    new_ready = stair_supervisor_.inputReady();
+  }
+  if (old_state != new_state || old_ready != new_ready) {
+    RCLCPP_ERROR(
+      this->get_logger(), "Stair traversal state/readiness: %s/%d -> %s/%d",
+      stairStateName(old_state), old_ready, stairStateName(new_state), new_ready);
+    publishTerrainTraversalState();
+    publishSupervisedTerrainStatus();
+  }
+  if (!new_ready || new_state == StairTraversalState::FAULT_LATCH) {
+    publishZeroVelocity();
+  }
+}
+
+void P2PMoveBase::resetStairFaultCb(
+  const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+  std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+{
+  (void)request;
+  {
+    std::lock_guard<std::mutex> lock(terrain_supervisor_mutex_);
+    const auto now = clock_->now();
+    const double receive_age = has_terrain_status_ ?
+      (now - last_terrain_status_time_).seconds() :
+      std::numeric_limits<double>::infinity();
+    const double reported_age = has_terrain_status_ ?
+      static_cast<double>(latest_terrain_status_.data_age_sec) :
+      std::numeric_limits<double>::infinity();
+    const bool terrain_fresh = has_terrain_status_ && std::isfinite(receive_age) &&
+      receive_age >= 0.0 && receive_age <= terrain_status_timeout_sec_ &&
+      std::isfinite(reported_age) && reported_age >= 0.0 &&
+      reported_age <= terrain_status_timeout_sec_;
+    const double gait_age = has_gait_status_ ?
+      (now - last_gait_status_time_).seconds() :
+      std::numeric_limits<double>::infinity();
+    const bool gait_fresh = !require_gait_monitor_ ||
+      (has_gait_status_ && std::isfinite(gait_age) && gait_age >= 0.0 &&
+      gait_age <= gait_monitor_timeout_sec_);
+
+    auto observation = toStairObservation(latest_terrain_status_, terrain_fresh);
+    observation.gait_fresh = gait_fresh;
+    observation.gait_unchanged = has_terrain_status_ &&
+      latest_terrain_status_.gait_unchanged &&
+      (!require_gait_monitor_ || (gait_fresh && latest_gait_unchanged_));
+    response->success = stair_supervisor_.resetFault(
+      last_command_stopped_.load(std::memory_order_acquire), observation);
+  }
+  response->message = response->success ?
+    "stair fault reset with stopped command and fresh healthy terrain/gait" :
+    "reset refused: require a latched fault, zero command, fresh healthy terrain/gait, "
+    "and full-body verified landing";
+  publishTerrainTraversalState();
+  publishSupervisedTerrainStatus();
 }
 
 void P2PMoveBase::executeCb(const std::shared_ptr<rclcpp_action::ServerGoalHandle<dddmr_sys_core::action::PToPMoveBase>> goal_handle)
@@ -293,6 +657,29 @@ void P2PMoveBase::executeCb(const std::shared_ptr<rclcpp_action::ServerGoalHandl
 
 bool P2PMoveBase::executeCycle(const std::shared_ptr<rclcpp_action::ServerGoalHandle<dddmr_sys_core::action::PToPMoveBase>> goal_handle){
 
+    refreshTerrainSupervisor();
+    {
+      std::lock_guard<std::mutex> lock(terrain_supervisor_mutex_);
+      if(stair_supervisor_.faultLatched()){
+        RCLCPP_ERROR(
+          this->get_logger(), "Aborting navigation because stair safety fault is latched: %s",
+          stair_supervisor_.faultReason().c_str());
+        auto result = std::make_shared<dddmr_sys_core::action::PToPMoveBase::Result>();
+        goal_handle->abort(result);
+        publishZeroVelocity();
+        return true;
+      }
+      if(stair_supervisor_.state() == StairTraversalState::COMMITTED &&
+        !STATE_->isCurrentDecision("d_controlling"))
+      {
+        stair_supervisor_.latchExternalFault("left_controlling_while_committed");
+        auto result = std::make_shared<dddmr_sys_core::action::PToPMoveBase::Result>();
+        goal_handle->abort(result);
+        publishZeroVelocity();
+        return true;
+      }
+    }
+
     STATE_->global_pose_ = LP_->getGlobalPose();
     if(STATE_->getDistance(STATE_->global_pose_, STATE_->oscillation_pose_) >= STATE_->oscillation_distance_ ||
           STATE_->getAngle(STATE_->global_pose_, STATE_->oscillation_pose_) >= STATE_->oscillation_angle_)
@@ -328,8 +715,15 @@ bool P2PMoveBase::executeCycle(const std::shared_ptr<rclcpp_action::ServerGoalHa
         else{
           RCLCPP_DEBUG(this->get_logger(), "Found a plan with its final position: (%.2f, %.2f, %.2f)", 
               plan.back().pose.position.x, plan.back().pose.position.y, plan.back().pose.position.z);
+          if (!LP_->setPlan(plan)) {
+            RCLCPP_ERROR(
+              this->get_logger(),
+              "Local planner rejected the initial global plan; stopped and requesting a new plan.");
+            publishZeroVelocity();
+            STATE_->setDecision("d_planning");
+            return false;
+          }
           STATE_->last_valid_plan_ = clock_->now();
-          LP_->setPlan(plan);
           STATE_->setDecision("d_align_heading");  
         }
       }
@@ -518,10 +912,24 @@ bool P2PMoveBase::executeCycle(const std::shared_ptr<rclcpp_action::ServerGoalHa
       }
       
       //@ update global plan
-      if(GPM_->hasPlan()){
+      bool terrain_replanning_allowed = true;
+      {
+        std::lock_guard<std::mutex> lock(terrain_supervisor_mutex_);
+        terrain_replanning_allowed = stair_supervisor_.replanningAllowed();
+      }
+      if(GPM_->hasPlan() && terrain_replanning_allowed){
         std::vector<geometry_msgs::msg::PoseStamped> plan;
         GPM_->copyPlan(plan);
-        LP_->setPlan(plan);
+        if (!LP_->setPlan(plan)) {
+          RCLCPP_ERROR(
+            this->get_logger(),
+            "Local planner rejected a replacement global plan; stopped before trajectory scoring.");
+          local_failure_debounce_.reset();
+          STATE_->last_valid_plan_ = clock_->now();
+          publishZeroVelocity();
+          STATE_->setDecision("d_planning");
+          return false;
+        }
       }
       //@Behavior for oscillation here
       
@@ -536,7 +944,9 @@ bool P2PMoveBase::executeCycle(const std::shared_ptr<rclcpp_action::ServerGoalHa
       }
 
       base_trajectory::Trajectory best_traj;
-      dddmr_sys_core::PlannerState PS = LP_->computeVelocityCommand(STATE_->main_trajectory_generator_, best_traj);
+      const std::string trajectory_generator = selectControllingTrajectoryGenerator();
+      dddmr_sys_core::PlannerState PS = LP_->computeVelocityCommand(
+        trajectory_generator, best_traj);
       if(
         PS != dddmr_sys_core::PlannerState::ALL_TRAJECTORIES_FAIL &&
         PS != dddmr_sys_core::PlannerState::PATH_BLOCKED_WAIT)
@@ -712,10 +1122,21 @@ bool P2PMoveBase::executeCycle(const std::shared_ptr<rclcpp_action::ServerGoalHa
       if(GPM_->hasPlan()){
         std::vector<geometry_msgs::msg::PoseStamped> plan;
         GPM_->copyPlan(plan);
-        LP_->setPlan(plan);
+        if (!LP_->setPlan(plan)) {
+          RCLCPP_ERROR(
+            this->get_logger(),
+            "Local planner rejected a waiting-state global plan; stopped and replanning.");
+          local_failure_debounce_.reset();
+          STATE_->last_valid_plan_ = clock_->now();
+          publishZeroVelocity();
+          STATE_->setDecision("d_planning");
+          return false;
+        }
       }
       base_trajectory::Trajectory best_traj;
-      dddmr_sys_core::PlannerState PS = LP_->computeVelocityCommand(STATE_->main_trajectory_generator_, best_traj);
+      const std::string trajectory_generator = selectControllingTrajectoryGenerator();
+      dddmr_sys_core::PlannerState PS = LP_->computeVelocityCommand(
+        trajectory_generator, best_traj);
 
       if(PS == dddmr_sys_core::PlannerState::TRAJECTORY_FOUND){
         local_failure_debounce_.recordSafeCycle();
@@ -783,6 +1204,20 @@ bool P2PMoveBase::executeCycle(const std::shared_ptr<rclcpp_action::ServerGoalHa
 
 void P2PMoveBase::startRecoveryBehaviors(std::string behavior_name){
 
+  {
+    std::lock_guard<std::mutex> lock(terrain_supervisor_mutex_);
+    if(!stair_supervisor_.recoveryAllowed()){
+      RCLCPP_ERROR(
+        this->get_logger(),
+        "Recovery '%s' blocked in stair state %s; latching fault instead.",
+        behavior_name.c_str(), stairStateName(stair_supervisor_.state()));
+      stair_supervisor_.latchExternalFault("recovery_requested_on_stair");
+      is_recoverying_ = false;
+      is_recoverying_succeed_ = false;
+      return;
+    }
+  }
+
   auto goal_msg = dddmr_sys_core::action::RecoveryBehaviors::Goal();
   goal_msg.behavior_name = behavior_name;
   goal_msg.target_pose = STATE_->current_goal_;
@@ -802,6 +1237,8 @@ void P2PMoveBase::recovery_behaviors_client_goal_response_callback(const rclcpp_
 {
   if (!goal_handle) {
     RCLCPP_ERROR(this->get_logger(), "Goal was rejected by recovery behaviors server");
+    is_recoverying_succeed_ = false;
+    is_recoverying_ = false;
   } else {
     RCLCPP_INFO(this->get_logger(), "Goal accepted by recovery behaviors server, waiting for result");
   }

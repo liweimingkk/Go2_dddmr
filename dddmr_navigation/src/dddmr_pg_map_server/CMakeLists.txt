@@ -61,11 +61,20 @@ include_directories(
   ${dddmr_pcl_INCLUDE_DIRS}
 )
 
+# Deterministic identity of the exact pose-graph artifacts.  This target has no
+# ROS/PCL dependency so its integrity contract can be exercised by pure tests.
+add_library(map_artifact_identity
+  src/map_artifact_identity.cpp
+)
+target_include_directories(map_artifact_identity PUBLIC include)
+set_target_properties(map_artifact_identity PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 # library
 add_library(dddmr_pg_map_server
   src/dddmr_pg_map_server.cpp
 )
 target_link_libraries(dddmr_pg_map_server
+  map_artifact_identity
   ${PCL_LIBRARIES}
   OpenMP::OpenMP_CXX
   ${dddmr_pcl_LIBRARIES}
@@ -86,7 +95,10 @@ ament_target_dependencies(dddmr_pg_map_server_node
 )
 
 install(TARGETS
+  map_artifact_identity
   dddmr_pg_map_server
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -108,7 +120,20 @@ install(DIRECTORY
  DESTINATION share/${PROJECT_NAME}/
 )
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_terrain_roi_config
+    test/test_terrain_roi_config.cpp
+  )
+  target_include_directories(test_terrain_roi_config PRIVATE include)
+
+  ament_add_gtest(test_map_artifact_identity
+    test/test_map_artifact_identity.cpp
+  )
+  target_link_libraries(test_map_artifact_identity map_artifact_identity)
+endif()
+
 ament_export_include_directories(include)
-ament_export_libraries(dddmr_pg_map_server)
+ament_export_libraries(dddmr_pg_map_server map_artifact_identity)
 ament_export_dependencies(${dependencies})
 ament_package()

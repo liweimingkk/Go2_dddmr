@@ -29,6 +29,9 @@
 * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+#ifndef GLOBAL_PLANNER__A_STAR_ON_PC_H_
+#define GLOBAL_PLANNER__A_STAR_ON_PC_H_
+
 /*For graph*/
 #include <unordered_map>
 #include <set>
@@ -47,6 +50,8 @@ type graph_t is defined here
 /*For perception*/
 #include <perception_3d/perception_3d_ros.h>
 #include <global_planner/nanoflann_pcl.hpp>
+#include <global_planner/planner_safety.h>
+#include <global_planner/terrain_edge_validator.h>
 
 typedef struct {
   unsigned int self_index;
@@ -62,6 +67,7 @@ class AstarList{
     AstarList(pcl::PointCloud<pcl::PointXYZI>::Ptr& pc_original_z_up);
 
     void Initial();
+    void updateGraph(const pcl::PointCloud<pcl::PointXYZI>::Ptr& pc_original_z_up);
     void updateNode(Node_t& a_node);
     void closeNode(Node_t& a_node);
     float getGVal(Node_t& a_node);
@@ -93,13 +99,17 @@ class A_Star_on_Graph{
     public:
       A_Star_on_Graph(pcl::PointCloud<pcl::PointXYZI>::Ptr pc_original_z_up, 
         std::shared_ptr<perception_3d::Perception3D_ROS> perception_ros,
-        double a_star_expanding_radius);
+        double a_star_expanding_radius,
+        const global_planner::TerrainEdgeValidatorConfig& terrain_edge_config = {});
       
       ~A_Star_on_Graph();
       
       void updateGraph(pcl::PointCloud<pcl::PointXYZI>::Ptr pc_original_z_up);
 
-      void getPath( unsigned int start, unsigned int goal, std::vector<unsigned int>& path);
+      void getPath(
+        unsigned int start, unsigned int goal, std::vector<unsigned int>& path,
+        const global_planner::planner_safety::PlanningDataBinding * expected_binding = nullptr,
+        global_planner::TerrainEdgeRejectionStatistics * terrain_statistics = nullptr);
       
       void setupTurningWeight(double m_weight){turning_weight_ = m_weight;}
 
@@ -122,9 +132,12 @@ class A_Star_on_Graph{
       //@ neighborhodd expanding radius
       double a_star_expanding_radius_;
 
+      global_planner::TerrainEdgeValidator terrain_edge_validator_;
+
       double getThetaFromParent2Expanding(pcl::PointXYZI m_pcl_current_parent, pcl::PointXYZI m_pcl_current, pcl::PointXYZI m_pcl_expanding);
       double getPitchFromParent2Expanding(pcl::PointXYZI m_pcl_current_parent, pcl::PointXYZI m_pcl_current, pcl::PointXYZI m_pcl_expanding);
 
       bool isLineOfSightClear(pcl::PointXYZI& pcl_current, pcl::PointXYZI& pcl_expanding, double inscribed_radius);
 };
 
+#endif  // GLOBAL_PLANNER__A_STAR_ON_PC_H_

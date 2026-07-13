@@ -13,10 +13,13 @@ from rclpy.node import Node
 from std_msgs.msg import String
 
 from go2_nav_gate_policy import RECOVERY_ROTATION_DECISION, recovery_rotation_gate
+from go2_sport_request_policy import (
+    MOVE_API_ID,
+    STOP_MOVE_API_ID,
+    validate_navigation_sport_request,
+)
 
 
-MOVE_API_ID = 1008
-STOP_MOVE_API_ID = 1003
 REAL_REQUEST_TOPIC = "/api/sport/request"
 
 
@@ -420,6 +423,11 @@ class Go2SportCmdVelAdapter(Node):
     def publish_request(self, api_id: int, parameter: str) -> None:
         if self.request_msg_cls is None or self.request_pub is None:
             raise RuntimeError("request publisher is not configured")
+
+        # This is the last in-process boundary before /api/sport/request.  Keep
+        # navigation unable to request posture, mode, or gait changes even if a
+        # future caller accidentally passes a different Unitree API id.
+        validate_navigation_sport_request(api_id, parameter)
 
         req = self.request_msg_cls()
         self.request_seq += 1

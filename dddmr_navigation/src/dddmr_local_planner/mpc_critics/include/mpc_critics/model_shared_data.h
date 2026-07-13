@@ -58,6 +58,12 @@
 /*kdtree*/
 #include <pcl/kdtree/kdtree_flann.h>
 
+/*Immutable terrain contract indexed exactly like mapground*/
+#include <perception_3d/terrain_model.h>
+
+#include <cstdint>
+#include <utility>
+
 //@tf2::eigenToTransform
 #include <tf2_eigen/tf2_eigen.hpp>
 #include <Eigen/Core>
@@ -94,6 +100,49 @@ class ModelSharedData{
         pcl_prune_plan_->push_back(ipt);
       }
     }
+
+    // Take a private, immutable-for-the-scoring-cycle copy of mapground.  The
+    // perception callbacks may replace or mutate their PCL buffers after the
+    // ground mutex is released; critics must never observe half of an update.
+    void updateTerrainData(
+      perception_3d::TerrainSnapshotConstPtr snapshot,
+      const pcl::PointCloud<pcl::PointXYZI>::ConstPtr& ground,
+      std::uint64_t ground_version)
+    {
+      if(!snapshot && !terrain_snapshot_ && terrain_ground_version_ == ground_version &&
+        terrain_ground_ && terrain_ground_kdtree_)
+      {
+        return;
+      }
+      if(terrain_snapshot_ == snapshot && terrain_ground_version_ == ground_version &&
+        terrain_ground_ && terrain_ground_kdtree_ && ground &&
+        terrain_ground_->points.size() == ground->points.size())
+      {
+        return;
+      }
+      terrain_snapshot_ = std::move(snapshot);
+      terrain_ground_version_ = ground_version;
+      terrain_ground_.reset(new pcl::PointCloud<pcl::PointXYZI>());
+      terrain_ground_kdtree_.reset(new pcl::KdTreeFLANN<pcl::PointXYZI>());
+
+      // Do not pay the full-map copy/KD-tree cost while the terrain feature is
+      // unavailable.  An enabled TerrainSupportModel will reject the missing
+      // snapshot before attempting a search.
+      if(!terrain_snapshot_ || !ground || ground->points.empty()){
+        return;
+      }
+      *terrain_ground_ = *ground;
+      terrain_ground_kdtree_->setInputCloud(terrain_ground_);
+    }
+
+    void requestTerrainSupportData(){terrain_support_data_requested_ = true;}
+    bool terrainSupportDataRequested() const{return terrain_support_data_requested_;}
+
+    perception_3d::TerrainSnapshotConstPtr terrain_snapshot_;
+    std::uint64_t terrain_ground_version_{0U};
+    pcl::PointCloud<pcl::PointXYZI>::Ptr terrain_ground_;
+    pcl::KdTreeFLANN<pcl::PointXYZI>::Ptr terrain_ground_kdtree_;
+
     pcl::KdTreeFLANN<pcl::PointXYZI>::Ptr pcl_perception_kdtree_;
 
     pcl::PointCloud<pcl::PointXYZI>::Ptr pcl_perception_;
@@ -115,7 +164,7 @@ class ModelSharedData{
   private:
 
     std::shared_ptr<tf2_ros::Buffer> tf2Buffer_; 
-    
+    bool terrain_support_data_requested_{false};
     
 
 };

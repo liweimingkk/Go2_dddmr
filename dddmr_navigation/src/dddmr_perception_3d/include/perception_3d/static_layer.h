@@ -33,6 +33,8 @@
 
 #include <perception_3d/sensor.h>
 
+#include <cstdint>
+
 #include <sensor_msgs/msg/point_cloud2.hpp>
 /*Point cloud library*/
 #include <pcl/point_types.h>
@@ -61,6 +63,9 @@
 
 /*pass through*/
 #include <pcl/filters/passthrough.h>
+
+#include <perception_3d/stair_riser_semantics.h>
+#include <perception_3d/static_map_pairing_state.h>
 
 namespace perception_3d
 {
@@ -99,8 +104,11 @@ class StaticLayer: public Sensor{
     
     pcl::PointCloud<pcl::PointXYZI>::Ptr pcl_map_;
     pcl::PointCloud<pcl::PointXYZI>::Ptr pcl_ground_;
+    pcl::PointCloud<pcl::PointXYZI>::Ptr pending_map_;
+    pcl::PointCloud<pcl::PointXYZI>::Ptr pending_ground_;
 
-    bool new_map_, new_ground_;
+    StaticMapPairingState map_pairing_state_;
+    std::uint64_t pending_static_update_token_{0U};
     rclcpp::CallbackGroup::SharedPtr cbs_group_;
     bool is_local_planner_;
 
@@ -111,12 +119,18 @@ class StaticLayer: public Sensor{
     double intensity_search_radius_;
     double intensity_search_punish_weight_;
     double static_imposing_radius_;
+    double static_obstacle_xy_radius_;
+    int static_obstacle_min_points_;
     bool mapping_mode_;
     std::string map_topic_;
     std::string ground_topic_;
     bool is_ground_and_map_being_initialized_once_;
     bool enable_edge_detection_;
     bool generate_static_graph_;
+    StairRiserSemanticsConfig stair_riser_map_semantics_config_;
+    bool stair_riser_map_semantics_config_valid_{true};
+    bool applied_stair_riser_map_semantics_{false};
+    std::uint64_t applied_stair_riser_snapshot_version_{0U};
     
 };
 
