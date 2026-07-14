@@ -70,7 +70,9 @@ dddmr_pg_map_server_manager:
 
 map1:
   ros__parameters:
-    pose_graph_dir: "/root/dddmr_bags/go2_xt16_mouth_mapping_20260709_130235_map_2026_07_09_05_02_34"
+    # The reverse/downstairs traversal has the denser tread observation and is
+    # used as the single bidirectional navigation map.
+    pose_graph_dir: "/root/dddmr_bags/go2_xt16_mouth_downstairs_tri_state_map_2026_07_13_13_15_42"
     complete_map_voxel_size: 0.2
 
 sub_maps:
