@@ -2,8 +2,10 @@
 
 ## Behavior
 
-`go2_xt16_navigation.launch` now enables automatic global relocalization through
-`config/go2_xt16_relocalization.yaml`.
+`go2_xt16_navigation.launch` keeps automatic global relocalization disabled in
+`config/go2_xt16_relocalization.yaml`. Normal MCL tracking remains enabled and
+an operator can reset the initial pose with RViz. The explicit
+`/global_localization` service remains available for diagnostics.
 
 The localization lifecycle is:
 
@@ -13,18 +15,19 @@ UNINITIALIZED -> LOCALIZING -> TRACKING
                        v          v
                       LOST <------+
                        |
-                       +---- global search ----> LOCALIZING
+                       +---- manual pose ------> LOCALIZING
 ```
 
-- `UNINITIALIZED`: waiting for the complete pose-graph map, key poses, odometry,
-  and live LeGO-LOAM feature clouds.
-- `LOCALIZING`: the full-map coarse search has seeded multiple MCL hypotheses,
-  but consecutive observations have not proved convergence yet.
+- `UNINITIALIZED`: waiting for the map, odometry, and live feature inputs.
+- `LOCALIZING`: the normal particle filter is refining its configured or
+  operator-provided initial pose, but consecutive observations have not proved
+  convergence yet.
 - `TRACKING`: match quality, particle XY spread, particle yaw spread, and the
   normal particle count have passed the configured thresholds for several
   distinct feature frames.
 - `LOST`: match quality/spread, LiDAR freshness, odometry freshness, or the
-  localization timeout failed. Automatic full-map search is requested again.
+  localization timeout failed. Motion stays blocked until the operator resets
+  the pose or explicitly requests a global search.
 
 Only `TRACKING` permits the Go2 command gate to forward a nonzero command.
 Every other state, a missing state message, and a stale state message produce a
@@ -80,6 +83,8 @@ src/dddmr_beginner_guide/config/go2_xt16_relocalization.yaml
 
 Important groups:
 
+- Automatic search: `auto_global_localization` remains `false` for the current
+  supervised workflow.
 - Search coverage and cost: `global_localization_grid`,
   `global_localization_div_yaw`, and `global_localization_max_candidates`.
 - Coarse acceptance: `global_localization_min_match_ratio`.
@@ -105,8 +110,9 @@ python3 scripts/replay_pose_graph_keyframe_for_relocalization.py \
   --keyframe 20 --duration 8
 ```
 
-For the current 43-keyframe mouth map, the implemented pipeline was verified
-offline as follows:
+For the current mouth map, the global-search capability was previously verified
+offline as follows, but it is not invoked automatically with the current
+configuration:
 
 - keyframe 20: 612 coarse position/yaw candidates, best coarse quality 0.925,
   then `TRACKING` near the saved keyframe pose;
@@ -123,12 +129,14 @@ environmental change, and threshold calibration.
 
 1. Start navigation in dry-run mode with no goal.
 2. Confirm the complete map and key poses arrive.
-3. Keep the robot stationary and wait for `TRACKING`.
-4. Verify observed features overlap the map and inspect `/mcl_pose` covariance.
+3. Keep the robot stationary and set an accurate initial pose with RViz's
+   `3D Pose Estimate` tool.
+4. Wait for `TRACKING`, then verify observed features overlap the map and
+   inspect `/mcl_pose` covariance.
 5. Confirm `/dddmr_go2/safe_cmd_vel` remains zero in `UNINITIALIZED`,
    `LOCALIZING`, and `LOST`.
-6. Under supervision and with no navigation goal, relocate the robot to a
-   different mapped area; confirm `LOST -> LOCALIZING -> TRACKING` and correct
-   map overlap.
+6. Confirm that `LOST` does not trigger an automatic global search. Reset the
+   pose manually and verify `LOST -> LOCALIZING -> TRACKING` with correct map
+   overlap.
 7. Only after the no-motion checks pass should the existing supervised motion
    acceptance process be considered.

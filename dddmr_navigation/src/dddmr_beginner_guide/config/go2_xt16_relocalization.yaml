@@ -1,7 +1,9 @@
 mcl_3dl:
   ros__parameters:
-    # Search the complete pose-graph map at startup and whenever tracking is lost.
-    auto_global_localization: true
+    # Disable complete pose-graph search at startup and after tracking is lost.
+    # The normal filter still starts from its configured initial pose and can
+    # be reset explicitly with RViz's 3D Pose Estimate tool.
+    auto_global_localization: false
     global_localization_grid: 0.25
     global_localization_div_yaw: 36
     global_localization_max_candidates: 4096
