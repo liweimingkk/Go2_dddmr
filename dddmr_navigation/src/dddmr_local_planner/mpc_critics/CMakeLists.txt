@@ -100,6 +100,7 @@ add_library(critics SHARED
   models/collision_min_max_model.cpp
   models/shortest_angle_model.cpp
   models/stick_path_model.cpp
+  models/route_corridor_model.cpp
   models/toward_global_plan_model.cpp
   models/twirling_model.cpp
 )
@@ -160,6 +161,16 @@ if(BUILD_TESTING)
     critics
   )
   ament_target_dependencies(test_collision_model
+    ${dependencies}
+  )
+
+  ament_add_gtest(test_route_corridor_model
+    test/test_route_corridor_model.cpp
+  )
+  target_link_libraries(test_route_corridor_model
+    critics
+  )
+  ament_target_dependencies(test_route_corridor_model
     ${dependencies}
   )
 endif()
