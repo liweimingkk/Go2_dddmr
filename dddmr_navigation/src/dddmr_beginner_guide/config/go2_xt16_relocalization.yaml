@@ -9,7 +9,15 @@ mcl_3dl:
     global_localization_top_candidates: 8
     global_localization_num_particles: 240
     global_localization_max_observation_points: 256
-    global_localization_min_match_ratio: 0.08
+    global_localization_max_surface_points: 256
+    global_localization_min_match_ratio: 0.20
+    # A global-map hit ratio alone is ambiguous along the long indoor walls.
+    # Require the live less-flat surface cloud to agree with the individual
+    # saved keyframe and to beat every distinct pose/yaw basin by a clear gap.
+    global_localization_surface_match_distance: 0.30
+    global_localization_min_surface_match_ratio: 0.35
+    global_localization_min_surface_match_margin: 0.08
+    global_localization_surface_candidate_max_drop: 0.08
     global_localization_retry_sec: 2.0
 
     # Gaussian refinement around each accepted coarse candidate.

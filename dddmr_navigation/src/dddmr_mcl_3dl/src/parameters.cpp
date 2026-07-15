@@ -132,12 +132,57 @@ Parameters::Parameters(const rclcpp::node_interfaces::NodeLoggingInterface::Shar
       logger_->get_logger(), "global_localization_max_observation_points: %d",
       global_localization_max_observation_points_);
 
+  parameter_->declare_parameter(
+      "global_localization_max_surface_points", rclcpp::ParameterValue(256));
+  global_localization_max_surface_points_ = std::max(
+      16, static_cast<int>(
+          parameter_->get_parameter("global_localization_max_surface_points").as_int()));
+  RCLCPP_INFO(
+      logger_->get_logger(), "global_localization_max_surface_points: %d",
+      global_localization_max_surface_points_);
+
   parameter_->declare_parameter("global_localization_min_match_ratio", rclcpp::ParameterValue(0.08));
   global_localization_min_match_ratio_ = std::clamp(
       parameter_->get_parameter("global_localization_min_match_ratio").as_double(), 0.0, 1.0);
   RCLCPP_INFO(
       logger_->get_logger(), "global_localization_min_match_ratio: %.3f",
       global_localization_min_match_ratio_);
+
+  parameter_->declare_parameter(
+      "global_localization_surface_match_distance", rclcpp::ParameterValue(0.30));
+  global_localization_surface_match_distance_ = std::max(
+      0.01,
+      parameter_->get_parameter("global_localization_surface_match_distance").as_double());
+  RCLCPP_INFO(
+      logger_->get_logger(), "global_localization_surface_match_distance: %.3f",
+      global_localization_surface_match_distance_);
+
+  parameter_->declare_parameter(
+      "global_localization_min_surface_match_ratio", rclcpp::ParameterValue(0.35));
+  global_localization_min_surface_match_ratio_ = std::clamp(
+      parameter_->get_parameter("global_localization_min_surface_match_ratio").as_double(),
+      0.0, 1.0);
+  RCLCPP_INFO(
+      logger_->get_logger(), "global_localization_min_surface_match_ratio: %.3f",
+      global_localization_min_surface_match_ratio_);
+
+  parameter_->declare_parameter(
+      "global_localization_min_surface_match_margin", rclcpp::ParameterValue(0.08));
+  global_localization_min_surface_match_margin_ = std::clamp(
+      parameter_->get_parameter("global_localization_min_surface_match_margin").as_double(),
+      0.0, 1.0);
+  RCLCPP_INFO(
+      logger_->get_logger(), "global_localization_min_surface_match_margin: %.3f",
+      global_localization_min_surface_match_margin_);
+
+  parameter_->declare_parameter(
+      "global_localization_surface_candidate_max_drop", rclcpp::ParameterValue(0.08));
+  global_localization_surface_candidate_max_drop_ = std::clamp(
+      parameter_->get_parameter("global_localization_surface_candidate_max_drop").as_double(),
+      0.0, 1.0);
+  RCLCPP_INFO(
+      logger_->get_logger(), "global_localization_surface_candidate_max_drop: %.3f",
+      global_localization_surface_candidate_max_drop_);
 
   parameter_->declare_parameter("global_localization_retry_sec", rclcpp::ParameterValue(2.0));
   global_localization_retry_sec_ =

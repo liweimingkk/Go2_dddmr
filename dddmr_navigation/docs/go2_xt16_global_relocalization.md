@@ -38,18 +38,31 @@ zero `/dddmr_go2/safe_cmd_vel` output.
 ## Global Search
 
 The MCL node subscribes to the pose-graph server's transient-local complete
-map, ground map, and key poses. It then:
+map, ground map, key poses, and ordered keyframe clouds. It then:
 
 1. Samples key-pose positions using `global_localization_grid`.
 2. Tests uniformly spaced map-frame yaw hypotheses at every sampled position.
-3. Scores a bounded sparse feature observation against the complete map.
-4. Retains the highest-scoring hypotheses.
-5. Seeds an expanded particle set around those hypotheses.
-6. Refines against consecutive LiDAR feature frames before publishing a usable
-   `map -> odom` transform and entering `TRACKING`.
+3. Compares a bounded live less-flat surface observation with the individual
+   surface cloud saved for each candidate keyframe.
+4. Rejects weak or ambiguous surface matches rather than blending different
+   corridor locations into one pose.
+5. Scores the surviving candidate against a pure pose-graph feature map; dense
+   planning surfaces are intentionally excluded from this localization tree.
+6. Seeds an expanded particle set around the accepted hypotheses.
+7. Refines against consecutive LiDAR feature frames and evaluates the weighted
+   pose that will actually be published—not merely the best individual
+   particle—before publishing a usable `map -> odom` transform and entering
+   `TRACKING`.
 
 This search does not command exploratory rotation or translation. It remains a
 stationary/no-motion localization process.
+
+The map, ground, key poses, and per-keyframe clouds form one immutable
+snapshot. Keyframe service requests time out and retry, but a replacement map
+generation invalidates the snapshot, immediately blocks `TRACKING`/TF, and
+requires restarting MCL. Empty keyframe placeholders remain supported; every
+non-empty map-frame cloud is checked against its base-link cloud and saved pose
+before global localization is enabled.
 
 ## Runtime Interfaces
 
@@ -89,7 +102,12 @@ Important groups:
   runs at startup and retries after localization enters `LOST`.
 - Search coverage and cost: `global_localization_grid`,
   `global_localization_div_yaw`, and `global_localization_max_candidates`.
-- Coarse acceptance: `global_localization_min_match_ratio`.
+- Coarse feature acceptance: `global_localization_min_match_ratio`.
+- Candidate disambiguation: `global_localization_max_surface_points`,
+  `global_localization_surface_match_distance`,
+  `global_localization_min_surface_match_ratio`,
+  `global_localization_min_surface_match_margin`, and
+  `global_localization_surface_candidate_max_drop`.
 - Refinement: `global_localization_top_candidates`,
   `global_localization_num_particles`, and `global_localization_seed_std_*`.
 - State hysteresis: `localization_tracking_*` and `localization_lost_*`.
@@ -112,16 +130,25 @@ python3 scripts/replay_pose_graph_keyframe_for_relocalization.py \
   --keyframe 20 --duration 8
 ```
 
-For the current mouth map, the global-search capability was previously verified
-offline as follows. The current configuration invokes the same search
-automatically at startup and after tracking is lost:
+For the current mouth map, the updated search was verified in an isolated ROS
+domain with only the map server, MCL, saved clouds, and identity odometry. Each
+run evaluated 1,080 position/yaw candidates:
 
-- keyframe 20: 612 coarse position/yaw candidates, best coarse quality 0.925,
-  then `TRACKING` near the saved keyframe pose;
-- feature stream stopped: transition to `LOST`, with the command gate retaining
-  zero output;
-- keyframe 35 replayed several metres away: a new full-map search selected the
-  second location and returned to `TRACKING`.
+- keyframe 0: selected keyframe 0, surface match 1.000, with no other qualified
+  pose basin, then `TRACKING` with weighted-pose match 1.000;
+- keyframe 20: selected the adjacent sampled keyframe 21 (0.18 m away), surface
+  match 0.811, margin 0.419, then `TRACKING` near the saved pose;
+- keyframe 35: selected keyframe 35, surface match 0.996, margin 0.624, then
+  `TRACKING` with weighted-pose match 1.000.
+- after the replay feature stream stopped: the node changed from `TRACKING` to
+  `LOST` on the configured LiDAR timeout.
+- after a replacement key-pose publication: the immutable snapshot was
+  invalidated and the status changed from `TRACKING` to `LOST` before another
+  TF could be accepted.
+
+The localization state-machine tests also cover quality loss and explicit
+recovery. The current configuration invokes the same global search
+automatically at startup and after tracking is lost.
 
 This validates software behavior with saved pose-graph data. It does not
 replace a supervised, no-goal live acceptance test for real XT16 timing,
