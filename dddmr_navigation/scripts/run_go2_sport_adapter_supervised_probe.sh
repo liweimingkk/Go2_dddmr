@@ -14,6 +14,7 @@ Modes:
                   and GO2_SPORT_LIVE_CONFIRM=I_AM_SUPERVISING_GO2.
 
 Environment:
+  GO2_SETUP=<repo>/.unitree_msg_ws/install/setup.bash
   GO2_SPORT_PROBE_X=0.05
   GO2_SPORT_PROBE_Y=0.0
   GO2_SPORT_PROBE_YAW=0.0
@@ -88,7 +89,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ADAPTER="${WS_ROOT}/src/dddmr_beginner_guide/scripts/go2_sport_cmd_vel_adapter.py"
 ADAPTER_SHA256="$(sha256sum -- "${ADAPTER}" | awk '{print $1}')"
-GO2_SETUP="${GO2_SETUP:-/home/lin/go2_workspace/unitree_ros2/setup.sh}"
+GO2_SETUP="${GO2_SETUP:-${WS_ROOT}/.unitree_msg_ws/install/setup.bash}"
 CMD_TOPIC="${GO2_SPORT_CMD_TOPIC:-/dddmr_go2/safe_cmd_vel}"
 REAL_REQUEST_TOPIC="/api/sport/request"
 PREVIEW_REQUEST_TOPIC="/dddmr_go2/sport_request_preview"
@@ -315,7 +316,7 @@ validate_allowed_decisions() {
 assert_no_conflicting_runtime() {
   local docker_matches
   docker_matches="$(docker ps --format '{{.Names}} {{.Image}}' 2>/dev/null | \
-    rg 'go2_xt16|dddmr_go2_xt16|dddmr_navigation' || true)"
+    grep -E 'go2_xt16|dddmr_go2_xt16|dddmr_navigation' || true)"
   if [[ -n "${docker_matches}" ]]; then
     echo "${docker_matches}" >&2
     die "stop Go2/DDDMR Docker containers before running the supervised probe"
@@ -323,8 +324,8 @@ assert_no_conflicting_runtime() {
 
   local proc_matches
   proc_matches="$(ps -eo pid,args | \
-    rg 'go2_sport_cmd_vel_adapter|go2_sport_cmd_vel_dry_run|go2_xt16_navigation.launch|rviz2|p2p_move_base_node' | \
-    rg -v 'run_go2_sport_adapter_supervised_probe|bash -lc|py_compile|sed -n|nl -ba|rg |ps -eo' || true)"
+    grep -E 'go2_sport_cmd_vel_adapter|go2_sport_cmd_vel_dry_run|go2_xt16_navigation.launch|rviz2|p2p_move_base_node' | \
+    grep -Ev 'run_go2_sport_adapter_supervised_probe|bash -lc|py_compile|sed -n|nl -ba|grep |ps -eo' || true)"
   if [[ -n "${proc_matches}" ]]; then
     echo "${proc_matches}" >&2
     die "stop existing navigation/RViz/Sport adapter processes before running the probe"

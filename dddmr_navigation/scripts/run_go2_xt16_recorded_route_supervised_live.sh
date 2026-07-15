@@ -45,7 +45,7 @@ Low-speed live policy:
   GO2_SPORT_PROBE_MAX_AGE_SEC=3600
 
 Other environment:
-  GO2_SETUP=/home/lin/go2_workspace/unitree_ros2/setup.sh
+  GO2_SETUP=<repo>/.unitree_msg_ws/install/setup.bash
   GO2_RECORDED_ROUTE_LOG_DIR=/tmp
   RVIZ=true
   PUBLISH_STATIC_TF=true
@@ -89,7 +89,7 @@ ROUTE_RUNNER="${SCRIPT_DIR}/run_go2_xt16_recorded_route_dry_run.sh"
 ADAPTER="${WS_ROOT}/src/dddmr_beginner_guide/scripts/go2_sport_cmd_vel_adapter.py"
 ROUTE_LAUNCH="${WS_ROOT}/src/dddmr_beginner_guide/launch/go2_xt16_recorded_route_navigation.launch"
 ROUTE_CONFIG="${WS_ROOT}/src/dddmr_route_navigation/config/go2_xt16_recorded_route.yaml"
-GO2_SETUP="${GO2_SETUP:-/home/lin/go2_workspace/unitree_ros2/setup.sh}"
+GO2_SETUP="${GO2_SETUP:-${WS_ROOT}/.unitree_msg_ws/install/setup.bash}"
 BAGS_DIR="${DDDMR_BAGS_DIR:-${REPO_ROOT}/bags}"
 DEFAULT_MAP_NAME="go2_xt16_mouth_mapping_20260714_153136_map_2026_07_14_07_31_36"
 MAP_DIR="${ROUTE_MAP_DIR:-${BAGS_DIR}/${DEFAULT_MAP_NAME}}"
