@@ -3,6 +3,7 @@
 import importlib.util
 import json
 from pathlib import Path
+import stat
 import tempfile
 import unittest
 
@@ -73,6 +74,7 @@ class RouteToolTest(unittest.TestCase):
             loaded = route_tool.load_document(path)
             self.assertEqual(loaded["schema"], route_tool.SCHEMA)
             self.assertEqual(len(loaded["points"]), 3)
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o644)
             self.assertEqual(list(Path(directory).glob("*.tmp")), [])
 
     def test_rejects_unnormalized_quaternion_and_route_gap(self):

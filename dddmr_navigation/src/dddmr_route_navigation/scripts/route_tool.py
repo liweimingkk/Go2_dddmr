@@ -268,6 +268,10 @@ def write_document(path: Path, document: Dict[str, object]) -> None:
     )
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            # Route files are shared from a root-run Docker container back to
+            # the host workspace.  mkstemp defaults to 0600, which would make
+            # a successful recording unreadable to the host operator.
+            os.fchmod(stream.fileno(), 0o644)
             json.dump(document, stream, indent=2, sort_keys=True)
             stream.write("\n")
             stream.flush()
@@ -395,6 +399,7 @@ def record_route(args: argparse.Namespace) -> int:
     try:
         import rclpy
         from geometry_msgs.msg import PoseWithCovarianceStamped
+        from rclpy.executors import ExternalShutdownException
         from rclpy.node import Node
         from std_msgs.msg import String
     except ImportError as exc:
@@ -467,11 +472,14 @@ def record_route(args: argparse.Namespace) -> int:
     )
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        # Humble's SIGINT handler may already have shut down the default
+        # context before spin() raises KeyboardInterrupt.  try_shutdown() is
+        # idempotent, so route serialization below still runs after Ctrl-C.
+        rclpy.try_shutdown()
 
     filtered = filter_duplicate_points(recorded, args.duplicate_distance)
     document = build_document(
