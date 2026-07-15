@@ -32,9 +32,7 @@
 #include "utilities.h"
 
 #include <atomic>
-#include <chrono>
 #include <mutex>
-#include <optional>
 #include <vector>
 
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
@@ -76,7 +74,6 @@ private:
   void globalMapCb(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
   void globalGroundCb(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
   void prepareGlobalMapLocked();
-  void finishKeyFrameSyncLocked();
   void syncMapThread();
 
   std::string pg_map_server_name_;
@@ -109,27 +106,18 @@ private:
   std::vector<pcl::PointCloud<pcl_t>::Ptr> groundCloudKeyFrames_baselink_; //original frame from files are base_link
   
   //@
-  std::atomic_bool is_initial_;
+  bool is_initial_;
   bool is_current_ready_;
-  std::atomic_bool key_poses_received_;
-  std::atomic_bool key_frames_ready_;
-  std::atomic_size_t next_key_frame_index_;
-  std::optional<rclcpp::Client<dddmr_sys_core::srv::GetKeyFrameCloud>::FutureAndRequestId>
-    pending_key_frame_request_;
-  std::chrono::steady_clock::time_point key_frame_request_started_;
+  bool key_poses_received_;
   std::vector<geometry_msgs::msg::Pose> key_poses_;
   pcl::PointCloud<pcl_t>::Ptr poses_pcl_t_;
   pcl::KdTreeFLANN<mcl_3dl::pcl_t>::Ptr kdtree_poses_;
-  std::vector<std::shared_ptr<pcl::KdTreeFLANN<mcl_3dl::pcl_t>>>
-    kdtree_surface_key_frames_;
 
   pcl::PointCloud<pcl_t>::Ptr map_global_;
-  pcl::PointCloud<pcl_t>::Ptr feature_global_;
   pcl::PointCloud<pcl_t>::Ptr ground_global_;
   bool global_map_received_;
   bool global_ground_received_;
   std::atomic_bool is_global_ready_;
-  std::atomic_bool map_snapshot_invalidated_;
 
   pcl::PointCloud<pcl_t>::Ptr map_warmup_;
   pcl::PointCloud<pcl_t>::Ptr ground_warmup_;
@@ -154,27 +142,9 @@ public:
   void swapKdTree();
   
   void warmUpThread();
-  bool isCurrentReady() const
-  {
-    return is_current_ready_ && !map_snapshot_invalidated_.load();
-  };
-  bool isGlobalReady() const
-  {
-    return is_global_ready_.load() && !map_snapshot_invalidated_.load();
-  };
-  bool areKeyFramesReady() const
-  {
-    return key_frames_ready_.load() && !map_snapshot_invalidated_.load();
-  };
-  bool isMapSnapshotValid() const
-  {
-    return !map_snapshot_invalidated_.load();
-  };
+  bool isCurrentReady(){return is_current_ready_;};
+  bool isGlobalReady() const {return is_global_ready_.load();};
   std::vector<geometry_msgs::msg::Pose> getKeyPoses();
-  float keyFrameSurfaceMatchRatio(
-      std::size_t key_frame_index,
-      const pcl::PointCloud<pcl_t>& observation_in_map,
-      double match_distance) const;
 
   // Provide a typedef to ease future code maintenance
   typedef std::recursive_mutex sub_maps_mutex_t;
@@ -193,7 +163,6 @@ public:
   pcl::PointCloud<pcl::Normal> normals_ground_warmup_;
 
   pcl::KdTreeFLANN<mcl_3dl::pcl_t> kdtree_map_global_;
-  pcl::KdTreeFLANN<mcl_3dl::pcl_t> kdtree_feature_global_;
   pcl::KdTreeFLANN<mcl_3dl::pcl_t> kdtree_ground_global_;
   pcl::PointCloud<pcl::Normal> normals_ground_global_;
   

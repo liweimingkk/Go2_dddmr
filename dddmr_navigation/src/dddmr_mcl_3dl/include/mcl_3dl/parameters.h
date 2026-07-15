@@ -73,12 +73,7 @@ public:
   int global_localization_top_candidates_;
   int global_localization_num_particles_;
   int global_localization_max_observation_points_;
-  int global_localization_max_surface_points_;
   double global_localization_min_match_ratio_;
-  double global_localization_surface_match_distance_;
-  double global_localization_min_surface_match_ratio_;
-  double global_localization_min_surface_match_margin_;
-  double global_localization_surface_candidate_max_drop_;
   double global_localization_retry_sec_;
   State6DOF global_localization_seed_std_;
   double resample_var_x_;

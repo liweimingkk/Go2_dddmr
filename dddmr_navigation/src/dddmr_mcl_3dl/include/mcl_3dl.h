@@ -179,15 +179,13 @@ class MCL3dlNode : public rclcpp::Node
     struct GlobalCandidate
     {
       State6DOF state;
-      std::size_t key_frame_index{0};
-      float surface_quality{0.0f};
       float quality{0.0f};
       float likelihood{0.0f};
     };
 
     bool attemptGlobalLocalization(
       const std::map<std::string, pcl::PointCloud<pcl_t>::Ptr>& pcl_segmentations);
-    std::vector<GlobalCandidate> buildGlobalCandidates() const;
+    std::vector<State6DOF> buildGlobalCandidates() const;
     std::map<std::string, pcl::PointCloud<pcl_t>::Ptr> makeSparseObservation(
       const std::map<std::string, pcl::PointCloud<pcl_t>::Ptr>& pcl_segmentations) const;
     void initializeGlobalParticles(const std::vector<GlobalCandidate>& candidates);

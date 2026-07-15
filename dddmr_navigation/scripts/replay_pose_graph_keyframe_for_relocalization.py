@@ -2,9 +2,8 @@
 
 """Replay one saved pose-graph keyframe as a stationary MCL observation.
 
-This is an offline/no-motion diagnostic. It publishes saved feature, surface,
-and ground PCDs plus identity odometry; it never publishes velocity or Unitree
-requests.
+This is an offline/no-motion diagnostic. It publishes saved feature and ground
+PCDs plus identity odometry; it never publishes velocity or Unitree requests.
 """
 
 import argparse
@@ -66,9 +65,6 @@ class KeyframeReplay(Node):
         self.ground_points = read_ascii_pcd(
             pcd_dir / f"{args.keyframe}_ground.pcd"
         )
-        self.surface_points = read_ascii_pcd(
-            pcd_dir / f"{args.keyframe}_surface.pcd"
-        )
         self.frame_id = args.frame_id
         self.end_ns = self.get_clock().now().nanoseconds + int(args.duration * 1e9)
         self.finished = False
@@ -97,11 +93,10 @@ class KeyframeReplay(Node):
         self.create_timer(1.0 / args.rate, self.publish_sample)
 
         self.get_logger().info(
-            "Offline keyframe %d: %d feature, %d surface, %d ground points for %.1fs"
+            "Offline keyframe %d: %d feature points, %d ground points for %.1fs"
             % (
                 args.keyframe,
                 len(self.feature_points),
-                len(self.surface_points),
                 len(self.ground_points),
                 args.duration,
             )
@@ -122,13 +117,10 @@ class KeyframeReplay(Node):
         ground = point_cloud2.create_cloud(
             header, self.cloud_fields, self.ground_points
         )
-        surface = point_cloud2.create_cloud(
-            header, self.cloud_fields, self.surface_points
-        )
         self.sharp_pub.publish(feature)
         self.less_sharp_pub.publish(feature)
         self.flat_pub.publish(ground)
-        self.less_flat_pub.publish(surface)
+        self.less_flat_pub.publish(ground)
 
         odom = Odometry()
         odom.header = header
