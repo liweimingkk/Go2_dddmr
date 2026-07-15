@@ -305,6 +305,13 @@ RVIZ=true \
 拓扑、速度/决策 publisher 唯一性检查。真实适配器接通后，路线控制器仍为
 `DISABLED`，此时只会发送 `StopMove`。操作员再次核对现场后必须在同一终端输入：
 
+当前 Go2 DDS 图在没有宿主机 Sport adapter 时已有 `10` 个匿名
+`/api/sport/request` publisher；2026-07-04 和 2026-07-15 的现场检查结果一致。
+监督入口要求这 `10` 个基线端点连续 `3 s` 没有请求流量，接入本机 adapter 后
+publisher 数必须恰好变为 `11`，运行中数量发生任何变化都会退出。若固件或现场
+DDS 图确实改变，必须先重新核验，再显式设置
+`GO2_RECORDED_ROUTE_EXPECTED_REQUEST_BASELINE`，不能跳过静默检查。
+
 ```text
 ENABLE my_route_a
 ```
@@ -321,7 +328,8 @@ ENABLE my_route_a
 - 跟踪进度连续 `15 s` 没有增长；
 - 起点或终点朝向对齐超过 `20 s`；
 - 总运动时间超过 `120 s`；
-- 真实 Sport、safe velocity 或路线决策 publisher 不再保持唯一；
+- 真实 Sport publisher 不再保持已验证的“静默基线 + 本机 adapter”，或 safe
+  velocity/路线决策 publisher 不再保持唯一；
 - Docker 速度源或宿主机 Sport adapter 异常退出。
 
 结束后脚本会删除本次容器，并在 `/tmp` 保存 Docker、adapter、request echo 和

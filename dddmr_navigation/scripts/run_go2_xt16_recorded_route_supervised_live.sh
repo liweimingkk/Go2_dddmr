@@ -43,6 +43,7 @@ Low-speed live policy:
   GO2_RECORDED_ROUTE_START_MAX_Z_ERROR=0.20
   GO2_RECORDED_ROUTE_START_MAX_YAW_ERROR=0.35
   GO2_SPORT_PROBE_MAX_AGE_SEC=3600
+  GO2_RECORDED_ROUTE_EXPECTED_REQUEST_BASELINE=10
 
 Other environment:
   GO2_SETUP=<repo>/.unitree_msg_ws/install/setup.bash
@@ -120,6 +121,7 @@ start_max_xy_error="${GO2_RECORDED_ROUTE_START_MAX_XY_ERROR:-0.25}"
 start_max_z_error="${GO2_RECORDED_ROUTE_START_MAX_Z_ERROR:-0.20}"
 start_max_yaw_error="${GO2_RECORDED_ROUTE_START_MAX_YAW_ERROR:-0.35}"
 probe_max_age_sec="${GO2_SPORT_PROBE_MAX_AGE_SEC:-3600}"
+expected_request_baseline="${GO2_RECORDED_ROUTE_EXPECTED_REQUEST_BASELINE:-10}"
 probe_summary="${GO2_SPORT_PROBE_SUMMARY:-}"
 
 rviz="${RVIZ:-true}"
@@ -147,6 +149,7 @@ source_attempted="false"
 live_output_attempted="false"
 cleanup_started="false"
 final_result="NOT_STARTED"
+expected_request_publishers=""
 
 log() {
   printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"
@@ -184,6 +187,12 @@ summary_value() {
 }
 
 validate_low_speed_policy() {
+  [[ "${expected_request_baseline}" =~ ^[0-9]+$ ]] || \
+    die "GO2_RECORDED_ROUTE_EXPECTED_REQUEST_BASELINE must be a non-negative integer."
+  (( expected_request_baseline <= 64 )) || \
+    die "GO2_RECORDED_ROUTE_EXPECTED_REQUEST_BASELINE must not exceed 64."
+  expected_request_publishers="$((expected_request_baseline + 1))"
+
   /usr/bin/python3 - \
     "${sport_max_x}" \
     "${sport_max_yaw}" \
@@ -577,6 +586,26 @@ require_publisher_count() {
   die "${topic} publisher count is '${count:-unknown}', expected ${expected}."
 }
 
+require_request_topic_quiet() {
+  local output status
+  set +e
+  output="$(timeout -s INT -k 1s 3s \
+    ros2 topic echo --no-daemon "${REAL_REQUEST_TOPIC}" unitree_api/msg/Request \
+    --once 2>&1)"
+  status=$?
+  set -e
+
+  if [[ -n "${output}" ]]; then
+    printf '%s\n' "${output}" >&2
+    die "Observed request traffic on ${REAL_REQUEST_TOPIC} before starting the supervised adapter."
+  fi
+  case "${status}" in
+    0|124|130) ;;
+    *) die "Could not verify that ${REAL_REQUEST_TOPIC} is quiet (exit ${status})." ;;
+  esac
+  log "${REAL_REQUEST_TOPIC} baseline is quiet for 3 seconds."
+}
+
 docker_ros() {
   local command="$1"
   docker exec "${container_name}" bash -lc "set -eo pipefail
@@ -882,8 +911,8 @@ monitor_route() {
       request_publishers="$(publisher_count "${REAL_REQUEST_TOPIC}" 2>/dev/null || true)"
       cmd_publishers="$(publisher_count "${CMD_TOPIC}" 2>/dev/null || true)"
       decision_publishers="$(publisher_count "${DECISION_TOPIC}" 2>/dev/null || true)"
-      [[ "${request_publishers}" == "1" ]] || \
-        die "Real Sport publisher count changed to '${request_publishers:-unknown}'."
+      [[ "${request_publishers}" == "${expected_request_publishers}" ]] || \
+        die "Real Sport publisher count changed to '${request_publishers:-unknown}'; expected ${expected_request_publishers}."
       [[ "${cmd_publishers}" == "1" ]] || \
         die "Safe velocity publisher count changed to '${cmd_publishers:-unknown}'."
       [[ "${decision_publishers}" == "1" ]] || \
@@ -1008,6 +1037,8 @@ REQUEST_ECHO_LOG=${request_echo_log}
 CMD_TOPIC=${CMD_TOPIC}
 DECISION_TOPIC=${DECISION_TOPIC}
 REQUEST_TOPIC=${REAL_REQUEST_TOPIC}
+REQUEST_BASELINE_PUBLISHERS=${expected_request_baseline}
+REQUEST_ACTIVE_PUBLISHERS=${expected_request_publishers}
 SPORT_MAX_X=${sport_max_x}
 SPORT_MAX_Y=${sport_max_y}
 SPORT_MAX_YAW=${sport_max_yaw}
@@ -1086,6 +1117,8 @@ if [[ "${mode}" == "check" ]]; then
     "${sport_max_x}" "${sport_max_y}" "${sport_max_yaw}"
   printf 'START_ENVELOPE=max_xy:%s,max_z:%s,max_yaw:%s\n' \
     "${start_max_xy_error}" "${start_max_z_error}" "${start_max_yaw_error}"
+  printf 'REQUEST_PUBLISHER_POLICY=baseline:%s,active:%s\n' \
+    "${expected_request_baseline}" "${expected_request_publishers}"
   printf 'SOURCE_FAIL_CLOSED=PASS\n'
   printf 'PROBE_STATUS=%s\n' "${probe_state}"
   printf 'RESULT=GO2_XT16_RECORDED_ROUTE_OFFLINE_CHECK_PASS\n'
@@ -1107,7 +1140,8 @@ require_topic_type "/sportmodestate" "unitree_go/msg/SportModeState"
 require_topic_type "/lowstate" "unitree_go/msg/LowState"
 require_topic_sample "/sportmodestate" "unitree_go/msg/SportModeState"
 require_topic_sample "/lowstate" "unitree_go/msg/LowState"
-require_publisher_count "${REAL_REQUEST_TOPIC}" 0
+require_publisher_count "${REAL_REQUEST_TOPIC}" "${expected_request_baseline}"
+require_request_topic_quiet
 
 trap cleanup EXIT
 trap handle_signal INT TERM
@@ -1121,11 +1155,12 @@ require_topic_type "${CMD_TOPIC}" "geometry_msgs/msg/Twist"
 require_topic_type "${DECISION_TOPIC}" "std_msgs/msg/String"
 require_publisher_count "${CMD_TOPIC}" 1
 require_publisher_count "${DECISION_TOPIC}" 1
-require_publisher_count "${REAL_REQUEST_TOPIC}" 0
+require_publisher_count "${REAL_REQUEST_TOPIC}" "${expected_request_baseline}"
+require_request_topic_quiet
 
 start_request_echo
 start_live_adapter
-require_publisher_count "${REAL_REQUEST_TOPIC}" 1
+require_publisher_count "${REAL_REQUEST_TOPIC}" "${expected_request_publishers}"
 prompt_for_route_arm
 enable_route_controller
 
