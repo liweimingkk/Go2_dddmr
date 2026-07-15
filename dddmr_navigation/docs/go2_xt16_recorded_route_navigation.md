@@ -33,7 +33,8 @@ Local Planner 就可以短距离绕开障碍。走廊内没有安全轨迹时，
 7. `RouteCorridorModel` 会拒绝任何将要离开同一三维走廊的前向局部轨迹。
 8. 原有地图、激光雷达和机器人包围盒碰撞检查继续生效。
 9. 控制器还会限幅到 `x <= 0.35 m/s`、`y = 0`、`|yaw| <= 0.50 rad/s`。
-10. 专用 launch 只接 dry-run 速度链，并明确关闭 Unitree Sport 实际输出。
+10. 专用 launch 只接 dry-run 速度链，并明确关闭 Unitree Sport 实际输出；监督式
+    live 入口只能在宿主机通过额外三重门控接入 Sport，且再次限幅。
 
 走廊宽度是“允许局部绕障的范围”，不是通行安全证明。室内参数只能用来验证
 软件流程；户外坡道、楼梯必须重新测量定位误差、地图高度噪声和机器狗实际通过
@@ -212,7 +213,7 @@ ros2 run dddmr_route_navigation route_tool.py record \
 
 ## 从 dry-run 到现场验证
 
-本提交没有提供“一键真实运动” launch。现场放开运动前至少应依次完成：
+现场放开运动前至少应依次完成：
 
 1. 离线单元测试和路线 JSON 校验；
 2. RViz 中核对 `prepared_route` 与同一地图完全重合；
@@ -224,8 +225,108 @@ ros2 run dddmr_route_navigation route_tool.py record \
 8. 楼梯单段测试；
 9. 最后才是完整户外长路线。
 
-真实 Sport 输出仍需要单独的、明确批准的监督操作流程。不要把本 dry-run launch
-中的 `start_go2_sport_adapter=false` 改成 true 后直接上楼梯。
+不要把 dry-run launch 中的 `start_go2_sport_adapter=false` 改成 true。专用入口是：
+
+```text
+scripts/run_go2_xt16_recorded_route_supervised_live.sh
+```
+
+它不复用普通点到点的 `run_go2_xt16_navigation_supervised_live.sh --live`，而是启动
+录制路线专用 Docker 栈，保持控制器 `DISABLED`，再由宿主机连接最终 Sport
+适配器。默认不带参数时只进行离线检查，绝不启动 Docker 或发布 ROS 消息。
+
+### `my_route_a` 离线检查
+
+当前路线应为 `26` 个输入点、三维长度约 `3.132 m`，并绑定地图指纹
+`4c341cfe0dc1fb4c5eab2b60b32d2bdbbbb33a1e6733287bc1ac15e82b00ad85`：
+
+```bash
+cd /home/kkkkkkq/new2_success/new22/new2/dddmr_navigation
+
+ROUTE_FILE=/home/kkkkkkq/new2_success/new22/new2/bags/routes/my_route_a.json \
+ROUTE_MAP_DIR=/home/kkkkkkq/new2_success/new22/new2/bags/go2_xt16_mouth_mapping_20260714_153136_map_2026_07_14_07_31_36 \
+./scripts/run_go2_xt16_recorded_route_supervised_live.sh --check
+```
+
+预期结束标志为：
+
+```text
+RESULT=GO2_XT16_RECORDED_ROUTE_OFFLINE_CHECK_PASS
+```
+
+### 现场 Sport 短探针
+
+执行探针前必须停掉所有 dry-run/navigation 容器。下面的 `--live` 探针会让实体
+Go2 以 `0.05 m/s` 前进约 `0.6 s`，只能在平整、开阔区域进行；第二名操作员必须
+持有原厂遥控器或物理急停。它同时验证 `Move`、`StopMove` 和路线使用的决策门：
+
+```bash
+./scripts/run_go2_xt16_recorded_route_dry_run.sh --stop
+
+GO2_SPORT_LIVE_CONFIRM=I_AM_SUPERVISING_GO2 \
+GO2_SPORT_PROBE_X=0.05 \
+GO2_SPORT_PROBE_Y=0.0 \
+GO2_SPORT_PROBE_YAW=0.0 \
+GO2_SPORT_MAX_X=0.10 \
+GO2_SPORT_MAX_Y=0.0 \
+GO2_SPORT_MAX_YAW=0.20 \
+GO2_SPORT_PROBE_DECISION=d_controlling \
+GO2_REQUIRE_MOTION_DECISION=true \
+GO2_MOTION_ALLOWED_DECISIONS=d_controlling,d_align_heading,d_align_goal_heading \
+./scripts/run_go2_sport_adapter_supervised_probe.sh --live
+```
+
+保留输出的 `SUMMARY_LOG=/tmp/go2_sport_adapter_live_..._summary.env`。监督式路线入口
+会重新读取原始 request echo，要求确实出现本次探针 request ID 之后的
+`api_id=1008` 和 `api_id=1003`，并要求探针限幅、超时、决策门参数与实跑完全一致。
+探针还会记录 Sport adapter 的 SHA-256；代码有变化就必须重新探针。报告默认只能
+在生成后 `1 h` 内使用。
+
+### `my_route_a` 监督式低速实跑
+
+先用原厂遥控器把 Go2 放到路线起点附近，在 RViz 中确认朝向与路线第一段一致。
+`my_route_a` 的起点约为 `map: (-0.288, 0.344, -0.141)`；控制器虽然允许
+`0.60 m / 0.35 m` 的起点包络，第一次测试应尽量贴近录制起点。确保整条短路线
+清空、终点有人看守、终端保持前台后执行。监督入口会在连接真实 adapter 之前
+额外执行更严格的起点检查：水平误差不超过 `0.25 m`、高度误差不超过 `0.20 m`、
+航向误差不超过 `0.35 rad`；不满足时应修复定位或重新摆放，不能靠放宽阈值掩盖：
+
+```bash
+GO2_RECORDED_ROUTE_LIVE_CONFIRM=I_AM_SUPERVISING_GO2_RECORDED_ROUTE \
+GO2_SPORT_PROBE_SUMMARY=/tmp/go2_sport_adapter_live_YYYYMMDD_HHMMSS_summary.env \
+GO2_RECORDED_ROUTE_EXPECTED_ID=my_route_a \
+ROUTE_FILE=/home/kkkkkkq/new2_success/new22/new2/bags/routes/my_route_a.json \
+ROUTE_MAP_DIR=/home/kkkkkkq/new2_success/new22/new2/bags/go2_xt16_mouth_mapping_20260714_153136_map_2026_07_14_07_31_36 \
+RVIZ=true \
+./scripts/run_go2_xt16_recorded_route_supervised_live.sh --live
+```
+
+程序会依次执行 XT16 只读 preflight、路线/地图指纹核对、MCL `TRACKING`、节点
+拓扑、速度/决策 publisher 唯一性检查。真实适配器接通后，路线控制器仍为
+`DISABLED`，此时只会发送 `StopMove`。操作员再次核对现场后必须在同一终端输入：
+
+```text
+ENABLE my_route_a
+```
+
+必须在 `60 s` 内输入，且完全匹配后才会调用控制器 enable 服务。默认最终硬限幅为
+`x <= 0.10 m/s`、`y = 0`、`|yaw| <= 0.20 rad/s`，并强制要求新鲜的
+`d_controlling / d_align_heading / d_align_goal_heading` 决策。yaw-arc shim 在这条
+首轮实跑入口中固定关闭。
+
+以下任一条件都会停用控制器并发送额外 `StopMove`：
+
+- 按 `Ctrl-C`；
+- 定位或控制器进入 `FAULT`；
+- 跟踪进度连续 `15 s` 没有增长；
+- 起点或终点朝向对齐超过 `20 s`；
+- 总运动时间超过 `120 s`；
+- 真实 Sport、safe velocity 或路线决策 publisher 不再保持唯一；
+- Docker 速度源或宿主机 Sport adapter 异常退出。
+
+结束后脚本会删除本次容器，并在 `/tmp` 保存 Docker、adapter、request echo 和
+summary 日志。第一次真实验证仅限平地短距离；该入口不会自动切换 Go2 步态、身体
+高度或楼梯模式，不能因为平地通过就直接用于坡道或楼梯。
 
 ## 关键参数
 

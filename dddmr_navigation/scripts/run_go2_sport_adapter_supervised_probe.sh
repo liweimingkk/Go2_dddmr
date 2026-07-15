@@ -87,6 +87,7 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ADAPTER="${WS_ROOT}/src/dddmr_beginner_guide/scripts/go2_sport_cmd_vel_adapter.py"
+ADAPTER_SHA256="$(sha256sum -- "${ADAPTER}" | awk '{print $1}')"
 GO2_SETUP="${GO2_SETUP:-/home/lin/go2_workspace/unitree_ros2/setup.sh}"
 CMD_TOPIC="${GO2_SPORT_CMD_TOPIC:-/dddmr_go2/safe_cmd_vel}"
 REAL_REQUEST_TOPIC="/api/sport/request"
@@ -516,6 +517,7 @@ echo "PUB_LOG=${pub_log}"
 echo "DECISION_PUB_LOG=${decision_pub_log}"
 echo "SUMMARY_LOG=${summary_log}"
 echo "MODE=${mode}"
+echo "ADAPTER_SHA256=${ADAPTER_SHA256}"
 echo "PROBE x=${probe_x} y=${probe_y} yaw=${probe_yaw} duration=${probe_duration} decision=${probe_decision:-<none>} pre_cmd_sleep=${probe_pre_cmd_sleep}"
 echo "CMD_TOPIC=${CMD_TOPIC}"
 echo "ADAPTER_TIMER publish_rate_hz=${publish_rate_hz} cmd_timeout_sec=${cmd_timeout_sec} max_x=${max_x} max_y=${max_y} max_yaw=${max_yaw} zero_epsilon=${zero_epsilon} stop_keepalive_hz=${stop_keepalive_hz}"
@@ -602,6 +604,7 @@ result="GO2_SPORT_ADAPTER_${mode//-/_}_COMPLETE"
 cat >"${summary_log}" <<EOF
 MODE=${mode}
 RESULT=${result}
+ADAPTER_SHA256=${ADAPTER_SHA256}
 REQUEST_ID_BASE=${request_id_base}
 ADAPTER_LOG=${adapter_log}
 PUB_LOG=${pub_log}
