@@ -123,6 +123,33 @@ require_positive_integer() {
     die "${name} must be a positive integer; got '${value}'."
 }
 
+detect_go2_net_iface() {
+  local requested="${GO2_NET_IFACE_VALUE}"
+  local detected=""
+  if [[ -n "${requested}" ]]; then
+    [[ -d "/sys/class/net/${requested}" ]] || \
+      die "GO2_NET_IFACE '${requested}' is not an available host interface."
+    printf '%s\n' "${requested}"
+    return 0
+  fi
+
+  command -v ip >/dev/null 2>&1 || \
+    die "Cannot auto-detect GO2_NET_IFACE because the host 'ip' command is missing."
+  detected="$(ip route get "${GO2_DDS_IP_VALUE}" 2>/dev/null | awk '
+    {
+      for (i = 1; i <= NF; i++) {
+        if ($i == "dev" && (i + 1) <= NF) {
+          print $(i + 1)
+          exit
+        }
+      }
+    }
+  ')"
+  [[ -n "${detected}" && -d "/sys/class/net/${detected}" ]] || \
+    die "Could not auto-detect a host interface for GO2_DDS_IP=${GO2_DDS_IP_VALUE}."
+  printf '%s\n' "${detected}"
+}
+
 recorded_route_containers() {
   docker ps -a --filter "label=${CONTAINER_LABEL}" --format '{{.Names}}' 2>/dev/null || true
 }
@@ -264,22 +291,34 @@ ensure_navigation_install() {
     die "Recorded-route install is missing inside Docker: ${route_node}"
 }
 
-check_no_real_sport_publisher() {
+check_dry_run_isolation() {
   local container="$1"
-  local nodes info publishers
+  local nodes processes info publishers
   nodes="$(docker_ros "${container}" "timeout 8 ros2 node list" 2>&1)" || {
     printf '%s\n' "${nodes}" >&2
-    die "Could not inspect ROS nodes."
+    echo "ERROR: Could not inspect ROS nodes." >&2
+    return 1
   }
   if grep -Eq '(^|/)go2_sport_cmd_vel_adapter([^[:alnum:]]|$)' <<<"${nodes}"; then
-    die "A real Sport adapter node is present; refusing dry-run enable."
+    echo "ERROR: A real Sport adapter node is present." >&2
+    return 1
+  fi
+
+  processes="$(docker exec "${container}" ps -eo args 2>&1)" || {
+    printf '%s\n' "${processes}" >&2
+    echo "ERROR: Could not inspect container processes." >&2
+    return 1
+  }
+  if grep -Eq '(^|/)go2_sport_cmd_vel_adapter[.]py([^[:alnum:]]|$)' <<<"${processes}"; then
+    echo "ERROR: A real Sport adapter process is present." >&2
+    return 1
   fi
 
   info="$(docker_ros "${container}" "timeout 8 ros2 topic info /api/sport/request" 2>&1 || true)"
   publishers="$(awk '/^Publisher count:/ {print $3; exit}' <<<"${info}")"
   if [[ -n "${publishers}" && "${publishers}" != "0" ]]; then
-    printf '%s\n' "${info}" >&2
-    die "/api/sport/request has ${publishers} publisher(s); refusing dry-run enable."
+    log "NOTICE: ROS domain already has ${publishers} external /api/sport/request publisher endpoint(s)."
+    log "No real Sport adapter node or process exists in this dry-run container."
   fi
 }
 
@@ -307,12 +346,10 @@ show_status() {
 }
 
 enable_dry_run() {
-  local container ready localization response
+  local container localization response
   container="$(running_container)"
-  check_no_real_sport_publisher "${container}"
-  ready="$(docker_ros "${container}" \
-    "timeout 8 ros2 topic echo /recorded_route_controller/route_ready std_msgs/msg/Bool --once")"
-  grep -Eq '^data: true$' <<<"${ready}" || die "Recorded route is not ready."
+  check_dry_run_isolation "${container}" || \
+    die "Dry-run isolation check failed; refusing enable."
   localization="$(docker_ros "${container}" \
     "timeout 8 ros2 topic echo /localization_status std_msgs/msg/String --once")"
   case "${localization}" in
@@ -347,9 +384,9 @@ wait_for_route_ready() {
       return 1
     fi
     output="$(docker_ros "${container}" \
-      "timeout 5 ros2 topic echo /recorded_route_controller/route_ready std_msgs/msg/Bool --once" \
+      "timeout 8 ros2 topic echo --no-daemon --spin-time 3 /recorded_route_controller/status std_msgs/msg/String --once" \
       2>/dev/null || true)"
-    if grep -Eq '^data: true$' <<<"${output}"; then
+    if grep -Fq 'READY: route ready:' <<<"${output}"; then
       return 0
     fi
     sleep 1
@@ -364,6 +401,9 @@ start_dry_run() {
   validate_bool REGENERATE_ROUTE "${REGENERATE_ROUTE_VALUE}"
   require_positive_integer PREFLIGHT_SAMPLES "${PREFLIGHT_SAMPLES_VALUE}"
   require_positive_integer PREFLIGHT_TIMEOUT "${PREFLIGHT_TIMEOUT_VALUE}"
+
+  GO2_NET_IFACE_VALUE="$(detect_go2_net_iface)"
+  log "Using Go2 DDS interface: ${GO2_NET_IFACE_VALUE}"
 
   docker image inspect "${IMAGE}" >/dev/null 2>&1 || \
     die "Docker image ${IMAGE} not found."
@@ -391,7 +431,7 @@ start_dry_run() {
     die "Another navigation runtime is active. Stop it explicitly, then retry this script."
   fi
   log "Running read-only XT16 preflight..."
-  "${DOCKER_WRAPPER}" preflight \
+  GO2_NET_IFACE="${GO2_NET_IFACE_VALUE}" "${DOCKER_WRAPPER}" preflight \
     --samples "${PREFLIGHT_SAMPLES_VALUE}" \
     --timeout "${PREFLIGHT_TIMEOUT_VALUE}"
 
@@ -453,7 +493,10 @@ exec ros2 launch dddmr_beginner_guide go2_xt16_recorded_route_navigation.launch 
   fi
   trap - INT TERM
 
-  check_no_real_sport_publisher "${CONTAINER_NAME}"
+  if ! check_dry_run_isolation "${CONTAINER_NAME}"; then
+    save_and_remove_container "${CONTAINER_NAME}"
+    die "Dry-run isolation check failed during startup."
+  fi
   log "Ready, but still DISABLED. No physical motion output is connected."
   log "Inspect: ${SCRIPT_DIR}/run_go2_xt16_recorded_route_dry_run.sh --status"
   log "Enable dry-run calculation: ${SCRIPT_DIR}/run_go2_xt16_recorded_route_dry_run.sh --enable"
