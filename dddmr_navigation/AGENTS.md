@@ -86,6 +86,18 @@ Do not accept publisher presence alone as readiness. Require actual samples and 
 
 Use the upstream Docker environment rather than host-built mixed PCL/GTSAM binaries.
 
+Treat Docker as the authoritative build and runtime environment for the Go2 XT16
+navigation stack:
+
+- After changing navigation source or configuration, run
+  `./scripts/dddmr_docker_go2_xt16.sh build-navigation`.
+- Validate installed artifacts under `.docker_go2_xt16_install/`; the Docker
+  navigation entry points source this install base.
+- Do not use a host-side `colcon build`, `build/`, or `install/` result as the
+  navigation acceptance result. A host build failure does not prove that the
+  Docker image lacks dependencies; reproduce it through the Docker wrapper
+  before diagnosing a dependency problem.
+
 This clean workspace adds only a thin Go2 layer:
 
 - upstream base image: `dddmr:x64`
