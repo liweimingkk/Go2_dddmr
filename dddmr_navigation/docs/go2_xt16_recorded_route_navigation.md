@@ -81,6 +81,37 @@ JSON 会记录 `poses.pcd` 以及 `map/ground/edges` 的 SHA-256 指纹，便于
 
 ## 启动默认无运动测试
 
+推荐直接使用一键 dry-run 脚本：
+
+```bash
+cd /home/kkkkkkq/new2_success/new22/new2/dddmr_navigation
+./scripts/run_go2_xt16_recorded_route_dry_run.sh
+```
+
+脚本会自动生成或校验默认测试路线、核对路线与地图指纹、检查残留导航进程、执行
+XT16 只读 preflight，然后在后台启动专用 dry-run launch。启动完成后控制器仍保持
+`READY/DISABLED`，不会自动启用路线控制，也不会创建真实 Sport 请求发布者。
+
+常用控制命令：
+
+```bash
+# 查看路线、定位和控制器状态
+./scripts/run_go2_xt16_recorded_route_dry_run.sh --status
+
+# 定位为 TRACKING 且机器人在路线起点附近后，显式启用 dry-run 计算
+./scripts/run_go2_xt16_recorded_route_dry_run.sh --enable
+
+# 停用控制并清零进度
+./scripts/run_go2_xt16_recorded_route_dry_run.sh --disable
+
+# 停止容器并保存 Docker 日志
+./scripts/run_go2_xt16_recorded_route_dry_run.sh --stop
+```
+
+脚本没有 `--live` 模式。若只想离线生成和校验路线，可使用
+`--prepare-only`；需要重新构建时使用 `BUILD=true`。以下保留手工启动方法，便于
+排障和逐节点检查。
+
 进入 Go2 Docker：
 
 ```bash
