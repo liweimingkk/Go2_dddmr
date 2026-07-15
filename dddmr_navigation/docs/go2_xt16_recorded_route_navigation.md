@@ -169,6 +169,26 @@ ros2 service call /recorded_route_controller/set_enabled \
 先启动地图和 MCL，让 `/localization_status` 达到稳定 `TRACKING`。路线记录器本身
 不发送任何运动命令；操作员使用原厂遥控器人工驾驶：
 
+推荐使用录制脚本。它只会连接到已经运行的 recorded-route dry-run 容器，确认
+`TRACKING` 后才开始订阅 `/mcl_pose`；不会启用控制器，也不会发布运动指令：
+
+```bash
+cd /home/kkkkkkq/new2_success/new22/new2/dddmr_navigation
+
+# 终端 1：保持控制器 READY/DISABLED，不要执行 --enable
+./scripts/run_go2_xt16_recorded_route_dry_run.sh
+
+# 终端 2：用原厂遥控器人工走路线，结束后按 Ctrl-C 保存
+ROUTE_ID=park_route_a ./scripts/record_go2_xt16_recorded_route.sh
+```
+
+默认保存位置为 `bags/routes/<ROUTE_ID>.json`。脚本拒绝覆盖同名路线；确认需要
+替换时才显式设置 `OVERWRITE_ROUTE=true`。录制完成后，使用脚本输出的
+`ROUTE_FILE=... ROUTE_MAP_DIR=... run_go2_xt16_recorded_route_dry_run.sh` 命令，
+重新启动并加载新路线。
+
+手工命令等价于：
+
 ```bash
 ros2 run dddmr_route_navigation route_tool.py record \
   /root/dddmr_bags/routes/park_route_a.json \
