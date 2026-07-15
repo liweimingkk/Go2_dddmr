@@ -239,14 +239,29 @@ path_inside() {
 }
 
 ensure_navigation_install() {
-  local setup_file="${WS_ROOT}/${INSTALL_BASE_VALUE}/setup.bash"
-  local route_node="${WS_ROOT}/${INSTALL_BASE_VALUE}/dddmr_route_navigation/lib/dddmr_route_navigation/recorded_route_move_base_node"
-  if [[ "${BUILD_VALUE}" == "true" || ! -f "${setup_file}" || ! -x "${route_node}" ]]; then
+  local setup_file="/root/dddmr_navigation/${INSTALL_BASE_VALUE}/setup.bash"
+  local route_node="/root/dddmr_navigation/${INSTALL_BASE_VALUE}/dddmr_route_navigation/lib/dddmr_route_navigation/recorded_route_move_base_node"
+  local -a check_args=(
+    --rm
+    --network=none
+    -v "${WS_ROOT}:/root/dddmr_navigation:ro"
+    "${IMAGE}"
+    bash -c
+    'test -f "$1" && test -x "$2"'
+    bash
+    "${setup_file}"
+    "${route_node}"
+  )
+
+  # A symlink install created inside Docker uses absolute /root/dddmr_navigation
+  # targets. Such links look broken from the host even though they are valid in
+  # the runtime container, so installation readiness must be checked in Docker.
+  if [[ "${BUILD_VALUE}" == "true" ]] || ! docker run "${check_args[@]}"; then
     log "Building navigation in the authoritative Docker environment..."
     "${DOCKER_WRAPPER}" build-navigation
   fi
-  [[ -f "${setup_file}" ]] || die "Navigation install is missing: ${setup_file}"
-  [[ -x "${route_node}" ]] || die "Recorded-route node is missing: ${route_node}"
+  docker run "${check_args[@]}" || \
+    die "Recorded-route install is missing inside Docker: ${route_node}"
 }
 
 check_no_real_sport_publisher() {
