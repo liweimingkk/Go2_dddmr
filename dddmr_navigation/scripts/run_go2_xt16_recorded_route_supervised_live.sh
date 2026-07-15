@@ -28,7 +28,7 @@ Route environment:
   NAV_CONFIG_FILE=<workspace>/src/dddmr_beginner_guide/config/go2_xt16_navigation.yaml
 
 Low-speed live policy:
-  GO2_SPORT_MAX_X=0.10             Hard cap: 0.10 m/s
+  GO2_SPORT_MAX_X=0.30             Hard cap: 0.30 m/s
   GO2_SPORT_MAX_YAW=0.20           Hard cap: 0.25 rad/s
   GO2_SPORT_PUBLISH_RATE_HZ=50.0
   GO2_SPORT_CMD_TIMEOUT_SEC=0.20
@@ -107,7 +107,7 @@ MOTION_ALLOWED_DECISIONS="d_controlling,d_align_heading,d_align_goal_heading"
 
 sport_publish_rate_hz="${GO2_SPORT_PUBLISH_RATE_HZ:-50.0}"
 sport_cmd_timeout_sec="${GO2_SPORT_CMD_TIMEOUT_SEC:-0.20}"
-sport_max_x="${GO2_SPORT_MAX_X:-0.10}"
+sport_max_x="${GO2_SPORT_MAX_X:-0.30}"
 sport_max_y="0.0"
 sport_max_yaw="${GO2_SPORT_MAX_YAW:-0.20}"
 sport_zero_epsilon="${GO2_SPORT_ZERO_EPSILON:-0.001}"
@@ -248,7 +248,7 @@ def bounded(name, low, high, *, low_inclusive=False):
         bracket = "[" if low_inclusive else "("
         raise SystemExit(f"{name}={value} must be within {bracket}{low}, {high}]")
 
-bounded("GO2_SPORT_MAX_X", 0.0, 0.10)
+bounded("GO2_SPORT_MAX_X", 0.0, 0.30)
 bounded("GO2_SPORT_MAX_YAW", 0.0, 0.25)
 bounded("GO2_SPORT_PUBLISH_RATE_HZ", 10.0, 100.0, low_inclusive=True)
 bounded("GO2_SPORT_CMD_TIMEOUT_SEC", 0.05, 0.30, low_inclusive=True)
@@ -478,6 +478,16 @@ labels = [
 for label, index in zip(labels, range(0, len(pairs), 2)):
     observed = float(pairs[index])
     expected = float(pairs[index + 1])
+    if label == "MAX_X":
+        if observed <= 0.0 or observed > 0.10:
+            raise SystemExit(
+                f"probe MAX_X={observed} must be within (0.0, 0.10]"
+            )
+        if observed > expected:
+            raise SystemExit(
+                f"probe MAX_X={observed} exceeds live policy {expected}"
+            )
+        continue
     if not math.isclose(observed, expected, rel_tol=0.0, abs_tol=1e-9):
         raise SystemExit(
             f"probe {label}={observed} does not match live policy {expected}"

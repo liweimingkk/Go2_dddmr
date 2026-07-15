@@ -278,9 +278,9 @@ GO2_MOTION_ALLOWED_DECISIONS=d_controlling,d_align_heading,d_align_goal_heading 
 
 保留输出的 `SUMMARY_LOG=/tmp/go2_sport_adapter_live_..._summary.env`。监督式路线入口
 会重新读取原始 request echo，要求确实出现本次探针 request ID 之后的
-`api_id=1008` 和 `api_id=1003`，并要求探针限幅、超时、决策门参数与实跑完全一致。
-探针还会记录 Sport adapter 的 SHA-256；代码有变化就必须重新探针。报告默认只能
-在生成后 `1 h` 内使用。
+`api_id=1008` 和 `api_id=1003`。探针前进限幅仍必须在 `0.10 m/s` 以内且不能高于
+实跑限幅；横向/转向限幅、超时和决策门参数必须与实跑一致。探针还会记录 Sport
+adapter 的 SHA-256；代码有变化就必须重新探针。报告默认只能在生成后 `1 h` 内使用。
 
 ### `my_route_a` 监督式低速实跑
 
@@ -294,6 +294,7 @@ GO2_MOTION_ALLOWED_DECISIONS=d_controlling,d_align_heading,d_align_goal_heading 
 ```bash
 GO2_RECORDED_ROUTE_LIVE_CONFIRM=I_AM_SUPERVISING_GO2_RECORDED_ROUTE \
 GO2_SPORT_PROBE_SUMMARY=/tmp/go2_sport_adapter_live_YYYYMMDD_HHMMSS_summary.env \
+GO2_SPORT_MAX_X=0.30 \
 GO2_RECORDED_ROUTE_EXPECTED_ID=my_route_a \
 ROUTE_FILE=/home/kkkkkkq/new2_success/new22/new2/bags/routes/my_route_a.json \
 ROUTE_MAP_DIR=/home/kkkkkkq/new2_success/new22/new2/bags/go2_xt16_mouth_mapping_20260714_153136_map_2026_07_14_07_31_36 \
@@ -317,7 +318,7 @@ ENABLE my_route_a
 ```
 
 必须在 `60 s` 内输入，且完全匹配后才会调用控制器 enable 服务。默认最终硬限幅为
-`x <= 0.10 m/s`、`y = 0`、`|yaw| <= 0.20 rad/s`，并强制要求新鲜的
+`x <= 0.30 m/s`、`y = 0`、`|yaw| <= 0.20 rad/s`，并强制要求新鲜的
 `d_controlling / d_align_heading / d_align_goal_heading` 决策。yaw-arc shim 在这条
 首轮实跑入口中固定关闭。
 
