@@ -171,7 +171,9 @@ void MultiLayerSpinningLidar::onInitialize()
     std::bind(&MultiLayerSpinningLidar::cbSensor, this, std::placeholders::_1), sub_options);
   
   std::string pre_topic_name = node_name + "/" + name_;
-  pub_current_observation_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>(pre_topic_name + "/current_observation", 2);
+  pub_current_observation_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>(
+    pre_topic_name + "/current_observation",
+    rclcpp::QoS(rclcpp::KeepLast(2)).durability_volatile().best_effort());
   pub_lethal_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>(pre_topic_name + "/lethal", 2);
 
   pct_marking_ = std::make_shared<Marking>(name_, &dGraph_, 
@@ -314,12 +316,22 @@ void MultiLayerSpinningLidar::cbSensor(const sensor_msgs::msg::PointCloud2::Shar
     //@ put to current observation, different for global/local
     pcl::transformPointCloud(*next_pcl_msg, *next_pcl_msg, trans_gbl2b_af3);
     next_pcl_msg->header.frame_id = gbl_utils_->getGblFrame();
-  }
 
-  // Publish the complete observation to the perception update thread as one
-  // atomic pointer/state change.  The old frame remains valid for any reader
-  // that already holds the same recursive mutex.
-  {
+    // Build the PointXYZI observation before taking the publication lock.  The
+    // local planner does not use the global marking state, so it must not wait
+    // for static-map graph work guarded by ground_kdtree_cb_mutex_.
+    pcl::PointCloud<pcl::PointXYZI>::Ptr next_local_observation(
+      new pcl::PointCloud<pcl::PointXYZI>);
+    pcl::copyPointCloud(*next_pcl_msg, *next_local_observation);
+    {
+      std::lock_guard<std::mutex> lock(observation_mutex_);
+      sensor_current_observation_ = next_local_observation;
+      last_observation_time_ = clock_->now();
+    }
+  }
+  else{
+    // Global marking and clearing share map KD-trees and transformation state.
+    // Keep their existing serialization contract intact.
     std::unique_lock<std::recursive_mutex> lock(
       shared_data_->ground_kdtree_cb_mutex_);
     pcl_msg_ = next_pcl_msg;
@@ -328,17 +340,14 @@ void MultiLayerSpinningLidar::cbSensor(const sensor_msgs::msg::PointCloud2::Shar
     trans_gbl2s_af3_ = next_trans_gbl2s_af3;
     trans_gbl2s_ = next_trans_gbl2s;
     get_first_tf_ = true;
-    if(is_local_planner_){
-      pcl::copyPointCloud(*pcl_msg_, *sensor_current_observation_);
-    }
     last_observation_time_ = clock_->now();
   }
 
-  if(pub_current_observation_->get_subscription_count()>0){
-    sensor_msgs::msg::PointCloud2 ros_pc2_msg;
-    pcl::toROSMsg(*next_pcl_msg, ros_pc2_msg);
-    pub_current_observation_->publish(ros_pc2_msg);
-  }
+  // This topic is also the supervised launcher's perception heartbeat.  Do
+  // not make publication depend on graph discovery timing or subscriber count.
+  sensor_msgs::msg::PointCloud2 ros_pc2_msg;
+  pcl::toROSMsg(*next_pcl_msg, ros_pc2_msg);
+  pub_current_observation_->publish(ros_pc2_msg);
 
 }
 
@@ -1001,8 +1010,19 @@ double MultiLayerSpinningLidar::get_dGraphValue(const unsigned int index){
 }
 
 bool MultiLayerSpinningLidar::isCurrent(){
-  
-  auto time_diff = (clock_->now() - last_observation_time_).seconds();
+
+  rclcpp::Time last_observation_time;
+  if(is_local_planner_){
+    std::lock_guard<std::mutex> lock(observation_mutex_);
+    last_observation_time = last_observation_time_;
+  }
+  else{
+    std::unique_lock<std::recursive_mutex> lock(
+      shared_data_->ground_kdtree_cb_mutex_);
+    last_observation_time = last_observation_time_;
+  }
+
+  auto time_diff = (clock_->now() - last_observation_time).seconds();
   if(time_diff > expected_sensor_time_)
     current_ = false;
   else
@@ -1012,6 +1032,13 @@ bool MultiLayerSpinningLidar::isCurrent(){
 }
 
 pcl::PointCloud<pcl::PointXYZI>::Ptr MultiLayerSpinningLidar::getObservation(){
+  if(is_local_planner_){
+    std::lock_guard<std::mutex> lock(observation_mutex_);
+    return sensor_current_observation_;
+  }
+
+  std::unique_lock<std::recursive_mutex> lock(
+    shared_data_->ground_kdtree_cb_mutex_);
   return sensor_current_observation_;
 }
 

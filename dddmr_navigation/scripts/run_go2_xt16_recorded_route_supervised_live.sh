@@ -42,6 +42,12 @@ Low-speed live policy:
   GO2_RECORDED_ROUTE_START_MAX_XY_ERROR=0.25
   GO2_RECORDED_ROUTE_START_MAX_Z_ERROR=0.20
   GO2_RECORDED_ROUTE_START_MAX_YAW_ERROR=0.35
+  GO2_RECORDED_ROUTE_OBSERVATION_WINDOW_SEC=3.0
+  GO2_RECORDED_ROUTE_OBSERVATION_TIMEOUT_SEC=8.0
+  GO2_RECORDED_ROUTE_OBSERVATION_MIN_SAMPLES=20
+  GO2_RECORDED_ROUTE_OBSERVATION_MIN_RATE_HZ=7.0
+  GO2_RECORDED_ROUTE_OBSERVATION_MAX_HEADER_GAP_SEC=0.25
+  GO2_RECORDED_ROUTE_OBSERVATION_MAX_RECEIVE_GAP_SEC=0.20
   GO2_SPORT_PROBE_MAX_AGE_SEC=3600
   GO2_RECORDED_ROUTE_EXPECTED_REQUEST_BASELINE=10
 
@@ -57,6 +63,8 @@ Safety contract:
   * A matching live Move/StopMove adapter probe is mandatory.
   * Motion decisions are restricted to recorded-route tracking/alignment states.
   * Lateral velocity and the yaw-arc shim are disabled.
+  * Local current_observation must update continuously before the arm prompt
+    and again after the arm phrase immediately before controller enable.
   * The operator must type `ENABLE <route_id>` after all readiness checks.
   * Ctrl-C, controller fault, progress stall, or timeout disables the controller
     and sends a StopMove burst before the runtime is removed.
@@ -90,6 +98,7 @@ ROUTE_RUNNER="${SCRIPT_DIR}/run_go2_xt16_recorded_route_dry_run.sh"
 ADAPTER="${WS_ROOT}/src/dddmr_beginner_guide/scripts/go2_sport_cmd_vel_adapter.py"
 ROUTE_LAUNCH="${WS_ROOT}/src/dddmr_beginner_guide/launch/go2_xt16_recorded_route_navigation.launch"
 ROUTE_CONFIG="${WS_ROOT}/src/dddmr_route_navigation/config/go2_xt16_recorded_route.yaml"
+OBSERVATION_GATE_SOURCE="${WS_ROOT}/src/dddmr_beginner_guide/scripts/go2_pointcloud_stream_gate.py"
 GO2_SETUP="${GO2_SETUP:-${WS_ROOT}/.unitree_msg_ws/install/setup.bash}"
 BAGS_DIR="${DDDMR_BAGS_DIR:-${REPO_ROOT}/bags}"
 DEFAULT_MAP_NAME="go2_xt16_mouth_mapping_20260714_153136_map_2026_07_14_07_31_36"
@@ -103,6 +112,7 @@ LIVE_CONFIRM_PHRASE="I_AM_SUPERVISING_GO2_RECORDED_ROUTE"
 REAL_REQUEST_TOPIC="/api/sport/request"
 CMD_TOPIC="/dddmr_go2/safe_cmd_vel"
 DECISION_TOPIC="/dddmr_go2/p2p_decision"
+CURRENT_OBSERVATION_TOPIC="/perception_3d_local/lidar/current_observation"
 MOTION_ALLOWED_DECISIONS="d_controlling,d_align_heading,d_align_goal_heading"
 
 sport_publish_rate_hz="${GO2_SPORT_PUBLISH_RATE_HZ:-50.0}"
@@ -120,6 +130,12 @@ arm_timeout_sec="${GO2_RECORDED_ROUTE_ARM_TIMEOUT_SEC:-60}"
 start_max_xy_error="${GO2_RECORDED_ROUTE_START_MAX_XY_ERROR:-0.25}"
 start_max_z_error="${GO2_RECORDED_ROUTE_START_MAX_Z_ERROR:-0.20}"
 start_max_yaw_error="${GO2_RECORDED_ROUTE_START_MAX_YAW_ERROR:-0.35}"
+observation_window_sec="${GO2_RECORDED_ROUTE_OBSERVATION_WINDOW_SEC:-3.0}"
+observation_timeout_sec="${GO2_RECORDED_ROUTE_OBSERVATION_TIMEOUT_SEC:-8.0}"
+observation_min_samples="${GO2_RECORDED_ROUTE_OBSERVATION_MIN_SAMPLES:-20}"
+observation_min_rate_hz="${GO2_RECORDED_ROUTE_OBSERVATION_MIN_RATE_HZ:-7.0}"
+observation_max_header_gap_sec="${GO2_RECORDED_ROUTE_OBSERVATION_MAX_HEADER_GAP_SEC:-0.25}"
+observation_max_receive_gap_sec="${GO2_RECORDED_ROUTE_OBSERVATION_MAX_RECEIVE_GAP_SEC:-0.20}"
 probe_max_age_sec="${GO2_SPORT_PROBE_MAX_AGE_SEC:-3600}"
 expected_request_baseline="${GO2_RECORDED_ROUTE_EXPECTED_REQUEST_BASELINE:-10}"
 probe_summary="${GO2_SPORT_PROBE_SUMMARY:-}"
@@ -135,6 +151,7 @@ source_start_log="${log_dir}/${container_name}_source_start.log"
 container_log="${log_dir}/${container_name}_docker.log"
 adapter_log="${log_dir}/${container_name}_adapter.log"
 request_echo_log="${log_dir}/${container_name}_request_echo.log"
+perception_gate_log="${log_dir}/${container_name}_perception_gate.log"
 summary_log="${log_dir}/${container_name}_summary.env"
 
 route_id=""
@@ -150,6 +167,8 @@ live_output_attempted="false"
 cleanup_started="false"
 final_result="NOT_STARTED"
 expected_request_publishers=""
+pre_prompt_observation_gate="NOT_RUN"
+pre_enable_observation_gate="NOT_RUN"
 
 log() {
   printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"
@@ -189,6 +208,8 @@ summary_value() {
 validate_low_speed_policy() {
   [[ "${expected_request_baseline}" =~ ^[0-9]+$ ]] || \
     die "GO2_RECORDED_ROUTE_EXPECTED_REQUEST_BASELINE must be a non-negative integer."
+  [[ "${observation_min_samples}" =~ ^[0-9]+$ ]] || \
+    die "GO2_RECORDED_ROUTE_OBSERVATION_MIN_SAMPLES must be a positive integer."
   (( expected_request_baseline <= 64 )) || \
     die "GO2_RECORDED_ROUTE_EXPECTED_REQUEST_BASELINE must not exceed 64."
   expected_request_publishers="$((expected_request_baseline + 1))"
@@ -208,6 +229,12 @@ validate_low_speed_policy() {
     "${start_max_xy_error}" \
     "${start_max_z_error}" \
     "${start_max_yaw_error}" \
+    "${observation_window_sec}" \
+    "${observation_timeout_sec}" \
+    "${observation_min_samples}" \
+    "${observation_min_rate_hz}" \
+    "${observation_max_header_gap_sec}" \
+    "${observation_max_receive_gap_sec}" \
     "${probe_max_age_sec}" \
     "${MAX_ROUTE_LENGTH_M}" <<'PY'
 import math
@@ -228,6 +255,12 @@ names = [
     "GO2_RECORDED_ROUTE_START_MAX_XY_ERROR",
     "GO2_RECORDED_ROUTE_START_MAX_Z_ERROR",
     "GO2_RECORDED_ROUTE_START_MAX_YAW_ERROR",
+    "GO2_RECORDED_ROUTE_OBSERVATION_WINDOW_SEC",
+    "GO2_RECORDED_ROUTE_OBSERVATION_TIMEOUT_SEC",
+    "GO2_RECORDED_ROUTE_OBSERVATION_MIN_SAMPLES",
+    "GO2_RECORDED_ROUTE_OBSERVATION_MIN_RATE_HZ",
+    "GO2_RECORDED_ROUTE_OBSERVATION_MAX_HEADER_GAP_SEC",
+    "GO2_RECORDED_ROUTE_OBSERVATION_MAX_RECEIVE_GAP_SEC",
     "GO2_SPORT_PROBE_MAX_AGE_SEC",
     "GO2_RECORDED_ROUTE_MAX_LENGTH_M",
 ]
@@ -262,14 +295,33 @@ bounded("GO2_RECORDED_ROUTE_ARM_TIMEOUT_SEC", 10.0, 300.0, low_inclusive=True)
 bounded("GO2_RECORDED_ROUTE_START_MAX_XY_ERROR", 0.05, 0.60, low_inclusive=True)
 bounded("GO2_RECORDED_ROUTE_START_MAX_Z_ERROR", 0.05, 0.35, low_inclusive=True)
 bounded("GO2_RECORDED_ROUTE_START_MAX_YAW_ERROR", 0.05, 0.80, low_inclusive=True)
+bounded("GO2_RECORDED_ROUTE_OBSERVATION_WINDOW_SEC", 2.0, 6.0, low_inclusive=True)
+bounded("GO2_RECORDED_ROUTE_OBSERVATION_TIMEOUT_SEC", 4.0, 15.0, low_inclusive=True)
+bounded("GO2_RECORDED_ROUTE_OBSERVATION_MIN_SAMPLES", 10.0, 100.0, low_inclusive=True)
+bounded("GO2_RECORDED_ROUTE_OBSERVATION_MIN_RATE_HZ", 5.0, 15.0, low_inclusive=True)
+bounded("GO2_RECORDED_ROUTE_OBSERVATION_MAX_HEADER_GAP_SEC", 0.05, 0.30, low_inclusive=True)
+bounded("GO2_RECORDED_ROUTE_OBSERVATION_MAX_RECEIVE_GAP_SEC", 0.10, 0.30, low_inclusive=True)
 bounded("GO2_SPORT_PROBE_MAX_AGE_SEC", 60.0, 86400.0, low_inclusive=True)
 bounded("GO2_RECORDED_ROUTE_MAX_LENGTH_M", 0.1, 20.0, low_inclusive=True)
+
+if not settings["GO2_RECORDED_ROUTE_OBSERVATION_MIN_SAMPLES"].is_integer():
+    raise SystemExit("GO2_RECORDED_ROUTE_OBSERVATION_MIN_SAMPLES must be an integer")
+if settings["GO2_RECORDED_ROUTE_OBSERVATION_TIMEOUT_SEC"] <= (
+    settings["GO2_RECORDED_ROUTE_OBSERVATION_WINDOW_SEC"]
+    + settings["GO2_RECORDED_ROUTE_OBSERVATION_MAX_RECEIVE_GAP_SEC"]
+):
+    raise SystemExit(
+        "GO2_RECORDED_ROUTE_OBSERVATION_TIMEOUT_SEC must exceed the observation "
+        "window plus maximum receive gap"
+    )
 PY
 }
 
 validate_route_and_map() {
   [[ -x "${ROUTE_RUNNER}" ]] || die "Missing route runner: ${ROUTE_RUNNER}"
   [[ -x "${ADAPTER}" ]] || die "Missing Sport adapter: ${ADAPTER}"
+  [[ -f "${OBSERVATION_GATE_SOURCE}" ]] || \
+    die "Missing current_observation stream gate: ${OBSERVATION_GATE_SOURCE}"
   [[ -f "${ROUTE_FILE_VALUE}" ]] || die "Missing recorded route: ${ROUTE_FILE_VALUE}"
   [[ -f "${MAP_DIR}/poses.pcd" ]] || die "Missing route-map poses.pcd: ${MAP_DIR}/poses.pcd"
   [[ -f "${NAV_CONFIG_FILE_VALUE}" ]] || die "Missing navigation config: ${NAV_CONFIG_FILE_VALUE}"
@@ -625,6 +677,49 @@ source /root/dddmr_navigation/scripts/setup_go2_dds_env.sh
 source /root/dddmr_navigation/${install_base}/setup.bash
 set -u
 ${command}"
+}
+
+require_current_observation_stream() {
+  local phase="$1"
+  local gate_path output status
+  gate_path="/root/dddmr_navigation/src/dddmr_beginner_guide/scripts/go2_pointcloud_stream_gate.py"
+  case "${phase}" in
+    pre_prompt|pre_enable) ;;
+    *) die "Unknown current_observation gate phase: ${phase}" ;;
+  esac
+
+  log "Validating sustained ${CURRENT_OBSERVATION_TOPIC} updates (${phase})..."
+  set +e
+  output="$(docker_ros \
+    "timeout -s INT -k 1s 20s python3 '${gate_path}' \
+      --topic '${CURRENT_OBSERVATION_TOPIC}' \
+      --window-sec '${observation_window_sec}' \
+      --timeout-sec '${observation_timeout_sec}' \
+      --min-samples '${observation_min_samples}' \
+      --min-rate-hz '${observation_min_rate_hz}' \
+      --max-header-gap-sec '${observation_max_header_gap_sec}' \
+      --max-receive-gap-sec '${observation_max_receive_gap_sec}' \
+      --expected-publishers 1" 2>&1)"
+  status=$?
+  set -e
+
+  {
+    printf 'PHASE=%s\n' "${phase}"
+    printf '%s\n' "${output}"
+  } | tee -a "${perception_gate_log}"
+
+  if (( status != 0 )) || ! grep -Fxq 'CURRENT_OBSERVATION_GATE=PASS' <<<"${output}"; then
+    case "${phase}" in
+      pre_prompt) pre_prompt_observation_gate="FAIL" ;;
+      pre_enable) pre_enable_observation_gate="FAIL" ;;
+    esac
+    die "Local perception current_observation is not continuously updating (${phase})."
+  fi
+  case "${phase}" in
+    pre_prompt) pre_prompt_observation_gate="PASS" ;;
+    pre_enable) pre_enable_observation_gate="PASS" ;;
+  esac
+  log "Sustained current_observation gate passed (${phase})."
 }
 
 controller_status() {
@@ -1044,9 +1139,19 @@ SOURCE_START_LOG=${source_start_log}
 DOCKER_LOG=${container_log}
 ADAPTER_LOG=${adapter_log}
 REQUEST_ECHO_LOG=${request_echo_log}
+PERCEPTION_GATE_LOG=${perception_gate_log}
 CMD_TOPIC=${CMD_TOPIC}
 DECISION_TOPIC=${DECISION_TOPIC}
 REQUEST_TOPIC=${REAL_REQUEST_TOPIC}
+CURRENT_OBSERVATION_TOPIC=${CURRENT_OBSERVATION_TOPIC}
+CURRENT_OBSERVATION_PRE_PROMPT=${pre_prompt_observation_gate}
+CURRENT_OBSERVATION_PRE_ENABLE=${pre_enable_observation_gate}
+OBSERVATION_WINDOW_SEC=${observation_window_sec}
+OBSERVATION_TIMEOUT_SEC=${observation_timeout_sec}
+OBSERVATION_MIN_SAMPLES=${observation_min_samples}
+OBSERVATION_MIN_RATE_HZ=${observation_min_rate_hz}
+OBSERVATION_MAX_HEADER_GAP_SEC=${observation_max_header_gap_sec}
+OBSERVATION_MAX_RECEIVE_GAP_SEC=${observation_max_receive_gap_sec}
 REQUEST_BASELINE_PUBLISHERS=${expected_request_baseline}
 REQUEST_ACTIVE_PUBLISHERS=${expected_request_publishers}
 SPORT_MAX_X=${sport_max_x}
@@ -1129,6 +1234,11 @@ if [[ "${mode}" == "check" ]]; then
     "${start_max_xy_error}" "${start_max_z_error}" "${start_max_yaw_error}"
   printf 'REQUEST_PUBLISHER_POLICY=baseline:%s,active:%s\n' \
     "${expected_request_baseline}" "${expected_request_publishers}"
+  printf 'CURRENT_OBSERVATION_GATE=topic:%s,window:%s,timeout:%s,min_samples:%s,min_rate:%s,max_header_gap:%s,max_receive_gap:%s\n' \
+    "${CURRENT_OBSERVATION_TOPIC}" "${observation_window_sec}" \
+    "${observation_timeout_sec}" "${observation_min_samples}" \
+    "${observation_min_rate_hz}" "${observation_max_header_gap_sec}" \
+    "${observation_max_receive_gap_sec}"
   printf 'SOURCE_FAIL_CLOSED=PASS\n'
   printf 'PROBE_STATUS=%s\n' "${probe_state}"
   printf 'RESULT=GO2_XT16_RECORDED_ROUTE_OFFLINE_CHECK_PASS\n'
@@ -1167,11 +1277,13 @@ require_publisher_count "${CMD_TOPIC}" 1
 require_publisher_count "${DECISION_TOPIC}" 1
 require_publisher_count "${REAL_REQUEST_TOPIC}" "${expected_request_baseline}"
 require_request_topic_quiet
+require_current_observation_stream pre_prompt
 
 start_request_echo
 start_live_adapter
 require_publisher_count "${REAL_REQUEST_TOPIC}" "${expected_request_publishers}"
 prompt_for_route_arm
+require_current_observation_stream pre_enable
 enable_route_controller
 
 if monitor_route; then

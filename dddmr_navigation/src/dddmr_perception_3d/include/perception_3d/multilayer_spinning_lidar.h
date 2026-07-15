@@ -58,6 +58,7 @@
 
 /*For map*/
 #include <map>
+#include <mutex>
 #include <set>
 
 /*For sqrt*/
@@ -182,7 +183,8 @@ class MultiLayerSpinningLidar: public Sensor{
     /*For local planner switch*/
     bool is_local_planner_;
 
-    /*For isCurrent feature. Used to protect sensor broken*/
+    /*Local observation snapshot and sensor freshness state*/
+    std::mutex observation_mutex_;
     rclcpp::Time last_observation_time_;
 
     //@ list of pointcloud sticher for non-repetitive scan lidar
