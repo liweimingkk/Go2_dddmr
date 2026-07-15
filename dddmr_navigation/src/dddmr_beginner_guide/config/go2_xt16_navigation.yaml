@@ -70,7 +70,7 @@ dddmr_pg_map_server_manager:
 
 map1:
   ros__parameters:
-    pose_graph_dir: "/root/dddmr_bags/go2_xt16_mouth_mapping_20260709_130235_map_2026_07_09_05_02_34"
+    pose_graph_dir: "/root/dddmr_bags/go2_xt16_mouth_mapping_20260714_153136_map_2026_07_14_07_31_36"
     complete_map_voxel_size: 0.2
 
 sub_maps:
