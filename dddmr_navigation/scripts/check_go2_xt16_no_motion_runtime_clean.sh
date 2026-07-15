@@ -29,7 +29,7 @@ process_status="PASS"
 echo "=== Docker residual check"
 docker_matches="$(
   docker ps --format '{{.Names}} {{.Image}}' 2>/dev/null | \
-    rg 'go2_xt16|dddmr_go2_xt16|dddmr_navigation' || true
+    grep -E 'go2_xt16|dddmr_go2_xt16|dddmr_navigation' || true
 )"
 if [[ -n "${docker_matches}" ]]; then
   docker_status="FAIL"
@@ -42,8 +42,8 @@ echo "GO2_XT16_RUNTIME_DOCKER_STATUS=${docker_status}"
 echo "=== Process residual check"
 process_matches="$(
   ps -eo pid,args | \
-    rg 'go2_sport_cmd_vel_adapter|go2_sport_cmd_vel_dry_run|go2_xt16_navigation.launch|lego_loam_go2_xt16_live.launch|lego_loam_go2_xt16_mouth.launch|p2p_move_base_node|global_planner_node|mcl_3dl|mcl_feature|dddmr_pg_map_server_node|rviz2|ros2 topic pub|ros2 topic echo' | \
-    rg -v 'check_go2_xt16_no_motion_runtime_clean|check_go2_xt16_manual_gate_status|check_go2_xt16_report_completion|bash -lc|py_compile|sed -n|nl -ba|rg |ps -eo' || true
+    grep -E 'go2_sport_cmd_vel_adapter|go2_sport_cmd_vel_dry_run|go2_xt16_navigation.launch|lego_loam_go2_xt16_live.launch|lego_loam_go2_xt16_mouth.launch|p2p_move_base_node|global_planner_node|mcl_3dl|mcl_feature|dddmr_pg_map_server_node|rviz2|ros2 topic pub|ros2 topic echo' | \
+    grep -Ev 'check_go2_xt16_no_motion_runtime_clean|check_go2_xt16_manual_gate_status|check_go2_xt16_report_completion|bash -lc|py_compile|sed -n|nl -ba|grep |ps -eo' || true
 )"
 if [[ -n "${process_matches}" ]]; then
   process_status="FAIL"

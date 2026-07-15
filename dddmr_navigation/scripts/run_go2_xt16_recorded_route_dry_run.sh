@@ -271,7 +271,7 @@ check_no_real_sport_publisher() {
     printf '%s\n' "${nodes}" >&2
     die "Could not inspect ROS nodes."
   }
-  if rg -q '(^|/)go2_sport_cmd_vel_adapter([^[:alnum:]]|$)' <<<"${nodes}"; then
+  if grep -Eq '(^|/)go2_sport_cmd_vel_adapter([^[:alnum:]]|$)' <<<"${nodes}"; then
     die "A real Sport adapter node is present; refusing dry-run enable."
   fi
 
@@ -383,11 +383,13 @@ start_dry_run() {
   [[ -f "${NAV_CONFIG_FILE_VALUE}" ]] || die "Missing navigation config: ${NAV_CONFIG_FILE_VALUE}"
 
   local container_map_dir="/root/dddmr_bags/${map_relative}"
-  rg -Fq "pose_graph_dir: \"${container_map_dir}\"" "${NAV_CONFIG_FILE_VALUE}" || \
+  grep -Fq "pose_graph_dir: \"${container_map_dir}\"" "${NAV_CONFIG_FILE_VALUE}" || \
     die "Navigation config does not select the route map: ${container_map_dir}"
 
   log "Checking for stale navigation/motion runtimes..."
-  "${RUNTIME_CLEAN_CHECK}"
+  if ! "${RUNTIME_CLEAN_CHECK}"; then
+    die "Another navigation runtime is active. Stop it explicitly, then retry this script."
+  fi
   log "Running read-only XT16 preflight..."
   "${DOCKER_WRAPPER}" preflight \
     --samples "${PREFLIGHT_SAMPLES_VALUE}" \
