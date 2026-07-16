@@ -59,14 +59,22 @@ struct LocalizationStateConfig
   double lost_max_yaw_std{0.80};
   std::size_t tracking_good_frames{4};
   std::size_t lost_bad_frames{3};
+  double tracking_min_dominant_mode_mass{0.0};
 };
+
+inline double effectiveTrackingMinDominantModeMass(
+    const bool adaptive_enabled, const double configured_mass)
+{
+  return adaptive_enabled ? std::clamp(configured_mass, 0.0, 1.0) : 0.0;
+}
 
 struct LocalizationObservation
 {
   double match_ratio{0.0};
   double xy_std{0.0};
   double yaw_std{0.0};
-  bool particle_count_converged{false};
+  bool posterior_stable{false};
+  double dominant_mode_mass{0.0};
 };
 
 class LocalizationStateMachine
@@ -119,10 +127,12 @@ public:
     if (state_ == LocalizationState::LOCALIZING)
     {
       const bool good =
-        observation.particle_count_converged &&
+        observation.posterior_stable &&
         observation.match_ratio >= config_.tracking_match_ratio &&
         observation.xy_std <= config_.tracking_max_xy_std &&
-        observation.yaw_std <= config_.tracking_max_yaw_std;
+        observation.yaw_std <= config_.tracking_max_yaw_std &&
+        observation.dominant_mode_mass >=
+          config_.tracking_min_dominant_mode_mass;
 
       good_frames_ = good ? good_frames_ + 1 : 0;
       bad_frames_ = 0;

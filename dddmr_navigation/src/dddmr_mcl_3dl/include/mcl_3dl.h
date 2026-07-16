@@ -31,6 +31,7 @@
 #define MCL_3DL_CLASS_H
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cassert>
 #include <cmath>
@@ -48,7 +49,9 @@
 #include <cstdint>
 
 #include <mcl_3dl/parameters.h>
+#include <mcl_3dl/adaptive_particle_policy.h>
 #include <mcl_3dl/localization_state_machine.h>
+#include <mcl_3dl/posterior_mode.h>
 
 
 #include <sensor_msgs/msg/point_cloud2.hpp>
@@ -174,7 +177,10 @@ class MCL3dlNode : public rclcpp::Node
                     const sensor_msgs::msg::PointCloud2::SharedPtr pc_flatMsg,
                     const sensor_msgs::msg::PointCloud2::SharedPtr pc_less_flatMsg);
     
-    bool measure(const std::map<std::string, pcl::PointCloud<pcl_t>::Ptr>& pcl_segmentations);
+    bool measure(
+      const std::map<std::string, pcl::PointCloud<pcl_t>::Ptr>& pcl_segmentations,
+      std::size_t& resample_particle_count,
+      bool& resample_required);
 
     struct GlobalCandidate
     {
@@ -190,6 +196,31 @@ class MCL3dlNode : public rclcpp::Node
       const std::map<std::string, pcl::PointCloud<pcl_t>::Ptr>& pcl_segmentations) const;
     void initializeGlobalParticles(const std::vector<GlobalCandidate>& candidates);
     std::pair<double, double> particleSpread(const State6DOF& mean) const;
+
+    struct PosteriorDiagnostics
+    {
+      double weighted_match_ratio{0.0};
+      double effective_sample_ratio{0.0};
+      double max_weight{0.0};
+      double dominant_mode_mass{0.0};
+      double dominant_mode_weighted_match_ratio{0.0};
+      double dominant_mode_xy_std{std::numeric_limits<double>::infinity()};
+      double dominant_mode_yaw_std{std::numeric_limits<double>::infinity()};
+      std::array<double, 6> dominant_mode_variances{
+        {std::numeric_limits<double>::infinity(),
+         std::numeric_limits<double>::infinity(),
+         std::numeric_limits<double>::infinity(),
+         std::numeric_limits<double>::infinity(),
+         std::numeric_limits<double>::infinity(),
+         std::numeric_limits<double>::infinity()}};
+      State6DOF dominant_mode_mean;
+      State6DOF dominant_mode_anchor;
+      bool dominant_mode_valid{false};
+      std::size_t occupied_bins{0};
+    };
+
+    PosteriorDiagnostics posteriorDiagnostics(
+      const std::vector<float>& particle_match_ratios) const;
     
     void publishParticles();
 
@@ -233,6 +264,9 @@ class MCL3dlNode : public rclcpp::Node
 
     mutable std::mutex localization_state_mutex_;
     std::unique_ptr<LocalizationStateMachine> localization_state_machine_;
+    std::unique_ptr<AdaptiveParticlePolicy> adaptive_particle_policy_;
+    bool has_previous_map_to_odom_;
+    State6DOF previous_map_to_odom_;
     std::string localization_state_reason_;
     std::atomic_bool global_localization_requested_;
     std::atomic_bool use_global_map_;

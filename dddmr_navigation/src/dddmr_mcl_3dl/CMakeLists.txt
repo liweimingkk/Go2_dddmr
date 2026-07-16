@@ -190,6 +190,29 @@ if(BUILD_TESTING)
     test/test_localization_state_machine.cpp
   )
   target_include_directories(test_localization_state_machine PRIVATE include)
+
+  ament_add_gtest(test_adaptive_particle_policy
+    test/test_adaptive_particle_policy.cpp
+  )
+  target_include_directories(test_adaptive_particle_policy PRIVATE include)
+
+  ament_add_gtest(test_particle_filter_posterior
+    test/test_particle_filter_posterior.cpp
+  )
+  target_include_directories(test_particle_filter_posterior PRIVATE include)
+  target_link_libraries(test_particle_filter_posterior
+    ${PCL_LIBRARIES}
+    OpenMP::OpenMP_CXX
+  )
+
+  ament_add_gtest(test_posterior_mode
+    test/test_posterior_mode.cpp
+  )
+  target_include_directories(test_posterior_mode PRIVATE include)
+  target_link_libraries(test_posterior_mode
+    ${PCL_LIBRARIES}
+    OpenMP::OpenMP_CXX
+  )
 endif()
 
 ament_export_include_directories(include)

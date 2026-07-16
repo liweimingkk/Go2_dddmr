@@ -19,19 +19,46 @@ mcl_3dl:
     global_localization_seed_std_pitch: 0.03
     global_localization_seed_std_yaw: 0.12
 
-    # TRACKING requires several consecutive, converged observations. LOST uses
-    # lower quality thresholds to provide hysteresis and avoid state flapping.
+    # TRACKING requires four consecutive observations from a mode containing
+    # at least 90% of posterior mass. LOST uses lower quality thresholds to
+    # provide hysteresis and avoid state flapping.
     localization_tracking_match_ratio: 0.15
     localization_lost_match_ratio: 0.08
     localization_tracking_max_xy_std: 0.75
     localization_tracking_max_yaw_std: 0.35
+    localization_tracking_min_dominant_mass: 0.90
     localization_lost_max_xy_std: 1.50
     localization_lost_max_yaw_std: 0.80
-    localization_tracking_good_frames: 5
+    localization_tracking_good_frames: 4
     localization_lost_bad_frames: 3
     localization_measure_interval_sec: 0.50
     localization_sensor_timeout_sec: 1.0
     localization_timeout_sec: 30.0
+
+    # Use posterior evidence, rather than particle count, as the convergence
+    # gate. Ambiguous posteriors keep their population and avoid resampling
+    # while ESS is healthy. Stable posteriors use a KLD-derived target and
+    # never discard more than 25% of particles in one frame.
+    localization_adaptive_particle_reduction: true
+    localization_adaptive_confidence_frames: 2
+    localization_adaptive_failure_frames_before_reseed: 3
+    localization_adaptive_min_weighted_match_ratio: 0.40
+    localization_adaptive_max_xy_std: 0.40
+    localization_adaptive_max_yaw_std: 0.15
+    localization_adaptive_resample_ess_ratio: 0.50
+    # 0.80 may reduce compute; motion stays locked until tracking's 0.90 gate.
+    localization_adaptive_min_dominant_mass: 0.80
+    localization_adaptive_mode_xy_radius: 0.75
+    localization_adaptive_mode_yaw_radius: 0.35
+    localization_adaptive_max_pose_delta_xy: 0.30
+    localization_adaptive_max_pose_delta_yaw: 0.15
+    localization_adaptive_kld_mass: 0.99
+    localization_adaptive_kld_error: 0.10
+    localization_adaptive_kld_z: 2.326
+    localization_adaptive_kld_bin_xy: 0.50
+    localization_adaptive_kld_bin_yaw: 0.261799
+    localization_adaptive_kld_regression_tolerance_fraction: 0.25
+    localization_adaptive_max_reduction_fraction: 0.25
 
 go2_nav_cmd_gate:
   ros__parameters:

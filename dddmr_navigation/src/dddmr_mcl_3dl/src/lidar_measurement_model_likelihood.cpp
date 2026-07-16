@@ -68,10 +68,11 @@ void LidarMeasurementModelLikelihood::loadConfig(
 
 }
 void LidarMeasurementModelLikelihood::setGlobalLocalizationStatus(
+    const bool is_global_localizing,
     const int num_particles,
     const int current_num_particles)
 {
-  if (current_num_particles <= num_particles)
+  if (!is_global_localizing)
   {
     num_points_ = num_points_default_;
     return;

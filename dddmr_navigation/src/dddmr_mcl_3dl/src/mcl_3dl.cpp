@@ -29,6 +29,10 @@
 
 #include <mcl_3dl.h>
 
+#include <numeric>
+#include <set>
+#include <tuple>
+
 using std::placeholders::_1;
 using std::placeholders::_2;
 using std::placeholders::_3;
@@ -42,6 +46,7 @@ MCL3dlNode::MCL3dlNode(std::string name) : Node(name)
   , is_trans_b2s_initialized_(false)
   , tf_ready_(false)
   , first_tf_(false)
+  , has_previous_map_to_odom_(false)
   , global_localization_requested_(false)
   , use_global_map_(false)
   , last_feature_received_ns_(0)
@@ -79,7 +84,44 @@ bool MCL3dlNode::configure(const std::shared_ptr<mcl_3dl::SubMaps>& sub_maps)
   state_config.lost_max_yaw_std = params_->localization_lost_max_yaw_std_;
   state_config.tracking_good_frames = params_->localization_tracking_good_frames_;
   state_config.lost_bad_frames = params_->localization_lost_bad_frames_;
+  state_config.tracking_min_dominant_mode_mass =
+      effectiveTrackingMinDominantModeMass(
+          params_->localization_adaptive_particle_reduction_,
+          params_->localization_tracking_min_dominant_mass_);
   localization_state_machine_ = std::make_unique<LocalizationStateMachine>(state_config);
+
+  AdaptiveParticlePolicyConfig particle_policy_config;
+  particle_policy_config.enabled = params_->localization_adaptive_particle_reduction_;
+  particle_policy_config.min_particles = static_cast<std::size_t>(params_->num_particles_);
+  particle_policy_config.max_particles = static_cast<std::size_t>(
+      params_->global_localization_num_particles_);
+  particle_policy_config.confidence_frames = static_cast<std::size_t>(
+      params_->localization_adaptive_confidence_frames_);
+  particle_policy_config.failure_frames_before_reseed = static_cast<std::size_t>(
+      params_->localization_adaptive_failure_frames_before_reseed_);
+  particle_policy_config.min_weighted_match_ratio =
+      params_->localization_adaptive_min_weighted_match_ratio_;
+  particle_policy_config.max_xy_std = params_->localization_adaptive_max_xy_std_;
+  particle_policy_config.max_yaw_std = params_->localization_adaptive_max_yaw_std_;
+  particle_policy_config.resample_effective_sample_ratio =
+      params_->localization_adaptive_resample_ess_ratio_;
+  particle_policy_config.min_dominant_mode_mass =
+      params_->localization_adaptive_min_dominant_mass_;
+  particle_policy_config.max_pose_delta_xy =
+      params_->localization_adaptive_max_pose_delta_xy_;
+  particle_policy_config.max_pose_delta_yaw =
+      params_->localization_adaptive_max_pose_delta_yaw_;
+  particle_policy_config.lost_match_ratio = params_->localization_lost_match_ratio_;
+  particle_policy_config.lost_max_xy_std = params_->localization_lost_max_xy_std_;
+  particle_policy_config.lost_max_yaw_std = params_->localization_lost_max_yaw_std_;
+  particle_policy_config.kld_error = params_->localization_adaptive_kld_error_;
+  particle_policy_config.kld_z = params_->localization_adaptive_kld_z_;
+  particle_policy_config.kld_regression_tolerance_fraction =
+      params_->localization_adaptive_kld_regression_tolerance_fraction_;
+  particle_policy_config.max_reduction_fraction =
+      params_->localization_adaptive_max_reduction_fraction_;
+  adaptive_particle_policy_ =
+      std::make_unique<AdaptiveParticlePolicy>(particle_policy_config);
 
   pf_.reset(new pf::ParticleFilter<State6DOF,
                                     float,
@@ -333,11 +375,15 @@ void MCL3dlNode::cbOdom(const nav_msgs::msg::Odometry::SharedPtr msg){
   odom_last_ = msg_time;
   odom_prev_ = odom_;
 
-  if (!measure(pcl_segmentations_))
+  std::size_t resample_particle_count = pf_->getParticleSize();
+  bool resample_required = true;
+  const bool measurement_valid = measure(
+      pcl_segmentations_, resample_particle_count, resample_required);
+  last_measured_feature_sequence_.store(feature_sequence);
+  if (!measurement_valid)
   {
     return;
   }
-  last_measured_feature_sequence_.store(feature_sequence);
   last_measure_ns_.store(now_ns);
 
   if (localizationState() == LocalizationState::LOST)
@@ -345,13 +391,23 @@ void MCL3dlNode::cbOdom(const nav_msgs::msg::Odometry::SharedPtr msg){
     return;
   }
 
-  pf_->resample(State6DOF(
+  const State6DOF resample_noise(
       Vec3(params_->resample_var_x_,
             params_->resample_var_y_,
             params_->resample_var_z_),
       Vec3(params_->resample_var_roll_,
             params_->resample_var_pitch_,
-            params_->resample_var_yaw_)));
+            params_->resample_var_yaw_));
+  const bool resample_succeeded =
+      !resample_required ||
+      (params_->localization_adaptive_particle_reduction_ ?
+        pf_->resampleToSize(resample_noise, resample_particle_count) :
+        pf_->resample(resample_noise));
+  if (!resample_succeeded)
+  {
+    markLocalizationLost("particle resampling failed");
+    return;
+  }
 
   std::normal_distribution<float> noise(0.0, 1.0);
   auto update_noise_func = [this, &noise](State6DOF& s)
@@ -865,8 +921,126 @@ std::pair<double, double> MCL3dlNode::particleSpread(const State6DOF& mean) cons
     std::sqrt(std::max(0.0, yaw_variance / probability_sum))};
 }
 
+MCL3dlNode::PosteriorDiagnostics MCL3dlNode::posteriorDiagnostics(
+    const std::vector<float>& particle_match_ratios) const
+{
+  constexpr double kPi = 3.14159265358979323846;
+  PosteriorDiagnostics diagnostics;
+  const std::size_t particle_count = pf_->getParticleSize();
+  if (particle_count == 0 || particle_match_ratios.size() != particle_count)
+  {
+    diagnostics.weighted_match_ratio =
+        std::numeric_limits<double>::quiet_NaN();
+    return diagnostics;
+  }
+
+  double probability_sum = 0.0;
+  std::vector<State6DOF> particle_states(particle_count);
+  std::vector<double> particle_probabilities(particle_count, 0.0);
+  for (std::size_t i = 0; i < particle_count; ++i)
+  {
+    const double probability = pf_->getParticleProbability(i);
+    const double quality = particle_match_ratios[i];
+    if (!std::isfinite(probability) || probability < 0.0 ||
+        !std::isfinite(quality))
+    {
+      diagnostics.weighted_match_ratio =
+          std::numeric_limits<double>::quiet_NaN();
+      return diagnostics;
+    }
+    particle_states[i] = pf_->getParticle(i);
+    particle_probabilities[i] = probability;
+    probability_sum += probability;
+    diagnostics.weighted_match_ratio += probability * quality;
+    diagnostics.max_weight = std::max(diagnostics.max_weight, probability);
+  }
+
+  if (!std::isfinite(probability_sum) || probability_sum <= 0.0)
+  {
+    diagnostics.weighted_match_ratio =
+        std::numeric_limits<double>::quiet_NaN();
+    return diagnostics;
+  }
+  diagnostics.weighted_match_ratio /= probability_sum;
+  diagnostics.effective_sample_ratio = pf_->normalizedEffectiveSampleSize();
+  if (!params_->localization_adaptive_particle_reduction_)
+  {
+    return diagnostics;
+  }
+
+  const auto mode = estimatePosteriorMode(
+      particle_states, particle_probabilities, particle_match_ratios,
+      params_->localization_adaptive_mode_xy_radius_,
+      params_->localization_adaptive_mode_yaw_radius_);
+  if (!mode.valid)
+  {
+    diagnostics.weighted_match_ratio =
+        std::numeric_limits<double>::quiet_NaN();
+    return diagnostics;
+  }
+  diagnostics.dominant_mode_valid = mode.valid;
+  diagnostics.dominant_mode_mean = mode.mean;
+  diagnostics.dominant_mode_anchor = mode.anchor;
+  diagnostics.dominant_mode_mass = mode.probability_mass;
+  diagnostics.dominant_mode_weighted_match_ratio = mode.weighted_match_ratio;
+  diagnostics.dominant_mode_xy_std = mode.xy_std;
+  diagnostics.dominant_mode_yaw_std = mode.yaw_std;
+  diagnostics.dominant_mode_variances = mode.variances;
+  const double map_yaw = mode.anchor.rot_.getRPY().z_;
+
+  std::vector<std::size_t> probability_order(particle_count);
+  std::iota(probability_order.begin(), probability_order.end(), 0);
+  std::sort(
+      probability_order.begin(), probability_order.end(),
+      [this](const std::size_t lhs, const std::size_t rhs)
+      {
+        return pf_->getParticleProbability(lhs) > pf_->getParticleProbability(rhs);
+      });
+
+  std::set<std::tuple<long long, long long, long long>> occupied_bins;
+  double covered_probability = 0.0;
+  for (const std::size_t index : probability_order)
+  {
+    const double probability = pf_->getParticleProbability(index);
+    if (probability <= 0.0)
+    {
+      continue;
+    }
+    const State6DOF particle = pf_->getParticle(index);
+    const double yaw_delta = std::atan2(
+        std::sin(particle.rot_.getRPY().z_ - map_yaw),
+        std::cos(particle.rot_.getRPY().z_ - map_yaw));
+    long long x_bin = 0;
+    long long y_bin = 0;
+    long long yaw_bin = 0;
+    if (!posteriorBinIndex(
+          particle.pos_.x_, params_->localization_adaptive_kld_bin_xy_, x_bin) ||
+        !posteriorBinIndex(
+          particle.pos_.y_, params_->localization_adaptive_kld_bin_xy_, y_bin) ||
+        !posteriorBinIndex(
+          yaw_delta + kPi,
+          params_->localization_adaptive_kld_bin_yaw_, yaw_bin))
+    {
+      diagnostics.weighted_match_ratio =
+          std::numeric_limits<double>::quiet_NaN();
+      return diagnostics;
+    }
+    occupied_bins.emplace(x_bin, y_bin, yaw_bin);
+    covered_probability += probability;
+    if (covered_probability / probability_sum >=
+        params_->localization_adaptive_kld_mass_)
+    {
+      break;
+    }
+  }
+  diagnostics.occupied_bins = occupied_bins.size();
+  return diagnostics;
+}
+
 bool MCL3dlNode::measure(
-    const std::map<std::string, pcl::PointCloud<mcl_3dl::pcl_t>::Ptr>& pcl_segmentations)
+    const std::map<std::string, pcl::PointCloud<mcl_3dl::pcl_t>::Ptr>& pcl_segmentations,
+    std::size_t& resample_particle_count,
+    bool& resample_required)
 {
   if (sub_maps_->isWarmUpReady())
   {
@@ -893,17 +1067,27 @@ bool MCL3dlNode::measure(
       sub_maps_->normals_ground_global_ : sub_maps_->normals_ground_current_;
 
   const auto ts = std::chrono::high_resolution_clock::now();
+  const LocalizationState state_at_measure = localizationState();
+  const bool localizing = state_at_measure != LocalizationState::TRACKING;
+  const bool global_refinement =
+      params_->localization_adaptive_particle_reduction_ ? localizing :
+      static_cast<int>(pf_->getParticleSize()) > params_->num_particles_;
+  resample_particle_count = pf_->getParticleSize();
+  resample_required = true;
   lidar_measurements_->setGlobalLocalizationStatus(
-      params_->num_particles_, pf_->getParticleSize());
+      global_refinement, params_->num_particles_, pf_->getParticleSize());
 
   std::atomic<float> match_ratio_min(1.0f);
   std::atomic<float> match_ratio_max(0.0f);
+  std::vector<float> particle_match_ratios(pf_->getParticleSize(), 0.0f);
   auto measure_func = [this, &pcl_segmentations, &map_tree, &ground_tree,
                         &ground_normals, &match_ratio_min,
-                        &match_ratio_max](const State6DOF& s) -> float
+                        &match_ratio_max, &particle_match_ratios](
+                          const std::size_t index, const State6DOF& s) -> float
   {
     const LidarMeasurementResult result = lidar_measurements_->measure(
         map_tree, ground_tree, ground_normals, pcl_segmentations, s);
+    particle_match_ratios[index] = result.quality;
 
     float observed_min = match_ratio_min.load();
     while (observed_min > result.quality &&
@@ -918,13 +1102,45 @@ bool MCL3dlNode::measure(
     return result.likelihood;
   };
 
-  //@ pf_->measure(measure_func) will loop particles
-  pf_->measure(measure_func);
+  //@ pf_->measureWithIndex(measure_func) will loop particles
+  const bool measurement_valid = pf_->measureWithIndex(measure_func);
+  if (!measurement_valid)
+  {
+    AdaptiveParticleObservation invalid_observation;
+    invalid_observation.current_particles = pf_->getParticleSize();
+    const auto decision = adaptive_particle_policy_->observe(invalid_observation);
+
+    bool state_changed = false;
+    LocalizationState invalid_state;
+    {
+      std::lock_guard<std::mutex> state_lock(localization_state_mutex_);
+      state_changed = localization_state_machine_->observe(LocalizationObservation{
+          0.0,
+          std::numeric_limits<double>::infinity(),
+          std::numeric_limits<double>::infinity(),
+          false});
+      invalid_state = localization_state_machine_->state();
+    }
+    latest_match_ratio_.store(0.0f);
+    std_msgs::msg::Float32 quality_msg;
+    quality_msg.data = 0.0f;
+    pub_localization_quality_->publish(quality_msg);
+    RCLCPP_WARN(
+        this->get_logger(),
+        "Rejected invalid particle measurement; keeping %lu particles",
+        pf_->getParticleSize());
+    if ((state_changed && invalid_state == LocalizationState::LOST) ||
+        decision.action == ParticlePolicyAction::RESEED)
+    {
+      markLocalizationLost("particle likelihoods were invalid or zero");
+    }
+    return false;
+  }
 
   //@ This block first calculate the weight (p.probability_bias_) based on the particle state
   //@ It means that the particle away from last pose has less weight
   //@ This weight is different from the weight of likelihood
-  if (static_cast<int>(pf_->getParticleSize()) > params_->num_particles_)
+  if (global_refinement)
   {
     auto bias_func = [](const State6DOF& s, float& p_bias) -> void
     {
@@ -949,8 +1165,26 @@ bool MCL3dlNode::measure(
     pf_->bias(bias_func);
   }
 
-  //@ Weight particle based on the observation weight and p.probability_bias_
-  auto e = pf_->expectationBiased();
+  const auto diagnostics = posteriorDiagnostics(particle_match_ratios);
+  const bool dominant_estimate_finite =
+      diagnostics.dominant_mode_valid &&
+      std::isfinite(diagnostics.dominant_mode_mean.pos_.x_) &&
+      std::isfinite(diagnostics.dominant_mode_mean.pos_.y_) &&
+      std::isfinite(diagnostics.dominant_mode_mean.pos_.z_) &&
+      std::isfinite(diagnostics.dominant_mode_mean.rot_.x_) &&
+      std::isfinite(diagnostics.dominant_mode_mean.rot_.y_) &&
+      std::isfinite(diagnostics.dominant_mode_mean.rot_.z_) &&
+      std::isfinite(diagnostics.dominant_mode_mean.rot_.w_);
+  const bool use_dominant_estimate =
+      params_->localization_adaptive_particle_reduction_ && localizing &&
+      dominant_estimate_finite;
+
+  //@ Weight particle based on the observation weight and p.probability_bias_.
+  // During adaptive global refinement, use the conditional mean of the
+  // highest-mass mode so pose and convergence statistics describe the same
+  // hypothesis.
+  auto e = use_dominant_estimate ?
+      diagnostics.dominant_mode_mean : pf_->expectationBiased();
   const auto e_max = pf_->max();
 
   assert(std::isfinite(e.pos_.x_));
@@ -967,9 +1201,10 @@ bool MCL3dlNode::measure(
   Quat map_rot;
   map_pos = e.pos_ - e.rot_ * odom_.rot_.inv() * odom_.pos_;
   map_rot = e.rot_ * odom_.rot_.inv();
+  const State6DOF raw_map_to_odom(map_pos, map_rot);
 
   bool jump = false;
-  if (static_cast<int>(pf_->getParticleSize()) > params_->num_particles_)
+  if (global_refinement)
   {
     jump = true;
     state_prev_ = e;
@@ -1020,29 +1255,211 @@ bool MCL3dlNode::measure(
 
   const auto spread = particleSpread(e);
   const float best_match_ratio = match_ratio_max.load();
-  latest_match_ratio_.store(best_match_ratio);
+  const bool mode_diagnostics_valid =
+      !params_->localization_adaptive_particle_reduction_ ||
+      (dominant_estimate_finite &&
+       std::isfinite(diagnostics.dominant_mode_weighted_match_ratio) &&
+       std::isfinite(diagnostics.dominant_mode_xy_std) &&
+       std::isfinite(diagnostics.dominant_mode_yaw_std) &&
+       std::all_of(
+           diagnostics.dominant_mode_variances.begin(),
+           diagnostics.dominant_mode_variances.end(),
+           [](const double variance)
+           {
+             return std::isfinite(variance) && variance >= 0.0;
+           }));
+  const bool diagnostics_valid =
+      mode_diagnostics_valid &&
+      std::isfinite(best_match_ratio) &&
+      std::isfinite(diagnostics.weighted_match_ratio) &&
+      std::isfinite(diagnostics.effective_sample_ratio) &&
+      std::isfinite(diagnostics.max_weight) &&
+      std::isfinite(diagnostics.dominant_mode_mass) &&
+      std::isfinite(spread.first) && std::isfinite(spread.second) &&
+      std::isfinite(e.pos_.x_) && std::isfinite(e.pos_.y_) &&
+      std::isfinite(e.pos_.z_) && std::isfinite(e.rot_.x_) &&
+      std::isfinite(e.rot_.y_) && std::isfinite(e.rot_.z_) &&
+      std::isfinite(e.rot_.w_) &&
+      std::isfinite(raw_map_to_odom.pos_.x_) &&
+      std::isfinite(raw_map_to_odom.pos_.y_) &&
+      std::isfinite(raw_map_to_odom.pos_.z_) &&
+      std::isfinite(raw_map_to_odom.rot_.x_) &&
+      std::isfinite(raw_map_to_odom.rot_.y_) &&
+      std::isfinite(raw_map_to_odom.rot_.z_) &&
+      std::isfinite(raw_map_to_odom.rot_.w_);
+  if (!diagnostics_valid)
+  {
+    AdaptiveParticleObservation invalid_observation;
+    invalid_observation.current_particles = pf_->getParticleSize();
+    const auto decision = adaptive_particle_policy_->observe(invalid_observation);
+    resample_required = false;
+
+    bool state_changed = false;
+    LocalizationState invalid_state;
+    {
+      std::lock_guard<std::mutex> state_lock(localization_state_mutex_);
+      state_changed = localization_state_machine_->observe(LocalizationObservation{
+          0.0,
+          std::numeric_limits<double>::infinity(),
+          std::numeric_limits<double>::infinity(),
+          false});
+      invalid_state = localization_state_machine_->state();
+    }
+    latest_match_ratio_.store(0.0f);
+    std_msgs::msg::Float32 quality_msg;
+    quality_msg.data = 0.0f;
+    pub_localization_quality_->publish(quality_msg);
+    RCLCPP_ERROR(
+        this->get_logger(),
+        "Rejected non-finite posterior diagnostics; keeping %lu particles",
+        pf_->getParticleSize());
+    if ((state_changed && invalid_state == LocalizationState::LOST) ||
+        decision.action == ParticlePolicyAction::RESEED)
+    {
+      markLocalizationLost("posterior diagnostics were non-finite");
+    }
+    return false;
+  }
+
+  bool pose_delta_valid = has_previous_map_to_odom_;
+  double pose_delta_xy = std::numeric_limits<double>::infinity();
+  double pose_delta_yaw = std::numeric_limits<double>::infinity();
+  if (pose_delta_valid)
+  {
+    const double dx = raw_map_to_odom.pos_.x_ - previous_map_to_odom_.pos_.x_;
+    const double dy = raw_map_to_odom.pos_.y_ - previous_map_to_odom_.pos_.y_;
+    pose_delta_xy = std::sqrt(dx * dx + dy * dy);
+    const double yaw = raw_map_to_odom.rot_.getRPY().z_;
+    const double previous_yaw = previous_map_to_odom_.rot_.getRPY().z_;
+    pose_delta_yaw = std::abs(std::atan2(
+        std::sin(yaw - previous_yaw), std::cos(yaw - previous_yaw)));
+  }
+  previous_map_to_odom_ = raw_map_to_odom;
+  has_previous_map_to_odom_ = true;
+
+  AdaptiveParticleObservation particle_observation;
+  particle_observation.measurement_valid = true;
+  particle_observation.pose_delta_valid = pose_delta_valid;
+  particle_observation.current_particles = pf_->getParticleSize();
+  particle_observation.occupied_bins = diagnostics.occupied_bins;
+  particle_observation.weighted_match_ratio = diagnostics.weighted_match_ratio;
+  particle_observation.xy_std = spread.first;
+  particle_observation.yaw_std = spread.second;
+  particle_observation.effective_sample_ratio =
+      diagnostics.effective_sample_ratio;
+  particle_observation.dominant_mode_mass = diagnostics.dominant_mode_mass;
+  particle_observation.pose_delta_xy = pose_delta_xy;
+  particle_observation.pose_delta_yaw = pose_delta_yaw;
+  const AdaptiveParticleDecision particle_decision =
+      adaptive_particle_policy_->observe(particle_observation);
+  resample_particle_count = particle_decision.target_particles;
+  resample_required = particle_decision.resample_required;
+
+  if (particle_decision.action == ParticlePolicyAction::RESEED)
+  {
+    RCLCPP_ERROR(
+        this->get_logger(),
+        "Adaptive posterior confidence collapsed after particle reduction; "
+        "requesting a fresh global search");
+    markLocalizationLost("posterior confidence collapsed after adaptive reduction");
+    return true;
+  }
+
+  const float state_match_ratio = use_dominant_estimate ?
+      static_cast<float>(diagnostics.dominant_mode_weighted_match_ratio) :
+      (params_->localization_adaptive_particle_reduction_ ?
+        static_cast<float>(diagnostics.weighted_match_ratio) : best_match_ratio);
+  latest_match_ratio_.store(state_match_ratio);
   std_msgs::msg::Float32 quality_msg;
-  quality_msg.data = best_match_ratio;
+  quality_msg.data = state_match_ratio;
   pub_localization_quality_->publish(quality_msg);
+
+  if (localizing)
+  {
+    RCLCPP_INFO(
+        this->get_logger(),
+        "Relocalization posterior: q_mode=%.3f q_weighted=%.3f q_max=%.3f ess=%.3f "
+        "mode_mass=%.3f mode_std=(%.3f, %.3f) full_std=(%.3f, %.3f) "
+        "delta=(%.3f, %.3f) "
+        "reduction_confidence=%lu/%d safe_reduce=%d bins=%lu kld=%lu "
+        "particles=%lu->%lu action=%s resample=%d",
+        diagnostics.dominant_mode_weighted_match_ratio,
+        diagnostics.weighted_match_ratio, best_match_ratio,
+        diagnostics.effective_sample_ratio, diagnostics.dominant_mode_mass,
+        diagnostics.dominant_mode_xy_std,
+        diagnostics.dominant_mode_yaw_std,
+        spread.first, spread.second,
+        pose_delta_valid ? pose_delta_xy : -1.0,
+        pose_delta_valid ? pose_delta_yaw : -1.0,
+        particle_decision.confidence_frames,
+        params_->localization_adaptive_confidence_frames_,
+        particle_decision.safe_to_reduce,
+        diagnostics.occupied_bins, particle_decision.kld_required_particles,
+        pf_->getParticleSize(),
+        resample_particle_count,
+        particlePolicyActionName(particle_decision.action),
+        resample_required);
+  }
 
   bool state_changed = false;
   LocalizationState new_state;
+  const bool use_adaptive_tracking_evidence =
+      params_->localization_adaptive_particle_reduction_ && localizing;
+  const double state_xy_std = use_adaptive_tracking_evidence ?
+      diagnostics.dominant_mode_xy_std : spread.first;
+  const double state_yaw_std = use_adaptive_tracking_evidence ?
+      diagnostics.dominant_mode_yaw_std : spread.second;
+  const bool state_posterior_stable = use_adaptive_tracking_evidence ?
+      particle_decision.raw_posterior_stable :
+      particle_decision.posterior_stable;
   {
     std::lock_guard<std::mutex> state_lock(localization_state_mutex_);
     state_changed = localization_state_machine_->observe(LocalizationObservation{
-        best_match_ratio,
-        spread.first,
-        spread.second,
-        static_cast<int>(pf_->getParticleSize()) <= params_->num_particles_});
+        state_match_ratio,
+        state_xy_std,
+        state_yaw_std,
+        state_posterior_stable,
+        diagnostics.dominant_mode_mass});
     new_state = localization_state_machine_->state();
     if (state_changed && new_state == LocalizationState::TRACKING)
     {
-      localization_state_reason_ = "particle filter converged on consecutive observations";
+      localization_state_reason_ = "posterior confidence converged on consecutive observations";
     }
     else if (state_changed && new_state == LocalizationState::LOST)
     {
       localization_state_reason_ = "match quality or particle spread exceeded lost thresholds";
     }
+  }
+
+  if (state_changed && new_state == LocalizationState::TRACKING &&
+      use_dominant_estimate)
+  {
+    const State6DOF mode_anchor = diagnostics.dominant_mode_anchor;
+    const double mode_anchor_yaw = mode_anchor.rot_.getRPY().z_;
+    const double mode_radius_squared =
+        params_->localization_adaptive_mode_xy_radius_ *
+        params_->localization_adaptive_mode_xy_radius_;
+    const bool committed = pf_->conditionOn(
+        [&mode_anchor, mode_anchor_yaw, mode_radius_squared, this](
+          const State6DOF& particle)
+        {
+          const double dx = particle.pos_.x_ - mode_anchor.pos_.x_;
+          const double dy = particle.pos_.y_ - mode_anchor.pos_.y_;
+          const double particle_yaw = particle.rot_.getRPY().z_;
+          const double yaw_delta = std::abs(std::atan2(
+              std::sin(particle_yaw - mode_anchor_yaw),
+              std::cos(particle_yaw - mode_anchor_yaw)));
+          return dx * dx + dy * dy <= mode_radius_squared &&
+              yaw_delta <= params_->localization_adaptive_mode_yaw_radius_;
+        });
+    if (!committed)
+    {
+      markLocalizationLost("failed to commit the converged posterior mode");
+      return false;
+    }
+    // Force one systematic resample so the next tracking update cannot jump
+    // back toward a discarded secondary mode.
+    resample_required = true;
   }
 
   if (new_state == LocalizationState::TRACKING)
@@ -1058,9 +1475,11 @@ bool MCL3dlNode::measure(
   {
     RCLCPP_WARN(
         this->get_logger(),
-        "Localization state changed to %s: match=%.3f xy_std=%.3f yaw_std=%.3f particles=%lu",
-        localizationStateName(new_state), best_match_ratio, spread.first,
-        spread.second, pf_->getParticleSize());
+        "Localization state changed to %s: match=%.3f max_match=%.3f "
+        "xy_std=%.3f yaw_std=%.3f particles=%lu->%lu",
+        localizationStateName(new_state), state_match_ratio, best_match_ratio,
+        state_xy_std, state_yaw_std, pf_->getParticleSize(),
+        resample_particle_count);
     publishLocalizationStatus();
     if (new_state == LocalizationState::LOST)
     {
@@ -1083,12 +1502,18 @@ bool MCL3dlNode::measure(
   pose.pose.pose.orientation.z = e.rot_.z_;
   pose.pose.pose.orientation.w = e.rot_.w_;
   pose.pose.covariance.fill(0.0);
-  pose.pose.covariance[0] = cov[0][0];
-  pose.pose.covariance[7] = cov[1][1];
-  pose.pose.covariance[14] = cov[2][2];
-  pose.pose.covariance[21] = cov[3][3];
-  pose.pose.covariance[28] = cov[4][4];
-  pose.pose.covariance[35] = spread.second * spread.second;
+  pose.pose.covariance[0] = use_dominant_estimate ?
+      diagnostics.dominant_mode_variances[0] : cov[0][0];
+  pose.pose.covariance[7] = use_dominant_estimate ?
+      diagnostics.dominant_mode_variances[1] : cov[1][1];
+  pose.pose.covariance[14] = use_dominant_estimate ?
+      diagnostics.dominant_mode_variances[2] : cov[2][2];
+  pose.pose.covariance[21] = use_dominant_estimate ?
+      diagnostics.dominant_mode_variances[3] : cov[3][3];
+  pose.pose.covariance[28] = use_dominant_estimate ?
+      diagnostics.dominant_mode_variances[4] : cov[4][4];
+  pose.pose.covariance[35] = use_dominant_estimate ?
+      diagnostics.dominant_mode_variances[5] : spread.second * spread.second;
   pub_pose_->publish(pose);
 
   if (new_state == LocalizationState::TRACKING)
@@ -1125,15 +1550,16 @@ bool MCL3dlNode::measure(
             err_integ_map.x_,
             err_integ_map.y_,
             err_integ_map.z_);
-  RCLCPP_DEBUG(this->get_logger(),"match ratio min: %0.3f, max: %0.3f, pos: %0.3f, %0.3f, %0.3f",
+  RCLCPP_DEBUG(this->get_logger(),"match ratio min: %0.3f, max: %0.3f, weighted: %0.3f, pos: %0.3f, %0.3f, %0.3f",
             match_ratio_min.load(),
             best_match_ratio,
+            diagnostics.weighted_match_ratio,
             e.pos_.x_,
             e.pos_.y_,
             e.pos_.z_);
 
   if (new_state != LocalizationState::LOST &&
-      best_match_ratio < params_->match_ratio_thresh_)
+      state_match_ratio < params_->match_ratio_thresh_)
   {
     RCLCPP_WARN_THROTTLE(this->get_logger(), *clock_, 3000, "Low match_ratio. Expansion resetting.");
     pf_->noise(State6DOF(
@@ -1145,17 +1571,10 @@ bool MCL3dlNode::measure(
               params_->expansion_var_yaw_)));
   }
 
-  if (static_cast<int>(pf_->getParticleSize()) > params_->num_particles_)
+  if (!params_->localization_adaptive_particle_reduction_ &&
+      resample_particle_count < pf_->getParticleSize())
   {
-    const int reduced = pf_->getParticleSize() * 0.75;
-    if (reduced > params_->num_particles_)
-    {
-      pf_->resizeParticle(reduced);
-    }
-    else
-    {
-      pf_->resizeParticle(params_->num_particles_);
-    }
+    pf_->resizeParticle(resample_particle_count);
   }
 
   return true;
@@ -1196,6 +1615,11 @@ bool MCL3dlNode::isTracking() const
 
 void MCL3dlNode::startLocalizing(const std::string& reason)
 {
+  if (adaptive_particle_policy_)
+  {
+    adaptive_particle_policy_->reset();
+  }
+  has_previous_map_to_odom_ = false;
   bool changed = false;
   {
     std::lock_guard<std::mutex> lock(localization_state_mutex_);

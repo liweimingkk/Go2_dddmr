@@ -82,6 +82,7 @@ public:
       const rclcpp::node_interfaces::NodeLoggingInterface::SharedPtr& m_logger,
       const rclcpp::node_interfaces::NodeParametersInterface::SharedPtr& m_parameter);
   void setGlobalLocalizationStatus(
+      const bool is_global_localizing,
       const int num_particles,
       const int current_num_particles);
   LidarMeasurementResult measure(
