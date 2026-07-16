@@ -158,9 +158,12 @@ local_planner:
     heading_tracking_distance: 0.5
     heading_align_angle: 0.8
     prune_plane_timeout: 3.0
-    # Grasping approach: chassis coarse alignment, followed by camera/arm refinement.
-    xy_goal_tolerance: 0.08
-    yaw_goal_tolerance: 0.10
+    # Grasping approach: keep chassis arrival compatible with the Go2's
+    # executable 0.30 m/s minimum speed; camera/arm vision performs the final
+    # fine alignment. Field logs showed the chassis passing about 0.23 m from
+    # the goal without ever entering the former 0.08 m arrival radius.
+    xy_goal_tolerance: 0.25
+    yaw_goal_tolerance: 0.15
     controller_frequency: 10.0
     debug_rejection_report: true
     # Hold a collision-accepted in-place turn direction across control cycles.
