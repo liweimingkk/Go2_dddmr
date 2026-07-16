@@ -57,9 +57,12 @@
 #include <visualization_msgs/msg/marker_array.hpp>
 
 /*For map*/
+#include <condition_variable>
+#include <cstdint>
 #include <map>
 #include <mutex>
 #include <set>
+#include <thread>
 
 /*For sqrt*/
 #include <math.h> 
@@ -95,7 +98,7 @@ class MultiLayerSpinningLidar: public Sensor{
 
   public:
     MultiLayerSpinningLidar();
-    ~MultiLayerSpinningLidar();
+    ~MultiLayerSpinningLidar() override;
 
     virtual void onInitialize();
     virtual void selfClear();
@@ -117,7 +120,11 @@ class MultiLayerSpinningLidar: public Sensor{
     void ptrInitial();
 
     /*call back of the sensor*/
-    void cbSensor(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
+    void cbSensor(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg);
+    void processSensor(
+      const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg,
+      const rclcpp::Time& sensor_receipt_time);
+    void sensorWorkerLoop();
 
     /*call back of the map*/
     void cbMap(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
@@ -186,6 +193,15 @@ class MultiLayerSpinningLidar: public Sensor{
     /*Local observation snapshot and sensor freshness state*/
     std::mutex observation_mutex_;
     rclcpp::Time last_observation_time_;
+    bool has_observation_{false};
+
+    /*Latest-frame handoff for local sensor processing*/
+    std::mutex sensor_worker_mutex_;
+    std::condition_variable sensor_worker_cv_;
+    sensor_msgs::msg::PointCloud2::ConstSharedPtr pending_sensor_msg_;
+    int64_t pending_sensor_receipt_time_ns_{0};
+    std::thread sensor_worker_;
+    bool sensor_worker_stop_{false};
 
     //@ list of pointcloud sticher for non-repetitive scan lidar
     std::list<pcl::PointCloud<pcl::PointXYZ>> pcl_stitcher_;

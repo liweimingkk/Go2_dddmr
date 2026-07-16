@@ -81,6 +81,11 @@ if(BUILD_TESTING)
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/test/test_go2_pointcloud_stream_gate.py
   )
+  add_test(
+    NAME test_go2_dds_receive_buffers
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/test/test_go2_dds_receive_buffers.py
+  )
 endif()
 
 install(DIRECTORY

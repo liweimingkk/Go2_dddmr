@@ -42,12 +42,12 @@ Low-speed live policy:
   GO2_RECORDED_ROUTE_START_MAX_XY_ERROR=0.25
   GO2_RECORDED_ROUTE_START_MAX_Z_ERROR=0.20
   GO2_RECORDED_ROUTE_START_MAX_YAW_ERROR=0.35
-  GO2_RECORDED_ROUTE_OBSERVATION_WINDOW_SEC=3.0
-  GO2_RECORDED_ROUTE_OBSERVATION_TIMEOUT_SEC=8.0
-  GO2_RECORDED_ROUTE_OBSERVATION_MIN_SAMPLES=20
+  GO2_RECORDED_ROUTE_OBSERVATION_WINDOW_SEC=20.0
+  GO2_RECORDED_ROUTE_OBSERVATION_TIMEOUT_SEC=30.0
+  GO2_RECORDED_ROUTE_OBSERVATION_MIN_SAMPLES=140
   GO2_RECORDED_ROUTE_OBSERVATION_MIN_RATE_HZ=7.0
   GO2_RECORDED_ROUTE_OBSERVATION_MAX_HEADER_GAP_SEC=0.25
-  GO2_RECORDED_ROUTE_OBSERVATION_MAX_RECEIVE_GAP_SEC=0.20
+  GO2_RECORDED_ROUTE_OBSERVATION_MAX_RECEIVE_GAP_SEC=0.25
   GO2_SPORT_PROBE_MAX_AGE_SEC=3600
   GO2_RECORDED_ROUTE_EXPECTED_REQUEST_BASELINE=10
 
@@ -99,6 +99,7 @@ ADAPTER="${WS_ROOT}/src/dddmr_beginner_guide/scripts/go2_sport_cmd_vel_adapter.p
 ROUTE_LAUNCH="${WS_ROOT}/src/dddmr_beginner_guide/launch/go2_xt16_recorded_route_navigation.launch"
 ROUTE_CONFIG="${WS_ROOT}/src/dddmr_route_navigation/config/go2_xt16_recorded_route.yaml"
 OBSERVATION_GATE_SOURCE="${WS_ROOT}/src/dddmr_beginner_guide/scripts/go2_pointcloud_stream_gate.py"
+DDS_BUFFER_CHECK="${SCRIPT_DIR}/check_go2_dds_receive_buffers.sh"
 GO2_SETUP="${GO2_SETUP:-${WS_ROOT}/.unitree_msg_ws/install/setup.bash}"
 BAGS_DIR="${DDDMR_BAGS_DIR:-${REPO_ROOT}/bags}"
 DEFAULT_MAP_NAME="go2_xt16_mouth_mapping_20260714_153136_map_2026_07_14_07_31_36"
@@ -130,12 +131,12 @@ arm_timeout_sec="${GO2_RECORDED_ROUTE_ARM_TIMEOUT_SEC:-60}"
 start_max_xy_error="${GO2_RECORDED_ROUTE_START_MAX_XY_ERROR:-0.25}"
 start_max_z_error="${GO2_RECORDED_ROUTE_START_MAX_Z_ERROR:-0.20}"
 start_max_yaw_error="${GO2_RECORDED_ROUTE_START_MAX_YAW_ERROR:-0.35}"
-observation_window_sec="${GO2_RECORDED_ROUTE_OBSERVATION_WINDOW_SEC:-3.0}"
-observation_timeout_sec="${GO2_RECORDED_ROUTE_OBSERVATION_TIMEOUT_SEC:-8.0}"
-observation_min_samples="${GO2_RECORDED_ROUTE_OBSERVATION_MIN_SAMPLES:-20}"
+observation_window_sec="${GO2_RECORDED_ROUTE_OBSERVATION_WINDOW_SEC:-20.0}"
+observation_timeout_sec="${GO2_RECORDED_ROUTE_OBSERVATION_TIMEOUT_SEC:-30.0}"
+observation_min_samples="${GO2_RECORDED_ROUTE_OBSERVATION_MIN_SAMPLES:-140}"
 observation_min_rate_hz="${GO2_RECORDED_ROUTE_OBSERVATION_MIN_RATE_HZ:-7.0}"
 observation_max_header_gap_sec="${GO2_RECORDED_ROUTE_OBSERVATION_MAX_HEADER_GAP_SEC:-0.25}"
-observation_max_receive_gap_sec="${GO2_RECORDED_ROUTE_OBSERVATION_MAX_RECEIVE_GAP_SEC:-0.20}"
+observation_max_receive_gap_sec="${GO2_RECORDED_ROUTE_OBSERVATION_MAX_RECEIVE_GAP_SEC:-0.25}"
 probe_max_age_sec="${GO2_SPORT_PROBE_MAX_AGE_SEC:-3600}"
 expected_request_baseline="${GO2_RECORDED_ROUTE_EXPECTED_REQUEST_BASELINE:-10}"
 probe_summary="${GO2_SPORT_PROBE_SUMMARY:-}"
@@ -295,9 +296,9 @@ bounded("GO2_RECORDED_ROUTE_ARM_TIMEOUT_SEC", 10.0, 300.0, low_inclusive=True)
 bounded("GO2_RECORDED_ROUTE_START_MAX_XY_ERROR", 0.05, 0.60, low_inclusive=True)
 bounded("GO2_RECORDED_ROUTE_START_MAX_Z_ERROR", 0.05, 0.35, low_inclusive=True)
 bounded("GO2_RECORDED_ROUTE_START_MAX_YAW_ERROR", 0.05, 0.80, low_inclusive=True)
-bounded("GO2_RECORDED_ROUTE_OBSERVATION_WINDOW_SEC", 2.0, 6.0, low_inclusive=True)
-bounded("GO2_RECORDED_ROUTE_OBSERVATION_TIMEOUT_SEC", 4.0, 15.0, low_inclusive=True)
-bounded("GO2_RECORDED_ROUTE_OBSERVATION_MIN_SAMPLES", 10.0, 100.0, low_inclusive=True)
+bounded("GO2_RECORDED_ROUTE_OBSERVATION_WINDOW_SEC", 20.0, 30.0, low_inclusive=True)
+bounded("GO2_RECORDED_ROUTE_OBSERVATION_TIMEOUT_SEC", 21.0, 45.0, low_inclusive=True)
+bounded("GO2_RECORDED_ROUTE_OBSERVATION_MIN_SAMPLES", 10.0, 300.0, low_inclusive=True)
 bounded("GO2_RECORDED_ROUTE_OBSERVATION_MIN_RATE_HZ", 5.0, 15.0, low_inclusive=True)
 bounded("GO2_RECORDED_ROUTE_OBSERVATION_MAX_HEADER_GAP_SEC", 0.05, 0.30, low_inclusive=True)
 bounded("GO2_RECORDED_ROUTE_OBSERVATION_MAX_RECEIVE_GAP_SEC", 0.10, 0.30, low_inclusive=True)
@@ -320,6 +321,8 @@ PY
 validate_route_and_map() {
   [[ -x "${ROUTE_RUNNER}" ]] || die "Missing route runner: ${ROUTE_RUNNER}"
   [[ -x "${ADAPTER}" ]] || die "Missing Sport adapter: ${ADAPTER}"
+  [[ -x "${DDS_BUFFER_CHECK}" ]] || \
+    die "Missing Go2 DDS receive-buffer check: ${DDS_BUFFER_CHECK}"
   [[ -f "${OBSERVATION_GATE_SOURCE}" ]] || \
     die "Missing current_observation stream gate: ${OBSERVATION_GATE_SOURCE}"
   [[ -f "${ROUTE_FILE_VALUE}" ]] || die "Missing recorded route: ${ROUTE_FILE_VALUE}"
@@ -594,6 +597,13 @@ source_host_go2_ros() {
   set -u
 }
 
+require_cyclonedds_rmw() {
+  local requested="${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
+  [[ "${requested}" == "rmw_cyclonedds_cpp" ]] || \
+    die "Supervised recorded-route live requires RMW_IMPLEMENTATION=rmw_cyclonedds_cpp; got '${requested}'."
+  export RMW_IMPLEMENTATION="rmw_cyclonedds_cpp"
+}
+
 topic_info() {
   local topic="$1"
   timeout 10 ros2 topic info "${topic}" 2>&1
@@ -691,7 +701,7 @@ require_current_observation_stream() {
   log "Validating sustained ${CURRENT_OBSERVATION_TOPIC} updates (${phase})..."
   set +e
   output="$(docker_ros \
-    "timeout -s INT -k 1s 20s python3 '${gate_path}' \
+    "timeout -s INT -k 1s 50s python3 '${gate_path}' \
       --topic '${CURRENT_OBSERVATION_TOPIC}' \
       --window-sec '${observation_window_sec}' \
       --timeout-sec '${observation_timeout_sec}' \
@@ -1250,6 +1260,9 @@ fi
 [[ "${rviz}" == "true" ]] || die "--live requires RVIZ=true for route/corridor supervision."
 validate_probe_summary "${probe_summary}"
 assert_no_conflicting_runtime
+require_cyclonedds_rmw
+log "Checking host DDS receive buffers before starting live ROS..."
+"${DDS_BUFFER_CHECK}" || die "Host DDS receive-buffer check failed."
 source_host_go2_ros
 
 printf 'RMW_IMPLEMENTATION=%s\n' "${RMW_IMPLEMENTATION:-}"

@@ -12,6 +12,9 @@ Commands:
                   This is the default.
   --prepare-only  Generate/validate the route without Docker or live ROS access.
   --status        Show the dry-run container and controller status.
+  --verify-observation
+                  Verify 30 seconds of continuous local current_observation
+                  updates while physical motion output remains disconnected.
   --enable        Explicitly enable recorded-route control after checking that
                   localization is TRACKING and no real Sport publisher exists.
                   Output remains on dry-run topics only.
@@ -52,6 +55,7 @@ case "${1:---start}" in
   --start) mode="start" ;;
   --prepare-only) mode="prepare-only" ;;
   --status) mode="status" ;;
+  --verify-observation) mode="verify-observation" ;;
   --enable) mode="enable" ;;
   --disable) mode="disable" ;;
   --stop) mode="stop" ;;
@@ -80,6 +84,7 @@ NAV_CONFIG_FILE_VALUE="${NAV_CONFIG_FILE:-${WS_ROOT}/src/dddmr_beginner_guide/co
 ROUTE_TOOL="${WS_ROOT}/src/dddmr_route_navigation/scripts/route_tool.py"
 DOCKER_WRAPPER="${SCRIPT_DIR}/dddmr_docker_go2_xt16.sh"
 RUNTIME_CLEAN_CHECK="${SCRIPT_DIR}/check_go2_xt16_no_motion_runtime_clean.sh"
+DDS_BUFFER_CHECK="${SCRIPT_DIR}/check_go2_dds_receive_buffers.sh"
 
 ROS_DOMAIN_ID_VALUE="${ROS_DOMAIN_ID:-0}"
 GO2_DDS_IP_VALUE="${GO2_DDS_IP:-192.168.123.18}"
@@ -121,6 +126,13 @@ require_positive_integer() {
   local value="$2"
   [[ "${value}" =~ ^[1-9][0-9]*$ ]] || \
     die "${name} must be a positive integer; got '${value}'."
+}
+
+require_cyclonedds_rmw() {
+  local requested="${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
+  [[ "${requested}" == "rmw_cyclonedds_cpp" ]] || \
+    die "Recorded-route XT16 validation requires RMW_IMPLEMENTATION=rmw_cyclonedds_cpp; got '${requested}'."
+  export RMW_IMPLEMENTATION="rmw_cyclonedds_cpp"
 }
 
 detect_go2_net_iface() {
@@ -401,9 +413,16 @@ start_dry_run() {
   validate_bool REGENERATE_ROUTE "${REGENERATE_ROUTE_VALUE}"
   require_positive_integer PREFLIGHT_SAMPLES "${PREFLIGHT_SAMPLES_VALUE}"
   require_positive_integer PREFLIGHT_TIMEOUT "${PREFLIGHT_TIMEOUT_VALUE}"
+  require_cyclonedds_rmw
 
   GO2_NET_IFACE_VALUE="$(detect_go2_net_iface)"
   log "Using Go2 DDS interface: ${GO2_NET_IFACE_VALUE}"
+
+  [[ -x "${DDS_BUFFER_CHECK}" ]] || \
+    die "Missing Go2 DDS receive-buffer check: ${DDS_BUFFER_CHECK}"
+  log "Checking host DDS receive buffers before starting ROS..."
+  "${DDS_BUFFER_CHECK}" || \
+    die "Host DDS receive-buffer check failed."
 
   docker image inspect "${IMAGE}" >/dev/null 2>&1 || \
     die "Docker image ${IMAGE} not found."
@@ -503,6 +522,26 @@ exec ros2 launch dddmr_beginner_guide go2_xt16_recorded_route_navigation.launch 
   log "Stop: ${SCRIPT_DIR}/run_go2_xt16_recorded_route_dry_run.sh --stop"
 }
 
+verify_current_observation() {
+  local container
+  container="$(running_container)"
+  check_dry_run_isolation "${container}" || \
+    die "Dry-run isolation check failed; refusing observation verification."
+
+  log "Verifying 30 seconds of sustained local current_observation updates..."
+  docker_ros "${container}" \
+    "timeout -s INT -k 1s 45s python3 \
+      /root/dddmr_navigation/src/dddmr_beginner_guide/scripts/go2_pointcloud_stream_gate.py \
+      --topic /perception_3d_local/lidar/current_observation \
+      --window-sec 30.0 \
+      --timeout-sec 40.0 \
+      --min-samples 210 \
+      --min-rate-hz 7.0 \
+      --max-header-gap-sec 0.25 \
+      --max-receive-gap-sec 0.25 \
+      --expected-publishers 1"
+}
+
 case "${mode}" in
   prepare-only)
     validate_bool REGENERATE_ROUTE "${REGENERATE_ROUTE_VALUE}"
@@ -510,6 +549,9 @@ case "${mode}" in
     ;;
   status)
     show_status
+    ;;
+  verify-observation)
+    verify_current_observation
     ;;
   enable)
     enable_dry_run
