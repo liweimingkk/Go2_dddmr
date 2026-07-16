@@ -30,6 +30,10 @@
 */
 #include <global_planner/global_planner.h>
 
+#include <cmath>
+#include <limits>
+#include <stdexcept>
+
 using namespace std::chrono_literals;
 
 namespace global_planner
@@ -105,7 +109,20 @@ void GlobalPlanner::initial(const std::shared_ptr<perception_3d::Perception3D_RO
   this->get_parameter("find_start_tolerance", find_start_tolerance_);
   RCLCPP_INFO(this->get_logger(), "find_start_tolerance: %.2f", find_start_tolerance_);    
 
-  
+  declare_parameter("find_goal_tolerance", rclcpp::ParameterValue(0.5));
+  this->get_parameter("find_goal_tolerance", find_goal_tolerance_);
+  RCLCPP_INFO(this->get_logger(), "find_goal_tolerance: %.2f", find_goal_tolerance_);
+
+  declare_parameter("max_endpoint_projection_xy", rclcpp::ParameterValue(0.35));
+  this->get_parameter("max_endpoint_projection_xy", max_endpoint_projection_xy_);
+  RCLCPP_INFO(
+    this->get_logger(), "max_endpoint_projection_xy: %.2f", max_endpoint_projection_xy_);
+
+  if(!std::isfinite(find_start_tolerance_) || find_start_tolerance_ <= 0.0 ||
+     !std::isfinite(find_goal_tolerance_) || find_goal_tolerance_ <= 0.0 ||
+     !std::isfinite(max_endpoint_projection_xy_) || max_endpoint_projection_xy_ <= 0.0){
+    throw std::invalid_argument("goal and start tolerances must be finite and positive");
+  }
 
   tf_listener_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   action_server_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
@@ -409,42 +426,59 @@ bool GlobalPlanner::getStartGoalID(const geometry_msgs::msg::PoseStamped& start,
   //@Compute nearest pc as goal
   //@TODO: add an edge between goal and nearest pc
   
-  if(kdtree_ground_->radiusSearch (pcl_goal, 0.5, pointIdxRadiusSearch_goal, pointRadiusSquaredDistance_goal)<1){
-    RCLCPP_WARN(this->get_logger(), "Goal is not found.");
-    RCLCPP_WARN(this->get_logger(), "Using vertical search to find a goal on the ground.");
-    bool second_search = false;
-    if(graph_ready_){
-      for(double z=goal.pose.position.z; z>-10;z-=0.1){
-        pointIdxRadiusSearch_goal.clear();
-        pointRadiusSquaredDistance_goal.clear();
-        pcl_goal.z = z;
-        if(kdtree_ground_->radiusSearch(pcl_goal, 0.3, pointIdxRadiusSearch_goal, pointRadiusSquaredDistance_goal,0)>0)
-        {
-          second_search = true;
-          break;
-        }
-      }
-      if(!second_search)
-        return false;
-    }
-    else{
-      return false;
-    }
+  if(kdtree_ground_->radiusSearch(
+      pcl_goal, find_goal_tolerance_, pointIdxRadiusSearch_goal,
+      pointRadiusSquaredDistance_goal) < 1){
+    RCLCPP_WARN(
+      this->get_logger(), "Goal has no ground within %.2f m.", find_goal_tolerance_);
     return false;
   }
+
+  int selected_goal_index = -1;
+  double selected_goal_distance_sq = std::numeric_limits<double>::infinity();
+  for(const int candidate_index : pointIdxRadiusSearch_goal){
+    if(candidate_index < 0 ||
+       static_cast<std::size_t>(candidate_index) >= pcl_ground_->points.size()){
+      continue;
+    }
+    const auto& candidate = pcl_ground_->points[candidate_index];
+    const double dx = static_cast<double>(candidate.x) - goal.pose.position.x;
+    const double dy = static_cast<double>(candidate.y) - goal.pose.position.y;
+    const double dz = static_cast<double>(candidate.z) - goal.pose.position.z;
+    if(std::hypot(dx, dy) > max_endpoint_projection_xy_){
+      continue;
+    }
+    const double distance_sq = dx*dx + dy*dy + dz*dz;
+    if(distance_sq < selected_goal_distance_sq){
+      selected_goal_distance_sq = distance_sq;
+      selected_goal_index = candidate_index;
+    }
+  }
+
+  if(selected_goal_index < 0){
+    RCLCPP_WARN(
+      this->get_logger(),
+      "Goal has no ground endpoint within %.2f m in XY.",
+      max_endpoint_projection_xy_);
+    return false;
+  }
+
+  const auto goal_id_selected = static_cast<unsigned int>(selected_goal_index);
   
   if(enable_detail_log_){
     RCLCPP_WARN(this->get_logger(), "Selected goal: %.2f, %.2f, %.2f, Nearest-> id: %u, x: %.2f, y: %.2f, z: %.2f", 
-      goal.pose.position.x, goal.pose.position.y, goal.pose.position.z, pointIdxRadiusSearch_goal[0], 
-      pcl_ground_->points[pointIdxRadiusSearch_goal[0]].x, pcl_ground_->points[pointIdxRadiusSearch_goal[0]].y, pcl_ground_->points[pointIdxRadiusSearch_goal[0]].z);
+      goal.pose.position.x, goal.pose.position.y, goal.pose.position.z, goal_id_selected,
+      pcl_ground_->points[goal_id_selected].x, pcl_ground_->points[goal_id_selected].y,
+      pcl_ground_->points[goal_id_selected].z);
   }
   else{
     RCLCPP_WARN_THROTTLE(this->get_logger(), *clock_, 5000, "Selected goal: %.2f, %.2f, %.2f, Nearest-> id: %u, x: %.2f, y: %.2f, z: %.2f", 
-      goal.pose.position.x, goal.pose.position.y, goal.pose.position.z, pointIdxRadiusSearch_goal[0], 
-      pcl_ground_->points[pointIdxRadiusSearch_goal[0]].x, pcl_ground_->points[pointIdxRadiusSearch_goal[0]].y, pcl_ground_->points[pointIdxRadiusSearch_goal[0]].z);
+      goal.pose.position.x, goal.pose.position.y, goal.pose.position.z, goal_id_selected,
+      pcl_ground_->points[goal_id_selected].x, pcl_ground_->points[goal_id_selected].y,
+      pcl_ground_->points[goal_id_selected].z);
   }
   
-  goal_id = pointIdxRadiusSearch_goal[0];
+  goal_id = goal_id_selected;
   
   //--------------------------------------------------------------------------------------
   //@Get start ID

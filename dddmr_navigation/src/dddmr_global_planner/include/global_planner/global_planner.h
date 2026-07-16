@@ -131,6 +131,8 @@ class GlobalPlanner : public rclcpp::Node {
       size_t static_ground_size_;
       bool use_pre_graph_;
       double find_start_tolerance_;
+      double find_goal_tolerance_;
+      double max_endpoint_projection_xy_;
       
       /*Original point cloud*/
       pcl::PointCloud<pcl::PointXYZI>::Ptr pcl_ground_;

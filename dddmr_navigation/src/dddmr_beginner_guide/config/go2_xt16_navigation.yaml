@@ -158,8 +158,9 @@ local_planner:
     heading_tracking_distance: 0.5
     heading_align_angle: 0.8
     prune_plane_timeout: 3.0
-    xy_goal_tolerance: 0.4
-    yaw_goal_tolerance: 0.8
+    # Grasping approach: chassis coarse alignment, followed by camera/arm refinement.
+    xy_goal_tolerance: 0.08
+    yaw_goal_tolerance: 0.10
     controller_frequency: 10.0
     debug_rejection_report: true
     # Hold a collision-accepted in-place turn direction across control cycles.
@@ -438,6 +439,9 @@ global_planner:
   ros__parameters:
     turning_weight: 0.1 #Punish the zig-zag path
     enable_detail_log: false
+    # Fail instead of silently bridging a large gap to a shifted grasp pose.
+    find_goal_tolerance: 0.20
+    max_endpoint_projection_xy: 0.10
 
 #if we use get_dwa_plan in global_plan_manager, we setup parameters for dwa_global_planner
 dynamic_window_aware_global_planner:
