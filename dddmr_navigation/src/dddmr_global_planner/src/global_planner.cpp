@@ -118,9 +118,15 @@ void GlobalPlanner::initial(const std::shared_ptr<perception_3d::Perception3D_RO
   RCLCPP_INFO(
     this->get_logger(), "max_endpoint_projection_xy: %.2f", max_endpoint_projection_xy_);
 
+  declare_parameter("max_endpoint_projection_z", rclcpp::ParameterValue(1.0));
+  this->get_parameter("max_endpoint_projection_z", max_endpoint_projection_z_);
+  RCLCPP_INFO(
+    this->get_logger(), "max_endpoint_projection_z: %.2f", max_endpoint_projection_z_);
+
   if(!std::isfinite(find_start_tolerance_) || find_start_tolerance_ <= 0.0 ||
      !std::isfinite(find_goal_tolerance_) || find_goal_tolerance_ <= 0.0 ||
-     !std::isfinite(max_endpoint_projection_xy_) || max_endpoint_projection_xy_ <= 0.0){
+     !std::isfinite(max_endpoint_projection_xy_) || max_endpoint_projection_xy_ <= 0.0 ||
+     !std::isfinite(max_endpoint_projection_z_) || max_endpoint_projection_z_ <= 0.0){
     throw std::invalid_argument("goal and start tolerances must be finite and positive");
   }
 
@@ -426,40 +432,63 @@ bool GlobalPlanner::getStartGoalID(const geometry_msgs::msg::PoseStamped& start,
   //@Compute nearest pc as goal
   //@TODO: add an edge between goal and nearest pc
   
-  if(kdtree_ground_->radiusSearch(
-      pcl_goal, find_goal_tolerance_, pointIdxRadiusSearch_goal,
-      pointRadiusSquaredDistance_goal) < 1){
-    RCLCPP_WARN(
-      this->get_logger(), "Goal has no ground within %.2f m.", find_goal_tolerance_);
-    return false;
-  }
-
   int selected_goal_index = -1;
   double selected_goal_distance_sq = std::numeric_limits<double>::infinity();
-  for(const int candidate_index : pointIdxRadiusSearch_goal){
-    if(candidate_index < 0 ||
-       static_cast<std::size_t>(candidate_index) >= pcl_ground_->points.size()){
-      continue;
-    }
-    const auto& candidate = pcl_ground_->points[candidate_index];
-    const double dx = static_cast<double>(candidate.x) - goal.pose.position.x;
-    const double dy = static_cast<double>(candidate.y) - goal.pose.position.y;
-    const double dz = static_cast<double>(candidate.z) - goal.pose.position.z;
-    if(std::hypot(dx, dy) > max_endpoint_projection_xy_){
-      continue;
-    }
-    const double distance_sq = dx*dx + dy*dy + dz*dz;
-    if(distance_sq < selected_goal_distance_sq){
-      selected_goal_distance_sq = distance_sq;
-      selected_goal_index = candidate_index;
+  const auto select_goal_candidate =
+    [&](const std::vector<int>& candidate_indices, const double max_z_distance){
+      for(const int candidate_index : candidate_indices){
+        if(candidate_index < 0 ||
+           static_cast<std::size_t>(candidate_index) >= pcl_ground_->points.size()){
+          continue;
+        }
+        const auto& candidate = pcl_ground_->points[candidate_index];
+        const double dx = static_cast<double>(candidate.x) - goal.pose.position.x;
+        const double dy = static_cast<double>(candidate.y) - goal.pose.position.y;
+        const double dz = static_cast<double>(candidate.z) - goal.pose.position.z;
+        if(std::hypot(dx, dy) > max_endpoint_projection_xy_ ||
+           std::abs(dz) > max_z_distance){
+          continue;
+        }
+        const double distance_sq = dx*dx + dy*dy + dz*dz;
+        if(distance_sq < selected_goal_distance_sq){
+          selected_goal_distance_sq = distance_sq;
+          selected_goal_index = candidate_index;
+        }
+      }
+    };
+
+  kdtree_ground_->radiusSearch(
+    pcl_goal, find_goal_tolerance_, pointIdxRadiusSearch_goal,
+    pointRadiusSquaredDistance_goal);
+  select_goal_candidate(pointIdxRadiusSearch_goal, find_goal_tolerance_);
+
+  if(selected_goal_index < 0){
+    pointIdxRadiusSearch_goal.clear();
+    pointRadiusSquaredDistance_goal.clear();
+    const double projection_search_radius = std::hypot(
+      max_endpoint_projection_xy_, max_endpoint_projection_z_);
+    kdtree_ground_->radiusSearch(
+      pcl_goal, projection_search_radius, pointIdxRadiusSearch_goal,
+      pointRadiusSquaredDistance_goal);
+    select_goal_candidate(pointIdxRadiusSearch_goal, max_endpoint_projection_z_);
+
+    if(selected_goal_index >= 0){
+      const auto& projected = pcl_ground_->points[selected_goal_index];
+      RCLCPP_WARN(
+        this->get_logger(),
+        "Projected 2D goal to mapground: xy_offset=%.3f z_offset=%.3f.",
+        std::hypot(
+          static_cast<double>(projected.x) - goal.pose.position.x,
+          static_cast<double>(projected.y) - goal.pose.position.y),
+        static_cast<double>(projected.z) - goal.pose.position.z);
     }
   }
 
   if(selected_goal_index < 0){
     RCLCPP_WARN(
       this->get_logger(),
-      "Goal has no ground endpoint within %.2f m in XY.",
-      max_endpoint_projection_xy_);
+      "Goal has no ground endpoint within %.2f m in XY and %.2f m in Z.",
+      max_endpoint_projection_xy_, max_endpoint_projection_z_);
     return false;
   }
 

@@ -439,9 +439,14 @@ global_planner:
   ros__parameters:
     turning_weight: 0.1 #Punish the zig-zag path
     enable_detail_log: false
-    # Fail instead of silently bridging a large gap to a shifted grasp pose.
+    # A 0.20 m ground voxel can place the nearest graph node up to about
+    # 0.141 m away in XY. Keep the graph projection bounded while allowing
+    # that quantization; the local planner still drives to the exact XY goal.
     find_goal_tolerance: 0.20
-    max_endpoint_projection_xy: 0.10
+    max_endpoint_projection_xy: 0.15
+    # RViz 2D goals use z=0 while this map's ground is roughly 0.15-0.80 m
+    # below it. Bound that coordinate projection independently from XY.
+    max_endpoint_projection_z: 1.00
 
 #if we use get_dwa_plan in global_plan_manager, we setup parameters for dwa_global_planner
 dynamic_window_aware_global_planner:
