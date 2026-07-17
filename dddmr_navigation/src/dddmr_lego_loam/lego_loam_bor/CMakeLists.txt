@@ -116,13 +116,6 @@ ament_target_dependencies(opt_icp_gn
   ${dependencies}
 )
 
-add_library(mouth_ground_surface SHARED
-  src/mouth_ground_surface.cpp
-)
-target_link_libraries(mouth_ground_surface
-  ${PCL_LIBRARIES}
-)
-
 if(TRT_ENABLED)
   add_definitions(-DTRT_ENABLED) 
   # yolo lego loam ip
@@ -131,7 +124,6 @@ if(TRT_ENABLED)
   )
   
   target_link_libraries(image_projection
-    mouth_ground_surface
     ${PCL_LIBRARIES}
     ${OpenCV_LIBRARIES}
     ${dddmr_trt_LIBRARIES}
@@ -150,7 +142,6 @@ else()
     src/imageProjection.cpp
   )
   target_link_libraries(image_projection
-    mouth_ground_surface
     ${PCL_LIBRARIES}
     ${OpenCV_LIBRARIES}
     ${dddmr_pcl_LIBRARIES}
@@ -411,7 +402,6 @@ endif()
 
 install(TARGETS
   opt_icp_gn
-  mouth_ground_surface
   image_projection
   feature_association
   map_optimization
@@ -494,13 +484,6 @@ endif()
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
-  ament_add_gtest(test_mouth_ground_surface
-    test/test_mouth_ground_surface.cpp
-  )
-  target_link_libraries(test_mouth_ground_surface
-    mouth_ground_surface
-    ${PCL_LIBRARIES}
-  )
   ament_add_gtest(test_mapping_math
     test/test_mapping_math.cpp
   )
@@ -508,9 +491,6 @@ if(BUILD_TESTING)
     nav_msgs
     tf2
     tf2_geometry_msgs
-  )
-  target_link_libraries(test_mapping_math
-    gtsam
   )
   ament_add_gtest(test_receipt_sync
     test/test_receipt_sync.cpp
@@ -520,6 +500,6 @@ endif()
 # --- Everything CI/CD test finish here ---
 
 ament_export_include_directories(include)
-ament_export_libraries(opt_icp_gn mouth_ground_surface image_projection feature_association map_optimization lego_loam_map_visualization pose_graph_editor interactive_pose_graph_editor)
+ament_export_libraries(opt_icp_gn image_projection feature_association map_optimization lego_loam_map_visualization pose_graph_editor interactive_pose_graph_editor)
 ament_export_dependencies(${dependencies})
 ament_package()

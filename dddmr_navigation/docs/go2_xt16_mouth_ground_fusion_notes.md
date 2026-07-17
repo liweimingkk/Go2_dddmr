@@ -20,77 +20,53 @@ live `header.frame_id` was observed as `utlidar_lidar`, but that frame was not
 available in the current TF tree. Use raw `/utlidar/cloud` only after adding and
 checking the correct `utlidar_lidar` transform.
 
-## Stair-Surface Classification
+## Stationary Test Assumption
 
-The Go2 mouth mapping config now uses:
+The current `base_link` z-window filter is a stationary-only setup for the Go2
+standing pose:
 
-```yaml
-mouth_ground_mode: connected_surface
-```
+- `mouth_ground_z_min: -0.42`
+- `mouth_ground_z_max: -0.18`
 
-This mode does not limit every accepted point to one fixed `base_link` height.
-It first finds locally planar support patches. A seed must be below and
-immediately ahead of the robot and must agree with the current XT16
-`patched_ground`; the mouth LiDAR therefore extends the roof-LiDAR ground map
-instead of inventing an unrelated floating surface. If no connected XT16 seed
-is available, mouth ground stays empty and the save workflow refuses to accept
-that as proof of ground fusion. It then follows
-independently sized patches through the configured Go2 step-capability
-envelope. A floor plus at least two successive tread heights is accepted as a
-stair chain. A single low box top, an unsupported horizontal platform, a
-narrow patch, a riser, and an excessive slope remain non-ground.
+Do not treat this as a walking-mapping filter until one of these is true:
 
-`mouth_ground_z_min/max` are retained only for the explicit `fixed_z`
-stationary troubleshooting fallback. The connected mode instead uses the
-broad `mouth_support_seed_*` footprint to identify the current support surface;
-it does not encode the temporary test stair's rise or total physical step
-count. `mouth_minimum_stair_height_levels` is a conservative evidence count,
-not the expected staircase length.
-
-Accepted mouth points are appended to the existing `patched_ground` path and
-are saved in `ground.pcd/mapground`. Only verified steep planar returns enter
-the existing surface-keyframe path; low-confidence or unsupported returns stay
-unknown and are not written to either map layer. The Go2 map server removes
-surface points overlapping `mapground` and merges the remainder into the
-existing `mapcloud`. No `mapterrain` or third navigation map is created.
+- a stable `base_footprint` or another roll/pitch-compensated
+  `mouth_filter_frame` is implemented and validated; or
+- the current `base_link` z ROI is validated in RViz under expected
+  pitch/roll/body-height changes.
 
 Before walking mapping, explicitly verify in RViz that `/mouth_ground_cloud`
-contains treads but not risers or nearby boxes under expected body attitude
-changes.
+remains ground-only under the expected body pitch, roll, and height changes.
 
 ## Time Synchronization
 
-Strict fusion uses corrected mouth timestamps:
+The reusable YAML defaults to `header_offset` mode for deterministic bag or
+direct-handler replay. In that mode fusion uses corrected mouth timestamps:
 
 ```text
 corrected_mouth_stamp = raw_mouth_stamp + mouth_time_offset_sec
 ```
 
 The corrected stamp is used both for nearest-frame matching and stamped TF
-lookup. Default:
+lookup. The live launch explicitly overrides this with:
 
 ```yaml
+mouth_sync_mode: receipt_time
 mouth_time_offset_sec: 0.0
 mouth_max_time_diff: 0.03
 ```
 
-In live testing after old containers were stopped, `/utlidar/cloud_base` header
-timestamps lagged `/lidar_points` by about 2.5 seconds. With
-`mouth_time_offset_sec:=0.0` and `mouth_max_time_diff:=0.08`, mouth points were
-skipped.
+`receipt_time` pairs the two clouds by their local steady-clock arrival times.
+It avoids depending on the sensor header-clock epoch after a link reconnect,
+and ignores `mouth_time_offset_sec`. The `0.03` second value is both the pairing
+tolerance and the maximum wait for a newer mouth sample.
 
-Only use an offset such as the current measured `mouth_time_offset_sec:=2.397`
-after confirming the offset is stable in the current live graph.
+This path does not compensate robot motion between the two cloud times. Keep
+the robot stationary while validating the fixed-z mouth filter, and do not
+increase the live tolerance for walking mapping.
 
-The current fusion path does not compensate robot motion between the mouth
-timestamp and the XT16 timestamp. Walking mapping therefore keeps
-`mouth_max_time_diff:=0.03`; the remaining spatial error is bounded by robot
-speed times the residual time difference. Values above 0.03 are for stationary
-geometry diagnosis until a fixed-frame, cross-timestamp transform is available.
-
-The mapping-and-save script now performs this measurement automatically and
-refuses to save until it receives a non-empty `/mouth_ground_cloud` sample.
-For a manual check, run:
+When explicitly using `header_offset` mode for replay or diagnosis, measure the
+current header relationship first:
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -103,7 +79,8 @@ python3 scripts/measure_go2_mouth_xt16_time_offset.py \
 
 Use the reported `recommended_mouth_time_offset_sec` only when
 `OFFSET_STABLE_FOR_SMOKE=True`. Recheck again if any driver, container, clock,
-network, or robot runtime state changes.
+network, or robot runtime state changes. Do not inject this value into live
+`receipt_time` mode.
 
 Timestamp offset alone is not enough for deployment. With the robot stationary,
 move a box or card quickly in front of the mouth LiDAR and verify in RViz that
@@ -111,14 +88,9 @@ the mouth point cloud response is visually real-time. Do not use
 `mouth_time_offset_sec` as deployment calibration until this content-latency
 check shows negligible lag.
 
-For geometry-only perception tests on the current live graph, use:
-
-```bash
-mouth_max_time_diff:=3.0
-```
-
-Do not use `mouth_max_time_diff:=3.0` for motion or walking mapping. It is only
-a stationary smoke-test override for checking ROI geometry and frame transforms.
+The separate validation smoke script may use a larger stationary-only window
+for geometry diagnosis. That override is not a deployment or walking-mapping
+setting.
 
 ## Launch Integration
 

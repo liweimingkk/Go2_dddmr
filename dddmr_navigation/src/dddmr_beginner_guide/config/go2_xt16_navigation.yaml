@@ -75,9 +75,6 @@ map1:
   ros__parameters:
     pose_graph_dir: "/root/dddmr_bags/go2_xt16_mouth_mapping_20260714_153136_map_2026_07_14_07_31_36"
     complete_map_voxel_size: 0.2
-    complete_ground_voxel_size: 0.1
-    merge_non_ground_surface_into_mapcloud: true
-    surface_ground_exclusion_radius: 0.10
 
 sub_maps:
   ros__parameters:

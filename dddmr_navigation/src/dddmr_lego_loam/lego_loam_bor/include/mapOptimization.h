@@ -1,7 +1,6 @@
 #ifndef MAPOPTIMIZATION_H
 #define MAPOPTIMIZATION_H
 
-#include "axis_split_factor.h"
 #include "channel.h"
 #include "degeneracy_utils.h"
 #include "utility.h"
@@ -155,8 +154,6 @@ private:
   gtsam::noiseModel::Diagonal::shared_ptr priorNoise;
   gtsam::noiseModel::Diagonal::shared_ptr odometryNoise;
   gtsam::noiseModel::Diagonal::shared_ptr externalOdometryNoise;
-  gtsam::noiseModel::Diagonal::shared_ptr axisSplitNoise;
-  gtsam::noiseModel::Diagonal::shared_ptr axisSplitNoZNoise;
   gtsam::noiseModel::Diagonal::shared_ptr planarConstraintNoise;
   gtsam::noiseModel::Diagonal::shared_ptr constraintNoise;
 
@@ -403,13 +400,8 @@ private:
   bool has_m2ci_af3_;
   size_t current_ground_size_;
   bool generate_testing_pg_;
-  bool axis_split_factor_enabled_;
   bool external_odom_factor_enabled_;
   bool planar_constraint_enabled_;
-  double axis_split_scan_z_variance_;
-  double axis_split_unobservable_z_variance_;
-  double axis_split_scan_z_min_information_;
-  double axis_split_scan_z_max_iteration_step_;
   double external_odom_rotation_variance_;
   double external_odom_translation_variance_;
   double planar_roll_pitch_variance_;
@@ -418,17 +410,10 @@ private:
   bool current_external_odom_valid_;
   bool previous_keyframe_external_odom_valid_;
   bool last_keyframe_inserted_;
-  bool last_axis_split_factor_added_;
   bool last_external_odom_factor_added_;
   bool last_planar_constraint_added_;
-  double last_axis_split_scan_delta_z_;
-  std::string last_axis_split_fallback_reason_;
-  double last_scan_z_information_;
-  bool last_scan_z_observable_;
-  bool last_scan_z_step_clamped_;
   gtsam::Pose3 current_external_odom_pose_;
   gtsam::Pose3 previous_keyframe_external_odom_pose_;
-  gtsam::Pose3 current_axis_split_odometry_pose_;
 };
 
 #endif // MAPOPTIMIZATION_H

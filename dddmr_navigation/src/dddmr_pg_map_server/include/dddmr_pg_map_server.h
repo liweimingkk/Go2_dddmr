@@ -103,16 +103,11 @@ private:
           response);
 
   float complete_map_voxel_size_;
-  float complete_ground_voxel_size_;
-  bool merge_non_ground_surface_into_mapcloud_;
-  float surface_ground_exclusion_radius_;
   geometry_msgs::msg::PoseArray key_poses_;
   
 public:
 
-  explicit DDDMRPGMapServer(
-      const std::string & name,
-      const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
+  DDDMRPGMapServer(std::string name);
   ~DDDMRPGMapServer();
 
   // Provide a typedef to ease future code maintenance
@@ -121,7 +116,7 @@ public:
   {
     return access_;
   }
-  sub_maps_mutex_t * access_{nullptr};
+  sub_maps_mutex_t * access_;
 
 };
 }  // namespace dddmr_pg_map_server

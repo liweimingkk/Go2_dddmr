@@ -28,7 +28,6 @@ class BagReader : public rclcpp::Node
     BagReader();
     std::string getBagFilePath(){return bag_file_dir_;}
     std::string getPointCloudTopic(){return point_cloud_topic_;}
-    std::string getMouthPointCloudTopic(){return mouth_point_cloud_topic_;}
     std::string getOdometryTopic(){return odometry_topic_;}
     void writeLog(std::string input_str){RCLCPP_INFO(this->get_logger(), "%s", input_str.c_str());}
     rclcpp::Time first_odom_stamp_, current_odom_stamp_;
@@ -44,7 +43,6 @@ class BagReader : public rclcpp::Node
 
     std::string bag_file_dir_;
     std::string point_cloud_topic_;
-    std::string mouth_point_cloud_topic_;
     std::string odometry_topic_;
     
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr sub_pause_;
@@ -68,12 +66,6 @@ BagReader::BagReader():Node("bag_reader"), pause_mapping_(true), save_current_ma
   declare_parameter("point_cloud_topic", rclcpp::ParameterValue(""));
   this->get_parameter("point_cloud_topic", point_cloud_topic_);
   RCLCPP_INFO(this->get_logger(), "point_cloud_topic: %s", point_cloud_topic_.c_str());
-
-  declare_parameter("mouth_point_cloud_topic", rclcpp::ParameterValue(""));
-  this->get_parameter("mouth_point_cloud_topic", mouth_point_cloud_topic_);
-  RCLCPP_INFO(
-    this->get_logger(), "mouth_point_cloud_topic: %s",
-    mouth_point_cloud_topic_.empty() ? "<disabled>" : mouth_point_cloud_topic_.c_str());
 
   declare_parameter("odometry_topic", rclcpp::ParameterValue(""));
   this->get_parameter("odometry_topic", odometry_topic_);
@@ -201,21 +193,6 @@ int main(int argc, char** argv) {
       else{
         BR->current_odom_stamp_ = msg.header.stamp;
       }
-    }
-
-    // The live mouth-ground path consumes a second, base_link-frame cloud.
-    // Feed the same stream during offline bag mapping so forward and reverse
-    // runs exercise identical fusion logic and timing checks.
-    if (
-      !BR->getMouthPointCloudTopic().empty() &&
-      topic == BR->getMouthPointCloudTopic() &&
-      topic != BR->getPointCloudTopic())
-    {
-      sensor_msgs::msg::PointCloud2 msg;
-      auto serializer = rclcpp::Serialization<sensor_msgs::msg::PointCloud2>();
-      serializer.deserialize_message(&extracted_serialized_msg, &msg);
-      IP->mouthCloudHandler(
-        std::make_shared<sensor_msgs::msg::PointCloud2>(std::move(msg)));
     }
 
     if (topic == BR->getPointCloudTopic())

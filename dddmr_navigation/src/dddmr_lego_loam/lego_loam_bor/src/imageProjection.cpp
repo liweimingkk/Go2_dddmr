@@ -27,7 +27,6 @@
 // POSSIBILITY OF SUCH DAMAGE.
 
 #include <boost/circular_buffer.hpp>
-#include <stdexcept>
 #include "imageProjection.h"
 
 using std::placeholders::_1;
@@ -216,10 +215,6 @@ ImageProjection::ImageProjection(std::string name, Channel<ProjectionOut>& outpu
   this->get_parameter("imageProjection.enable_mouth_ground_fusion", enable_mouth_ground_fusion_);
   RCLCPP_INFO(this->get_logger(), "imageProjection.enable_mouth_ground_fusion: %d", enable_mouth_ground_fusion_);
 
-  declare_parameter("imageProjection.mouth_ground_mode", rclcpp::ParameterValue("fixed_z"));
-  this->get_parameter("imageProjection.mouth_ground_mode", mouth_ground_mode_);
-  RCLCPP_INFO(this->get_logger(), "imageProjection.mouth_ground_mode: %s", mouth_ground_mode_.c_str());
-
   declare_parameter("imageProjection.mouth_cloud_topic", rclcpp::ParameterValue("/utlidar/cloud_base"));
   this->get_parameter("imageProjection.mouth_cloud_topic", mouth_cloud_topic_);
   RCLCPP_INFO(this->get_logger(), "imageProjection.mouth_cloud_topic: %s", mouth_cloud_topic_.c_str());
@@ -303,10 +298,6 @@ ImageProjection::ImageProjection(std::string name, Channel<ProjectionOut>& outpu
   this->get_parameter("imageProjection.mouth_voxel_size", mouth_voxel_size_);
   RCLCPP_INFO(this->get_logger(), "imageProjection.mouth_voxel_size: %.3f", mouth_voxel_size_);
 
-  declare_parameter("imageProjection.mouth_mapping_obstacle_voxel_size", rclcpp::ParameterValue(0.10));
-  this->get_parameter("imageProjection.mouth_mapping_obstacle_voxel_size", mouth_mapping_obstacle_voxel_size_);
-  RCLCPP_INFO(this->get_logger(), "imageProjection.mouth_mapping_obstacle_voxel_size: %.3f", mouth_mapping_obstacle_voxel_size_);
-
   declare_parameter("imageProjection.mouth_buffer_size", rclcpp::ParameterValue(90));
   this->get_parameter("imageProjection.mouth_buffer_size", mouth_buffer_size_);
   mouth_buffer_size_ = std::max(mouth_buffer_size_, 1);
@@ -315,100 +306,6 @@ ImageProjection::ImageProjection(std::string name, Channel<ProjectionOut>& outpu
   declare_parameter("imageProjection.mouth_min_points", rclcpp::ParameterValue(20));
   this->get_parameter("imageProjection.mouth_min_points", mouth_min_points_);
   RCLCPP_INFO(this->get_logger(), "imageProjection.mouth_min_points: %d", mouth_min_points_);
-
-  declare_parameter("imageProjection.mouth_normal_radius", rclcpp::ParameterValue(0.18));
-  this->get_parameter("imageProjection.mouth_normal_radius", mouth_surface_config_.normal_radius);
-  RCLCPP_INFO(this->get_logger(), "imageProjection.mouth_normal_radius: %.3f", mouth_surface_config_.normal_radius);
-
-  int mouth_min_normal_neighbors = 6;
-  declare_parameter("imageProjection.mouth_min_normal_neighbors", rclcpp::ParameterValue(6));
-  this->get_parameter("imageProjection.mouth_min_normal_neighbors", mouth_min_normal_neighbors);
-  mouth_surface_config_.minimum_neighbors =
-      static_cast<std::size_t>(std::max(mouth_min_normal_neighbors, 0));
-  RCLCPP_INFO(this->get_logger(), "imageProjection.mouth_min_normal_neighbors: %zu", mouth_surface_config_.minimum_neighbors);
-
-  declare_parameter("imageProjection.mouth_max_support_slope", rclcpp::ParameterValue(0.6108652381980153));
-  this->get_parameter("imageProjection.mouth_max_support_slope", mouth_surface_config_.maximum_slope);
-  RCLCPP_INFO(this->get_logger(), "imageProjection.mouth_max_support_slope: %.3f", mouth_surface_config_.maximum_slope);
-
-  declare_parameter("imageProjection.mouth_min_obstacle_slope", rclcpp::ParameterValue(0.9599310885968813));
-  this->get_parameter("imageProjection.mouth_min_obstacle_slope", mouth_surface_config_.minimum_obstacle_slope);
-  RCLCPP_INFO(this->get_logger(), "imageProjection.mouth_min_obstacle_slope: %.3f", mouth_surface_config_.minimum_obstacle_slope);
-
-  declare_parameter("imageProjection.mouth_max_planarity_residual", rclcpp::ParameterValue(0.035));
-  this->get_parameter("imageProjection.mouth_max_planarity_residual", mouth_surface_config_.maximum_planarity_residual);
-  RCLCPP_INFO(this->get_logger(), "imageProjection.mouth_max_planarity_residual: %.3f", mouth_surface_config_.maximum_planarity_residual);
-
-  declare_parameter("imageProjection.mouth_min_planar_spread", rclcpp::ParameterValue(0.020));
-  this->get_parameter("imageProjection.mouth_min_planar_spread", mouth_surface_config_.minimum_planar_spread);
-  RCLCPP_INFO(this->get_logger(), "imageProjection.mouth_min_planar_spread: %.3f", mouth_surface_config_.minimum_planar_spread);
-
-  declare_parameter("imageProjection.mouth_support_seed_z_min", rclcpp::ParameterValue(-0.50));
-  this->get_parameter("imageProjection.mouth_support_seed_z_min", mouth_surface_config_.support_seed_z_min);
-  RCLCPP_INFO(this->get_logger(), "imageProjection.mouth_support_seed_z_min: %.3f", mouth_surface_config_.support_seed_z_min);
-
-  declare_parameter("imageProjection.mouth_support_seed_z_max", rclcpp::ParameterValue(-0.18));
-  this->get_parameter("imageProjection.mouth_support_seed_z_max", mouth_surface_config_.support_seed_z_max);
-  RCLCPP_INFO(this->get_logger(), "imageProjection.mouth_support_seed_z_max: %.3f", mouth_surface_config_.support_seed_z_max);
-
-  declare_parameter("imageProjection.mouth_support_seed_x_max", rclcpp::ParameterValue(0.70));
-  this->get_parameter("imageProjection.mouth_support_seed_x_max", mouth_surface_config_.support_seed_x_max);
-  RCLCPP_INFO(this->get_logger(), "imageProjection.mouth_support_seed_x_max: %.3f", mouth_surface_config_.support_seed_x_max);
-
-  declare_parameter("imageProjection.mouth_support_seed_y_abs", rclcpp::ParameterValue(0.55));
-  this->get_parameter("imageProjection.mouth_support_seed_y_abs", mouth_surface_config_.support_seed_y_abs);
-  RCLCPP_INFO(this->get_logger(), "imageProjection.mouth_support_seed_y_abs: %.3f", mouth_surface_config_.support_seed_y_abs);
-
-  declare_parameter("imageProjection.mouth_support_reference_radius", rclcpp::ParameterValue(0.12));
-  this->get_parameter("imageProjection.mouth_support_reference_radius", mouth_surface_config_.support_reference_radius);
-  RCLCPP_INFO(this->get_logger(), "imageProjection.mouth_support_reference_radius: %.3f", mouth_surface_config_.support_reference_radius);
-
-  declare_parameter("imageProjection.mouth_support_connection_radius", rclcpp::ParameterValue(0.34));
-  this->get_parameter("imageProjection.mouth_support_connection_radius", mouth_surface_config_.support_connection_radius);
-  RCLCPP_INFO(this->get_logger(), "imageProjection.mouth_support_connection_radius: %.3f", mouth_surface_config_.support_connection_radius);
-
-  declare_parameter("imageProjection.mouth_maximum_step_height", rclcpp::ParameterValue(0.26));
-  this->get_parameter("imageProjection.mouth_maximum_step_height", mouth_surface_config_.maximum_step_height);
-  RCLCPP_INFO(this->get_logger(), "imageProjection.mouth_maximum_step_height: %.3f", mouth_surface_config_.maximum_step_height);
-
-  declare_parameter("imageProjection.mouth_same_surface_height_tolerance", rclcpp::ParameterValue(0.05));
-  this->get_parameter("imageProjection.mouth_same_surface_height_tolerance", mouth_surface_config_.same_surface_height_tolerance);
-  RCLCPP_INFO(this->get_logger(), "imageProjection.mouth_same_surface_height_tolerance: %.3f", mouth_surface_config_.same_surface_height_tolerance);
-
-  declare_parameter("imageProjection.mouth_minimum_patch_span", rclcpp::ParameterValue(0.20));
-  this->get_parameter("imageProjection.mouth_minimum_patch_span", mouth_surface_config_.minimum_patch_span);
-  RCLCPP_INFO(this->get_logger(), "imageProjection.mouth_minimum_patch_span: %.3f", mouth_surface_config_.minimum_patch_span);
-
-  declare_parameter("imageProjection.mouth_minimum_patch_minor_span", rclcpp::ParameterValue(0.10));
-  this->get_parameter("imageProjection.mouth_minimum_patch_minor_span", mouth_surface_config_.minimum_patch_minor_span);
-  RCLCPP_INFO(this->get_logger(), "imageProjection.mouth_minimum_patch_minor_span: %.3f", mouth_surface_config_.minimum_patch_minor_span);
-
-  int mouth_min_supported_component_points = 8;
-  declare_parameter("imageProjection.mouth_min_supported_component_points", rclcpp::ParameterValue(8));
-  this->get_parameter("imageProjection.mouth_min_supported_component_points", mouth_min_supported_component_points);
-  mouth_surface_config_.minimum_supported_component_points =
-      static_cast<std::size_t>(std::max(mouth_min_supported_component_points, 0));
-  RCLCPP_INFO(this->get_logger(), "imageProjection.mouth_min_supported_component_points: %zu", mouth_surface_config_.minimum_supported_component_points);
-
-  int mouth_minimum_stair_height_levels = 3;
-  declare_parameter("imageProjection.mouth_minimum_stair_height_levels", rclcpp::ParameterValue(3));
-  this->get_parameter("imageProjection.mouth_minimum_stair_height_levels", mouth_minimum_stair_height_levels);
-  mouth_surface_config_.minimum_stair_height_levels =
-      static_cast<std::size_t>(std::max(mouth_minimum_stair_height_levels, 0));
-  RCLCPP_INFO(this->get_logger(), "imageProjection.mouth_minimum_stair_height_levels: %zu", mouth_surface_config_.minimum_stair_height_levels);
-
-  if (mouth_ground_mode_ != "fixed_z" &&
-      mouth_ground_mode_ != "connected_surface") {
-    throw std::invalid_argument(
-        "imageProjection.mouth_ground_mode must be fixed_z or connected_surface");
-  }
-  std::string mouth_surface_error;
-  if (mouth_ground_mode_ == "connected_surface" &&
-      !lego_loam_bor::validateMouthGroundSurfaceConfig(
-          mouth_surface_config_, &mouth_surface_error)) {
-    throw std::invalid_argument(
-        "invalid connected mouth ground configuration: " + mouth_surface_error);
-  }
 
   if (enable_mouth_ground_fusion_) {
     // cloudHandler performs substantial projection work. Keep the auxiliary
@@ -426,9 +323,8 @@ ImageProjection::ImageProjection(std::string name, Channel<ProjectionOut>& outpu
         mouth_subscription_options);
 
     RCLCPP_INFO(this->get_logger(),
-                "Mouth ground fusion enabled in %s mode with %s sync. Subscribing to %s",
-                mouth_ground_mode_.c_str(), mouth_sync_mode_.c_str(),
-                mouth_cloud_topic_.c_str());
+                "Mouth ground fusion enabled with %s sync. Subscribing to %s",
+                mouth_sync_mode_.c_str(), mouth_cloud_topic_.c_str());
   }
 
   this->declare_parameter("imageProjection.trt_model_path", rclcpp::ParameterValue(""));
@@ -469,7 +365,6 @@ ImageProjection::ImageProjection(std::string name, Channel<ProjectionOut>& outpu
   _outlier_cloud.reset(new pcl::PointCloud<PointType>());
   patched_ground_.reset(new pcl::PointCloud<PointType>());
   patched_ground_edge_.reset(new pcl::PointCloud<PointType>());
-  mouth_mapping_obstacle_.reset(new pcl::PointCloud<PointType>());
 
   _full_cloud->points.resize(cloud_size);
   _full_info_cloud->points.resize(cloud_size);
@@ -499,7 +394,6 @@ void ImageProjection::resetParameters() {
   _segmented_cloud->clear();
   _segmented_cloud_pure->clear();
   _outlier_cloud->clear();
-  mouth_mapping_obstacle_->clear();
 
   _range_mat.resize(_vertical_scans, _horizontal_scans);
   _ground_mat.resize(_vertical_scans, _horizontal_scans);
@@ -815,9 +709,9 @@ void ImageProjection::appendMouthGroundToPatchedGround(
       new pcl::PointCloud<PointType>());
   pcl::fromROSMsg(mouth_filter_msg, *mouth_filter_cloud);
 
-  pcl::PointCloud<PointType>::Ptr mouth_roi_filter(
+  pcl::PointCloud<PointType>::Ptr mouth_ground_filter(
       new pcl::PointCloud<PointType>());
-  mouth_roi_filter->reserve(mouth_filter_cloud->size());
+  mouth_ground_filter->reserve(mouth_filter_cloud->size());
   const std::size_t raw_mouth_points =
       static_cast<std::size_t>(mouth_in.width) *
       static_cast<std::size_t>(mouth_in.height);
@@ -843,28 +737,41 @@ void ImageProjection::appendMouthGroundToPatchedGround(
       continue;
     }
 
+    if (p.z < mouth_ground_z_min_ || p.z > mouth_ground_z_max_) {
+      continue;
+    }
+
     PointType q = p;
     q.intensity = 0.0;
-    mouth_roi_filter->push_back(q);
+    mouth_ground_filter->push_back(q);
   }
 
-  if (static_cast<int>(mouth_roi_filter->size()) < mouth_min_points_) {
+  if (static_cast<int>(mouth_ground_filter->size()) < mouth_min_points_) {
     RCLCPP_INFO_THROTTLE(
         this->get_logger(),
         *this->get_clock(),
         2000,
-        "Mouth ground stats: mode=%s selected_dt=%.3f raw_points=%zu roi=%zu classified=0 appended=0 offset=%.3f",
-        mouth_ground_mode_.c_str(),
+        "Mouth ground stats: selected_dt=%.3f raw_points=%zu roi_pre_voxel=%zu after_voxel=0 appended=0 offset=%.3f",
         dt,
         raw_mouth_points,
-        mouth_roi_filter->size(),
+        mouth_ground_filter->size(),
         selected_time_offset_sec);
     return;
   }
 
+  Eigen::Affine3d eigen_filter_to_sensor =
+      tf2::transformToEigen(tf_filter_to_sensor);
+
+  pcl::PointCloud<PointType>::Ptr mouth_ground_sensor(
+      new pcl::PointCloud<PointType>());
+  pcl::transformPointCloud(
+      *mouth_ground_filter,
+      *mouth_ground_sensor,
+      eigen_filter_to_sensor);
+
   if (mouth_voxel_size_ > 0.0) {
     pcl::VoxelGrid<PointType> vg;
-    vg.setInputCloud(mouth_roi_filter);
+    vg.setInputCloud(mouth_ground_sensor);
     vg.setLeafSize(
         static_cast<float>(mouth_voxel_size_),
         static_cast<float>(mouth_voxel_size_),
@@ -873,127 +780,7 @@ void ImageProjection::appendMouthGroundToPatchedGround(
     pcl::PointCloud<PointType>::Ptr filtered(
         new pcl::PointCloud<PointType>());
     vg.filter(*filtered);
-    mouth_roi_filter = filtered;
-  }
-
-  const Eigen::Affine3d eigen_filter_to_sensor =
-      tf2::transformToEigen(tf_filter_to_sensor);
-
-  pcl::PointCloud<PointType>::Ptr mouth_ground_filter(
-      new pcl::PointCloud<PointType>());
-  pcl::PointCloud<PointType>::Ptr mouth_non_ground_filter(
-      new pcl::PointCloud<PointType>());
-  std::size_t mouth_unknown_count = 0U;
-  mouth_ground_filter->reserve(mouth_roi_filter->size());
-  mouth_non_ground_filter->reserve(mouth_roi_filter->size());
-  if (mouth_ground_mode_ == "fixed_z") {
-    for (const auto & point : mouth_roi_filter->points) {
-      if (point.z >= mouth_ground_z_min_ && point.z <= mouth_ground_z_max_) {
-        mouth_ground_filter->push_back(point);
-      }
-    }
-  } else {
-    if (filter_frame != base_ground_frame_) {
-      RCLCPP_WARN_THROTTLE(
-          this->get_logger(),
-          *this->get_clock(),
-          2000,
-          "Skip connected mouth ground: mouth_filter_frame=%s must match base_ground_frame=%s",
-          filter_frame.c_str(),
-          base_ground_frame_.c_str());
-      return;
-    }
-    pcl::PointCloud<PointType>::Ptr support_reference_filter(
-        new pcl::PointCloud<PointType>());
-    pcl::transformPointCloud(
-        *patched_ground_,
-        *support_reference_filter,
-        eigen_filter_to_sensor.inverse());
-    std::vector<int> finite_support_indices;
-    support_reference_filter->is_dense = false;
-    pcl::removeNaNFromPointCloud(
-        *support_reference_filter,
-        *support_reference_filter,
-        finite_support_indices);
-    auto classification = lego_loam_bor::classifyMouthGroundSurfaceDetailed(
-        *mouth_roi_filter,
-        mouth_surface_config_,
-        support_reference_filter.get());
-    if (std::count(
-        classification.supported_ground.begin(),
-        classification.supported_ground.end(), 1U) == 0)
-    {
-      // Fail closed: without an XT16-connected support seed, a low platform
-      // inside the body footprint is indistinguishable from traversable
-      // ground. Keep verified steep obstacles, but never reclassify ground
-      // without the support reference.
-      RCLCPP_WARN_THROTTLE(
-          this->get_logger(),
-          *this->get_clock(),
-          2000,
-          "XT16 ground supplied no connected mouth seed (%zu reference points); mouth ground remains empty",
-          support_reference_filter->size());
-    }
-    for (std::size_t index = 0; index < mouth_roi_filter->size(); ++index) {
-      if (classification.supported_ground[index] != 0U) {
-        mouth_ground_filter->push_back(mouth_roi_filter->points[index]);
-      } else if (classification.verified_obstacle[index] != 0U) {
-        mouth_non_ground_filter->push_back(mouth_roi_filter->points[index]);
-      } else {
-        ++mouth_unknown_count;
-      }
-    }
-  }
-
-  const bool ground_ready =
-      static_cast<int>(mouth_ground_filter->size()) >= mouth_min_points_;
-  if (!ground_ready) {
-    RCLCPP_INFO_THROTTLE(
-        this->get_logger(),
-        *this->get_clock(),
-        2000,
-        "Mouth ground classification below minimum: mode=%s selected_dt=%.3f raw_points=%zu roi=%zu classified=%zu required=%d offset=%.3f",
-        mouth_ground_mode_.c_str(),
-        dt,
-        raw_mouth_points,
-        mouth_roi_filter->size(),
-        mouth_ground_filter->size(),
-        mouth_min_points_,
-        selected_time_offset_sec);
-  }
-
-  pcl::PointCloud<PointType>::Ptr mouth_ground_sensor(
-      new pcl::PointCloud<PointType>());
-  if (ground_ready) {
-    pcl::transformPointCloud(
-        *mouth_ground_filter,
-        *mouth_ground_sensor,
-        eigen_filter_to_sensor);
-  }
-  pcl::PointCloud<PointType>::Ptr mouth_non_ground_sensor(
-      new pcl::PointCloud<PointType>());
-  if (static_cast<int>(mouth_non_ground_filter->size()) >= mouth_min_points_) {
-    pcl::transformPointCloud(
-        *mouth_non_ground_filter,
-        *mouth_non_ground_sensor,
-        eigen_filter_to_sensor);
-    if (mouth_mapping_obstacle_voxel_size_ > 0.0) {
-      pcl::VoxelGrid<PointType> obstacle_voxel;
-      obstacle_voxel.setInputCloud(mouth_non_ground_sensor);
-      const float leaf =
-          static_cast<float>(mouth_mapping_obstacle_voxel_size_);
-      obstacle_voxel.setLeafSize(leaf, leaf, leaf);
-      pcl::PointCloud<PointType>::Ptr filtered_obstacles(
-          new pcl::PointCloud<PointType>());
-      obstacle_voxel.filter(*filtered_obstacles);
-      mouth_non_ground_sensor = filtered_obstacles;
-    }
-    for (auto & point : mouth_non_ground_sensor->points) {
-      if (pcl::isFinite(point)) {
-        point.intensity = 0.0;
-        mouth_mapping_obstacle_->push_back(point);
-      }
-    }
+    mouth_ground_sensor = filtered;
   }
 
   std::size_t appended_count = 0;
@@ -1011,19 +798,15 @@ void ImageProjection::appendMouthGroundToPatchedGround(
       this->get_logger(),
       *this->get_clock(),
       2000,
-      "Mouth ground stats: mode=%s selected_dt=%.3f raw_points=%zu roi=%zu classified=%zu verified_obstacles=%zu unknown=%zu appended=%zu mapping_obstacles=%zu offset=%.3f",
-      mouth_ground_mode_.c_str(),
+      "Mouth ground stats: selected_dt=%.3f raw_points=%zu roi_pre_voxel=%zu after_voxel=%zu appended=%zu offset=%.3f",
       dt,
       raw_mouth_points,
-      mouth_roi_filter->size(),
+      mouth_ground_filter->size(),
       mouth_ground_sensor->size(),
-      mouth_non_ground_filter->size(),
-      mouth_unknown_count,
       appended_count,
-      mouth_mapping_obstacle_->size(),
       selected_time_offset_sec);
 
-  if (appended_count > 0U && _pub_mouth_ground_cloud &&
+  if (_pub_mouth_ground_cloud &&
       _pub_mouth_ground_cloud->get_subscription_count() > 0) {
     sensor_msgs::msg::PointCloud2 debug_msg;
     pcl::toROSMsg(*mouth_ground_sensor, debug_msg);
@@ -1789,7 +1572,6 @@ void ImageProjection::publishClouds() {
   out.segmented_cloud.reset(new pcl::PointCloud<PointType>());
   out.patched_ground.reset(new pcl::PointCloud<PointType>());
   out.patched_ground_edge.reset(new pcl::PointCloud<PointType>());
-  out.mapping_obstacle.reset(new pcl::PointCloud<PointType>());
   out.trans_c2s = trans_c2s_;
   out.trans_b2s = trans_b2s_;
   out.trans_m2ci = trans_m2ci_;
@@ -1803,7 +1585,6 @@ void ImageProjection::publishClouds() {
   std::swap(out.segmented_cloud, _segmented_cloud);
   std::swap(out.patched_ground, patched_ground_);
   std::swap(out.patched_ground_edge, patched_ground_edge_);
-  std::swap(out.mapping_obstacle, mouth_mapping_obstacle_);
   if(to_fa_)
     _output_channel.send( std::move(out) );
   first_frame_processed_++;

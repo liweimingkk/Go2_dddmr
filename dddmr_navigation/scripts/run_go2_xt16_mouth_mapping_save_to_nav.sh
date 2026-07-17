@@ -38,9 +38,6 @@ Common environment overrides:
   MOUTH_OFFSET_CONFIRMATIONS=2
   MOUTH_CLOUD_TOPIC=/utlidar/cloud_base
                              Use this topic for both measurement and mapping.
-  MOUTH_GROUND_TOPIC=/mouth_ground_cloud
-  MOUTH_GROUND_SAMPLE_TIMEOUT_SEC=20
-                             Refuse to save without a /mouth_ground_cloud sample.
   AUTO_MEASURE_ODOM_TIME_OFFSET=true
                              Measure and inject the odom/XT16 clock offset first.
   ODOM_OFFSET_MEASURE_SECONDS=8
@@ -95,9 +92,7 @@ MOUTH_OFFSET_STABLE_RANGE_SEC_VALUE="${MOUTH_OFFSET_STABLE_RANGE_SEC:-0.08}"
 MOUTH_OFFSET_MAX_CLOCK_STEP_SEC_VALUE="${MOUTH_OFFSET_MAX_CLOCK_STEP_SEC:-0.25}"
 MOUTH_OFFSET_CONFIRMATIONS_VALUE="${MOUTH_OFFSET_CONFIRMATIONS:-2}"
 MOUTH_OFFSET_CONSENSUS_TOLERANCE_SEC_VALUE="${MOUTH_OFFSET_CONSENSUS_TOLERANCE_SEC:-0.02}"
-MOUTH_GROUND_SAMPLE_TIMEOUT_SEC_VALUE="${MOUTH_GROUND_SAMPLE_TIMEOUT_SEC:-20}"
 MOUTH_CLOUD_TOPIC_VALUE="${MOUTH_CLOUD_TOPIC:-/utlidar/cloud_base}"
-MOUTH_GROUND_TOPIC_VALUE="${MOUTH_GROUND_TOPIC:-/mouth_ground_cloud}"
 AUTO_MEASURE_ODOM_TIME_OFFSET_VALUE="${AUTO_MEASURE_ODOM_TIME_OFFSET:-true}"
 ODOM_TIME_OFFSET_SEC_VALUE="${ODOM_TIME_OFFSET_SEC:-}"
 ODOM_OFFSET_MEASURE_SECONDS_VALUE="${ODOM_OFFSET_MEASURE_SECONDS:-8}"
@@ -577,29 +572,6 @@ exec python3 /root/dddmr_navigation/scripts/measure_go2_mouth_xt16_time_offset.p
 
   die "Could not obtain a stable mouth/XT16 time offset after ${MOUTH_OFFSET_MEASURE_ATTEMPTS_VALUE} attempt(s). Refusing to create a mouth-fusion map; check both point-cloud topics and timestamps, or set MOUTH_TIME_OFFSET_SEC explicitly."
 }
-
-require_mouth_ground_sample() {
-  is_positive_integer "${MOUTH_GROUND_SAMPLE_TIMEOUT_SEC_VALUE}" || \
-    die "MOUTH_GROUND_SAMPLE_TIMEOUT_SEC must be a positive integer."
-
-  local report rc width
-  log "Waiting for a fresh ${MOUTH_GROUND_TOPIC_VALUE} sample..."
-  set +e
-  report="$(docker_ros "timeout '${MOUTH_GROUND_SAMPLE_TIMEOUT_SEC_VALUE}' ros2 topic echo --once --field width '${MOUTH_GROUND_TOPIC_VALUE}' sensor_msgs/msg/PointCloud2" 2>&1)"
-  rc=$?
-  set -e
-  if [[ "${rc}" -ne 0 ]]; then
-    printf '%s\n' "${report}" >&2
-    die "No ${MOUTH_GROUND_TOPIC_VALUE} sample arrived within ${MOUTH_GROUND_SAMPLE_TIMEOUT_SEC_VALUE}s. Refusing to save a map without proven mouth-LiDAR ground contribution."
-  fi
-  printf '%s\n' "${report}"
-  width="$(grep -Eo '[0-9]+' <<<"${report}" | head -n 1 || true)"
-  if [[ ! "${width}" =~ ^[0-9]+$ ]] || (( 10#${width} <= 0 )); then
-    die "${MOUTH_GROUND_TOPIC_VALUE} arrived but contained no points. Refusing to save a map without proven mouth-LiDAR ground contribution."
-  fi
-  log "Received ${MOUTH_GROUND_TOPIC_VALUE} with width=${width}; mouth-LiDAR ground contribution is active."
-}
-
 measure_odom_time_offset() {
   if [[ -n "${ODOM_TIME_OFFSET_SEC_VALUE}" ]]; then
     is_number "${ODOM_TIME_OFFSET_SEC_VALUE}" || \
@@ -785,7 +757,6 @@ main() {
   log "Waiting for /save_mapped_point_cloud service..."
   wait_for_service /save_mapped_point_cloud 90 || die "Timed out waiting for /save_mapped_point_cloud"
   wait_for_topic /lego_loam_map 90 || die "Timed out waiting for /lego_loam_map"
-  require_mouth_ground_sample
   start_map_result_rviz
 
   if [[ -n "${MAPPING_SECONDS_VALUE}" ]]; then
@@ -795,8 +766,6 @@ main() {
     log "Mapping is running. Press Enter to save and update navigation config."
     read -r _
   fi
-
-  require_mouth_ground_sample
 
   local before_dir
   before_dir="$(newest_tmp_map_dir || true)"

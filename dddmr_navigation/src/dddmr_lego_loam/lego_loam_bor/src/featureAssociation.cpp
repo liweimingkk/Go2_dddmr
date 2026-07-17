@@ -1687,11 +1687,9 @@ void FeatureAssociation::runFeatureAssociation() {
 
     out.cloud_patched_ground_last.reset(new pcl::PointCloud<PointType>());
     out.cloud_patched_ground_edge_last.reset(new pcl::PointCloud<PointType>());
-    out.cloud_mapping_obstacle_last.reset(new pcl::PointCloud<PointType>());
 
     out.cloud_patched_ground_last = projection.patched_ground;
     out.cloud_patched_ground_edge_last = projection.patched_ground_edge;
-    out.cloud_mapping_obstacle_last = projection.mapping_obstacle;
 
     out.decisive_odometry = mappingOdometry;
     out.trans_c2s = trans_c2s_;

@@ -3,7 +3,6 @@
 
 #include "utility.h"
 #include "channel.h"
-#include "mouth_ground_surface.h"
 #include "receipt_sync_utils.h"
 #include <Eigen/QR>
 
@@ -46,9 +45,6 @@ class ImageProjection : public rclcpp::Node
     ~ImageProjection() = default;
     
     void cloudHandler(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
-    // Offline bag replay feeds the same auxiliary cloud callback used by the
-    // live subscription so both paths share synchronization and validation.
-    void mouthCloudHandler(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
     void tfInitial();
     
     bool to_fa_;
@@ -72,6 +68,7 @@ class ImageProjection : public rclcpp::Node
     void publishClouds();
     bool allEssentialTFReady(std::string sensor_frame);
     void getNoPitchPoint(PointType& pt_in, PointType& pt_out);
+    void mouthCloudHandler(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
     void appendMouthGroundToPatchedGround(
       const rclcpp::Time& main_stamp,
       const std::chrono::steady_clock::time_point& main_receipt);
@@ -87,7 +84,6 @@ class ImageProjection : public rclcpp::Node
     pcl::PointCloud<PointType>::Ptr _outlier_cloud;
     pcl::PointCloud<PointType>::Ptr patched_ground_;
     pcl::PointCloud<PointType>::Ptr patched_ground_edge_;
-    pcl::PointCloud<PointType>::Ptr mouth_mapping_obstacle_;
     pcl::PointCloud<PointType>::Ptr yolo_labelled_point_cloud_;
 
     pcl::VoxelGrid<PointType> dsf_patched_ground_;
@@ -133,7 +129,6 @@ class ImageProjection : public rclcpp::Node
     std::condition_variable mouth_cloud_cv_;
 
     bool enable_mouth_ground_fusion_;
-    std::string mouth_ground_mode_;
     std::string mouth_cloud_topic_;
     std::string mouth_frame_override_;
     std::string mouth_filter_frame_;
@@ -148,10 +143,8 @@ class ImageProjection : public rclcpp::Node
     double mouth_range_min_;
     double mouth_range_max_;
     double mouth_voxel_size_;
-    double mouth_mapping_obstacle_voxel_size_;
     int mouth_buffer_size_;
     int mouth_min_points_;
-    lego_loam_bor::MouthGroundSurfaceConfig mouth_surface_config_;
     
     cloud_msgs::msg::CloudInfo _seg_msg;
 

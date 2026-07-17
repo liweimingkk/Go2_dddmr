@@ -38,11 +38,6 @@ lego_loam_ip:
         ground_negative_stop: -3.1415926
 
         enable_mouth_ground_fusion: true
-        # Use local planar geometry plus a support-connected search. This lets
-        # successive treads enter the existing mapground without encoding the
-        # temporary test stair's height. fixed_z remains available as a
-        # stationary troubleshooting fallback.
-        mouth_ground_mode: "connected_surface"
         # Current validated Go2 topic. Raw /utlidar/cloud has frame
         # utlidar_lidar in this live graph and must not be treated as validated
         # until a correct utlidar_lidar TF is provided and checked.
@@ -50,9 +45,9 @@ lego_loam_ip:
         # /utlidar/cloud_base already publishes frame_id=base_link. Keep empty
         # by default so future frame mistakes are visible instead of masked.
         mouth_frame_override: ""
-        # The Go2 body controller keeps base_link approximately gravity
-        # aligned. The 35 degree surface envelope below tolerates normal body
-        # attitude changes while still rejecting stair risers.
+        # Temporary stationary-test filter frame. For walking mapping, prefer a
+        # trusted base_footprint or roll/pitch-compensated ground frame and
+        # retune mouth_ground_z_min/max around that frame's ground height.
         mouth_filter_frame: "base_link"
         # Keep this reusable YAML deterministic for bag/direct-handler replay.
         # The live mouth launch explicitly overrides it to receipt_time because
@@ -63,7 +58,9 @@ lego_loam_ip:
         mouth_max_time_diff: 0.03
         # The live launch overrides the mode and ignores this header offset.
         mouth_time_offset_sec: 0.0
-        # Used only when mouth_ground_mode=fixed_z.
+        # base_link-frame ground window for stationary Go2 standing height.
+        # Tune in RViz before any motion; do not use as a final walking setup
+        # without validating body roll/pitch effects.
         mouth_ground_z_min: -0.42
         mouth_ground_z_max: -0.18
         mouth_x_min: 0.05
@@ -71,34 +68,9 @@ lego_loam_ip:
         mouth_y_abs: 1.2
         mouth_range_min: 0.15
         mouth_range_max: 4.5
-        mouth_voxel_size: 0.03
-        mouth_mapping_obstacle_voxel_size: 0.10
+        mouth_voxel_size: 0.06
         mouth_buffer_size: 90
         mouth_min_points: 20
-        mouth_normal_radius: 0.18
-        mouth_min_normal_neighbors: 6
-        mouth_max_support_slope: 0.6108652382  # 35 degrees
-        mouth_min_obstacle_slope: 0.9599310886  # 55 degrees; 35-55 degrees remains unknown
-        mouth_max_planarity_residual: 0.035
-        mouth_min_planar_spread: 0.020
-        # This broad band describes the current foot-support surface relative
-        # to base_link. It anchors the connected search but does not limit the
-        # height of later treads.
-        mouth_support_seed_z_min: -0.50
-        mouth_support_seed_z_max: -0.18
-        mouth_support_seed_x_max: 0.70
-        mouth_support_seed_y_abs: 0.55
-        mouth_support_reference_radius: 0.12
-        # Robot capability/sampling envelope, not a measured stair constant.
-        mouth_support_connection_radius: 0.34
-        mouth_maximum_step_height: 0.26
-        mouth_same_surface_height_tolerance: 0.05
-        mouth_minimum_patch_span: 0.20
-        mouth_minimum_patch_minor_span: 0.10
-        mouth_min_supported_component_points: 8
-        # A single raised top is kept as an obstacle. Floor + at least two
-        # successive tread heights is treated as a stair chain.
-        mouth_minimum_stair_height_levels: 3
 
 lego_loam_fa:
   ros__parameters:
@@ -125,9 +97,7 @@ lego_loam_mo:
     use_sim_time: false
 
     mapping:
-        # Preserve treads that are visible for less than the default 0.5 m.
-        # This is spatial sampling resolution, independent of stair height.
-        distance_between_key_frame: 0.15
+        distance_between_key_frame: 0.5
         angle_between_key_frame: 0.5
         enable_loop_closure: false
         surrounding_keyframe_search_num: 50
@@ -137,23 +107,15 @@ lego_loam_mo:
         ground_voxel_size: 0.3
         broadcast_external_odom_tf: true
         # Eigen returns ascending eigenvalues with eigenvectors in columns.
-        # The full 6DoF diagnostic still uses these thresholds; axis-split
-        # mode solves its world-Z column conditionally instead of projecting it.
+        # Weak scan-to-map eigendirections are projected out with V D V^T.
         degeneracy_eigenvalue_thresholds: [100.0, 100.0, 100.0, 100.0, 100.0, 100.0]
-        # Keep the measured approximately 2 m stair rise from scan/ground geometry.
-        # Odom/IMU supplies rotation and world X/Y, never world Z.
-        axis_split_factor_enabled: true
-        axis_split_scan_z_variance: 0.01
-        axis_split_unobservable_z_variance: 1000000.0
-        axis_split_scan_z_min_information: 10.0
-        # Per LM iteration; diagnostics report whether any iteration was clamped.
-        axis_split_scan_z_max_iteration_step: 0.15
-        external_odom_factor_enabled: false
+        # Anchor corridor-weak directions with the synchronized external odom.
+        external_odom_factor_enabled: true
         external_odom_rotation_variance: 0.0025
         external_odom_translation_variance: 0.01
-        # Mutually exclusive with the axis-split factor: this legacy prior
-        # would pull Z back to the nearly planar external odometry trajectory.
-        planar_constraint_enabled: false
+        # On the flat indoor route, use the odom/IMU estimate for roll, pitch
+        # and z while leaving x, y and yaw effectively unconstrained here.
+        planar_constraint_enabled: true
         planar_roll_pitch_variance: 0.0025
         planar_z_variance: 0.01
         planar_unconstrained_variance: 1000000.0
@@ -161,5 +123,5 @@ lego_loam_mo:
 lego_loam_map_visualization:
   ros__parameters:
     use_sim_time: false
-    ground_voxel_size: 0.1
+    ground_voxel_size: 0.3
     ground_edge_threshold_num: 50
