@@ -19,13 +19,15 @@
   <arg name="mouth_cloud_topic" default="/utlidar/cloud_base"/>
   <arg name="mouth_frame_override" default=""/>
   <arg name="mouth_filter_frame" default="base_link"/>
-  <arg name="mouth_max_time_diff" default="0.08"/>
+  <arg name="mouth_ground_mode" default="connected_surface"/>
+  <arg name="mouth_max_time_diff" default="0.03"/>
   <arg name="mouth_time_offset_sec" default="0.0"/>
   <arg name="mouth_ground_z_min" default="-0.42"/>
   <arg name="mouth_ground_z_max" default="-0.18"/>
   <arg name="mouth_x_min" default="0.05"/>
   <arg name="mouth_x_max" default="3.0"/>
   <arg name="mouth_y_abs" default="1.2"/>
+  <arg name="mouth_maximum_step_height" default="0.26"/>
   <arg name="standardize_odom" default="false"/>
   <arg name="raw_odom_topic" default="/utlidar/robot_odom"/>
   <arg name="standardized_odom_topic" default="/dddmr_go2/robot_odom_standard"/>
@@ -57,6 +59,7 @@
     <param name="imageProjection.mouth_cloud_topic" value="$(var mouth_cloud_topic)"/>
     <param name="imageProjection.mouth_frame_override" value="$(var mouth_frame_override)"/>
     <param name="imageProjection.mouth_filter_frame" value="$(var mouth_filter_frame)"/>
+    <param name="imageProjection.mouth_ground_mode" value="$(var mouth_ground_mode)"/>
     <param name="imageProjection.mouth_max_time_diff" value="$(var mouth_max_time_diff)"/>
     <param name="imageProjection.mouth_time_offset_sec" value="$(var mouth_time_offset_sec)"/>
     <param name="imageProjection.mouth_ground_z_min" value="$(var mouth_ground_z_min)"/>
@@ -64,6 +67,7 @@
     <param name="imageProjection.mouth_x_min" value="$(var mouth_x_min)"/>
     <param name="imageProjection.mouth_x_max" value="$(var mouth_x_max)"/>
     <param name="imageProjection.mouth_y_abs" value="$(var mouth_y_abs)"/>
+    <param name="imageProjection.mouth_maximum_step_height" value="$(var mouth_maximum_step_height)"/>
     <param name="featureAssociation.odom_sync_tolerance_sec" value="$(var odom_sync_tolerance_sec)"/>
     <param name="featureAssociation.odom_sync_wait_timeout_sec" value="$(var odom_sync_wait_timeout_sec)"/>
     <param name="featureAssociation.odom_time_offset_sec" value="$(var odom_time_offset_sec)"/>

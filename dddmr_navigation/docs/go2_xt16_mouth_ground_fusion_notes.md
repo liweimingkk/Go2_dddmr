@@ -20,23 +20,43 @@ live `header.frame_id` was observed as `utlidar_lidar`, but that frame was not
 available in the current TF tree. Use raw `/utlidar/cloud` only after adding and
 checking the correct `utlidar_lidar` transform.
 
-## Stationary Test Assumption
+## Stair-Surface Classification
 
-The current `base_link` z-window filter is a stationary-only setup for the Go2
-standing pose:
+The Go2 mouth mapping config now uses:
 
-- `mouth_ground_z_min: -0.42`
-- `mouth_ground_z_max: -0.18`
+```yaml
+mouth_ground_mode: connected_surface
+```
 
-Do not treat this as a walking-mapping filter until one of these is true:
+This mode does not limit every accepted point to one fixed `base_link` height.
+It first finds locally planar support patches. A seed must be below and
+immediately ahead of the robot and must agree with the current XT16
+`patched_ground`; the mouth LiDAR therefore extends the roof-LiDAR ground map
+instead of inventing an unrelated floating surface. If no connected XT16 seed
+is available, mouth ground stays empty and the save workflow refuses to accept
+that as proof of ground fusion. It then follows
+independently sized patches through the configured Go2 step-capability
+envelope. A floor plus at least two successive tread heights is accepted as a
+stair chain. A single low box top, an unsupported horizontal platform, a
+narrow patch, a riser, and an excessive slope remain non-ground.
 
-- a stable `base_footprint` or another roll/pitch-compensated
-  `mouth_filter_frame` is implemented and validated; or
-- the current `base_link` z ROI is validated in RViz under expected
-  pitch/roll/body-height changes.
+`mouth_ground_z_min/max` are retained only for the explicit `fixed_z`
+stationary troubleshooting fallback. The connected mode instead uses the
+broad `mouth_support_seed_*` footprint to identify the current support surface;
+it does not encode the temporary test stair's rise or total physical step
+count. `mouth_minimum_stair_height_levels` is a conservative evidence count,
+not the expected staircase length.
+
+Accepted mouth points are appended to the existing `patched_ground` path and
+are saved in `ground.pcd/mapground`. Only verified steep planar returns enter
+the existing surface-keyframe path; low-confidence or unsupported returns stay
+unknown and are not written to either map layer. The Go2 map server removes
+surface points overlapping `mapground` and merges the remainder into the
+existing `mapcloud`. No `mapterrain` or third navigation map is created.
 
 Before walking mapping, explicitly verify in RViz that `/mouth_ground_cloud`
-remains ground-only under the expected body pitch, roll, and height changes.
+contains treads but not risers or nearby boxes under expected body attitude
+changes.
 
 ## Time Synchronization
 
@@ -51,7 +71,7 @@ lookup. Default:
 
 ```yaml
 mouth_time_offset_sec: 0.0
-mouth_max_time_diff: 0.08
+mouth_max_time_diff: 0.03
 ```
 
 In live testing after old containers were stopped, `/utlidar/cloud_base` header
@@ -60,11 +80,17 @@ timestamps lagged `/lidar_points` by about 2.5 seconds. With
 skipped.
 
 Only use an offset such as the current measured `mouth_time_offset_sec:=2.397`
-after confirming the offset is stable in the current live graph. Final
-deployment should keep
-`mouth_max_time_diff` around `0.08-0.15` after timestamps are fixed.
+after confirming the offset is stable in the current live graph.
 
-Before every live deployment, remeasure the current offset:
+The current fusion path does not compensate robot motion between the mouth
+timestamp and the XT16 timestamp. Walking mapping therefore keeps
+`mouth_max_time_diff:=0.03`; the remaining spatial error is bounded by robot
+speed times the residual time difference. Values above 0.03 are for stationary
+geometry diagnosis until a fixed-frame, cross-timestamp transform is available.
+
+The mapping-and-save script now performs this measurement automatically and
+refuses to save until it receives a non-empty `/mouth_ground_cloud` sample.
+For a manual check, run:
 
 ```bash
 source /opt/ros/humble/setup.bash

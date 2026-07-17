@@ -1,12 +1,20 @@
 #include <cmath>
 #include <cstdint>
 #include <deque>
+#include <functional>
+#include <limits>
 
+#include <gtsam/base/numericalDerivative.h>
+#include <gtsam/nonlinear/GaussNewtonOptimizer.h>
+#include <gtsam/nonlinear/NonlinearFactorGraph.h>
+#include <gtsam/nonlinear/Values.h>
+#include <gtsam/slam/PriorFactor.h>
 #include <gtest/gtest.h>
 #include <tf2/LinearMath/Matrix3x3.h>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
+#include "axis_split_factor.h"
 #include "degeneracy_utils.h"
 #include "odom_sync_utils.h"
 
@@ -185,6 +193,199 @@ TEST(OdomSelection, UsesNearestOnlyWhenExplicitlyAllowed)
   ASSERT_TRUE(after_timeout.valid);
   EXPECT_FALSE(after_timeout.interpolated);
   EXPECT_DOUBLE_EQ(after_timeout.odometry.pose.pose.position.x, 4.0);
+}
+
+gtsam::SharedNoiseModel makeAxisSplitTestNoise()
+{
+  gtsam::Vector6 variances;
+  variances << 0.0025, 0.0025, 0.0025, 0.01, 0.01, 0.01;
+  return gtsam::noiseModel::Diagonal::Variances(variances);
+}
+
+TEST(AxisSplitFactor, SelectsOdometryRotationAndWorldXYButScanZ)
+{
+  const gtsam::Pose3 previous_external(
+      gtsam::Rot3::RzRyRx(0.2, -0.35, 1.4),
+      gtsam::Point3(10.0, 20.0, 100.0));
+  const gtsam::Pose3 current_external(
+      gtsam::Rot3::RzRyRx(-0.1, 0.25, 1.7),
+      gtsam::Point3(12.0, 23.0, -50.0));
+  const gtsam::Pose3 previous_scan(
+      gtsam::Rot3::RzRyRx(-0.8, 0.7, -1.0),
+      gtsam::Point3(-40.0, 60.0, 5.0));
+  const gtsam::Pose3 current_scan(
+      gtsam::Rot3::RzRyRx(0.9, -0.6, 0.3),
+      gtsam::Point3(400.0, -600.0, 8.0));
+
+  const auto measurement = lego_loam_bor::makeAxisSplitMeasurement(
+      previous_external, current_external, previous_scan, current_scan);
+
+  EXPECT_TRUE(measurement.relative_rotation.equals(
+      previous_external.rotation().between(current_external.rotation()), 1e-12));
+  EXPECT_TRUE(measurement.world_translation_delta.isApprox(
+      (gtsam::Vector3() << 2.0, 3.0, 3.0).finished(), 1e-12));
+}
+
+TEST(AxisSplitFactor, UsesMapAlignedOdometryForWorldXY)
+{
+  const gtsam::Pose3 map_from_odom(
+      gtsam::Rot3::Rz(M_PI_2), gtsam::Point3(10.0, -4.0, 0.0));
+  const gtsam::Pose3 previous_raw_odom(
+      gtsam::Rot3::RzRyRx(0.1, -0.2, 0.3),
+      gtsam::Point3(1.0, 2.0, 80.0));
+  const gtsam::Pose3 current_raw_odom(
+      gtsam::Rot3::RzRyRx(-0.1, 0.25, 0.5),
+      gtsam::Point3(3.0, 2.0, -60.0));
+  const gtsam::Pose3 previous_map_odom =
+      map_from_odom.compose(previous_raw_odom);
+  const gtsam::Pose3 current_map_odom =
+      map_from_odom.compose(current_raw_odom);
+  const gtsam::Pose3 previous_scan(gtsam::Rot3(), gtsam::Point3(0.0, 0.0, 0.4));
+  const gtsam::Pose3 current_scan(gtsam::Rot3(), gtsam::Point3(0.0, 0.0, 2.4));
+
+  const auto measurement = lego_loam_bor::makeAxisSplitMeasurement(
+      previous_map_odom, current_map_odom, previous_scan, current_scan);
+  const gtsam::Vector3 expected_world_delta =
+      current_map_odom.translation() - previous_map_odom.translation();
+
+  EXPECT_NEAR(measurement.world_translation_delta.x(), 0.0, 1e-12);
+  EXPECT_NEAR(measurement.world_translation_delta.y(), 2.0, 1e-12);
+  EXPECT_NEAR(measurement.world_translation_delta.z(), 2.0, 1e-12);
+  EXPECT_NEAR(measurement.world_translation_delta.x(), expected_world_delta.x(), 1e-12);
+  EXPECT_NEAR(measurement.world_translation_delta.y(), expected_world_delta.y(), 1e-12);
+}
+
+TEST(AxisSplitFactor, SolvesObservableConditionalScanZ)
+{
+  const auto update = lego_loam_bor::solveAxisSplitScalarUpdate(
+      40.0, 2.0, 10.0, 0.15);
+
+  EXPECT_TRUE(update.observable);
+  EXPECT_FALSE(update.clamped);
+  EXPECT_DOUBLE_EQ(update.information, 40.0);
+  EXPECT_NEAR(update.delta, 0.05, 1e-12);
+}
+
+TEST(AxisSplitFactor, RejectsWeakScanZAndClampsLargeIterationSteps)
+{
+  const auto weak = lego_loam_bor::solveAxisSplitScalarUpdate(
+      9.0, 2.0, 10.0, 0.15);
+  const auto large = lego_loam_bor::solveAxisSplitScalarUpdate(
+      40.0, 20.0, 10.0, 0.15);
+
+  EXPECT_FALSE(weak.observable);
+  EXPECT_TRUE(large.observable);
+  EXPECT_TRUE(large.clamped);
+  EXPECT_DOUBLE_EQ(large.delta, 0.15);
+}
+
+TEST(AxisSplitFactor, HasWorldAxisResidualWithTiltedPoses)
+{
+  const gtsam::Pose3 previous_external(
+      gtsam::Rot3::RzRyRx(0.15, 0.35, M_PI_2),
+      gtsam::Point3(0.0, 0.0, 90.0));
+  const gtsam::Pose3 current_external(
+      gtsam::Rot3::RzRyRx(-0.12, 0.28, M_PI_2 + 0.2),
+      gtsam::Point3(1.5, -0.7, -30.0));
+  const gtsam::Pose3 previous_scan(gtsam::Rot3(), gtsam::Point3(9.0, 8.0, 2.0));
+  const gtsam::Pose3 current_scan(gtsam::Rot3(), gtsam::Point3(-9.0, -8.0, 5.0));
+  const auto measurement = lego_loam_bor::makeAxisSplitMeasurement(
+      previous_external, current_external, previous_scan, current_scan);
+  const lego_loam_bor::AxisSplitFactor factor(
+      0, 1, measurement, makeAxisSplitTestNoise());
+
+  const gtsam::Pose3 previous_estimate(
+      previous_external.rotation(), gtsam::Point3(3.0, 4.0, 2.0));
+  const gtsam::Pose3 current_estimate(
+      current_external.rotation(), gtsam::Point3(4.5, 3.3, 5.0));
+
+  EXPECT_LT(factor.evaluateError(previous_estimate, current_estimate).norm(), 1e-10);
+}
+
+TEST(AxisSplitFactor, AnalyticJacobiansMatchNumericalJacobians)
+{
+  const gtsam::Pose3 previous_external(
+      gtsam::Rot3::RzRyRx(0.2, -0.3, 1.1),
+      gtsam::Point3(0.0, 0.0, 50.0));
+  const gtsam::Pose3 current_external(
+      gtsam::Rot3::RzRyRx(-0.1, 0.25, 1.4),
+      gtsam::Point3(1.2, -0.8, -70.0));
+  const gtsam::Pose3 previous_scan(gtsam::Rot3(), gtsam::Point3(4.0, 5.0, 1.0));
+  const gtsam::Pose3 current_scan(gtsam::Rot3(), gtsam::Point3(-4.0, -5.0, 4.0));
+  const lego_loam_bor::AxisSplitFactor factor(
+      0, 1,
+      lego_loam_bor::makeAxisSplitMeasurement(
+          previous_external, current_external, previous_scan, current_scan),
+      makeAxisSplitTestNoise());
+  const gtsam::Pose3 previous_pose(
+      gtsam::Rot3::RzRyRx(0.18, -0.27, 1.05),
+      gtsam::Point3(2.0, -1.0, 0.7));
+  const gtsam::Pose3 current_pose(
+      gtsam::Rot3::RzRyRx(-0.07, 0.22, 1.38),
+      gtsam::Point3(3.1, -1.9, 3.9));
+  gtsam::Matrix analytic_previous;
+  gtsam::Matrix analytic_current;
+  factor.evaluateError(
+      previous_pose, current_pose, analytic_previous, analytic_current);
+  const std::function<gtsam::Vector6(
+      const gtsam::Pose3 &, const gtsam::Pose3 &)> error =
+      [&factor](const gtsam::Pose3 & first, const gtsam::Pose3 & second) {
+        return factor.evaluateError(first, second);
+      };
+
+  const gtsam::Matrix numerical_previous =
+      gtsam::numericalDerivative21<gtsam::Vector6, gtsam::Pose3, gtsam::Pose3>(
+      error, previous_pose, current_pose, 1e-6);
+  const gtsam::Matrix numerical_current =
+      gtsam::numericalDerivative22<gtsam::Vector6, gtsam::Pose3, gtsam::Pose3>(
+      error, previous_pose, current_pose, 1e-6);
+
+  EXPECT_TRUE(analytic_previous.isApprox(numerical_previous, 1e-5));
+  EXPECT_TRUE(analytic_current.isApprox(numerical_current, 1e-5));
+}
+
+TEST(AxisSplitFactor, OptimizesMeasuredScanRiseWithoutExternalZ)
+{
+  const gtsam::Pose3 previous_external(
+      gtsam::Rot3::RzRyRx(0.05, 0.3, M_PI_2),
+      gtsam::Point3(0.0, 0.0, 0.0));
+  const gtsam::Pose3 current_external(
+      gtsam::Rot3::RzRyRx(-0.03, 0.2, M_PI_2 + 0.15),
+      gtsam::Point3(2.0, -1.0, 0.0));
+  const gtsam::Pose3 previous_scan(gtsam::Rot3(), gtsam::Point3(50.0, 60.0, 0.0));
+  const gtsam::Pose3 current_scan(gtsam::Rot3(), gtsam::Point3(-50.0, -60.0, 2.0));
+  const gtsam::Pose3 previous_pose(previous_external.rotation(), gtsam::Point3(0.0, 0.0, 0.0));
+  const gtsam::Pose3 expected_current(current_external.rotation(), gtsam::Point3(2.0, -1.0, 2.0));
+
+  gtsam::NonlinearFactorGraph graph;
+  graph.add(gtsam::PriorFactor<gtsam::Pose3>(
+      0, previous_pose, gtsam::noiseModel::Isotropic::Variance(6, 1e-9)));
+  graph.add(lego_loam_bor::AxisSplitFactor(
+      0, 1,
+      lego_loam_bor::makeAxisSplitMeasurement(
+          previous_external, current_external, previous_scan, current_scan),
+      makeAxisSplitTestNoise()));
+  gtsam::Values initial;
+  initial.insert(0, previous_pose);
+  initial.insert(
+      1, gtsam::Pose3(gtsam::Rot3::RzRyRx(0.4, -0.2, 0.3),
+                      gtsam::Point3(-2.0, 4.0, 0.0)));
+
+  const gtsam::Values result = gtsam::GaussNewtonOptimizer(graph, initial).optimize();
+  const gtsam::Pose3 optimized = result.at<gtsam::Pose3>(1);
+
+  EXPECT_TRUE(optimized.rotation().equals(expected_current.rotation(), 1e-6));
+  EXPECT_TRUE(optimized.translation().isApprox(expected_current.translation(), 1e-6));
+}
+
+TEST(AxisSplitFactor, RejectsNonFiniteMeasurements)
+{
+  lego_loam_bor::AxisSplitMeasurement measurement;
+  measurement.world_translation_delta.z() =
+      std::numeric_limits<double>::quiet_NaN();
+  EXPECT_THROW(
+      lego_loam_bor::AxisSplitFactor(0, 1, measurement, makeAxisSplitTestNoise()),
+      std::invalid_argument);
 }
 
 }  // namespace

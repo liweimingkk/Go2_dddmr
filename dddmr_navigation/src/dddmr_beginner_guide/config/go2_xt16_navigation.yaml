@@ -29,7 +29,10 @@ mcl_ip:
         odom_type: "wheel_odometry"         # wheel_odometry/laser_odometry
         base_ground_frame: "base_link"
         num_vertical_scans: 16
-        num_horizontal_scans: 4000
+        # Current XT16 driver mode publishes 2000 samples/ring (32000 points)
+        # at 10 Hz. Match the range-image columns so adjacent samples remain
+        # adjacent during segmentation.
+        num_horizontal_scans: 2000
         vertical_angle_bottom: -15.0        # degrees
         vertical_angle_top: 15.0            # degrees
         scan_period: 0.1                    # seconds
@@ -72,6 +75,9 @@ map1:
   ros__parameters:
     pose_graph_dir: "/root/dddmr_bags/go2_xt16_mouth_mapping_20260714_153136_map_2026_07_14_07_31_36"
     complete_map_voxel_size: 0.2
+    complete_ground_voxel_size: 0.1
+    merge_non_ground_surface_into_mapcloud: true
+    surface_ground_exclusion_radius: 0.10
 
 sub_maps:
   ros__parameters:

@@ -111,4 +111,19 @@ install(DIRECTORY
 ament_export_include_directories(include)
 ament_export_libraries(dddmr_pg_map_server)
 ament_export_dependencies(${dependencies})
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_pg_map_server
+    test/test_pg_map_server.cpp
+  )
+  target_link_libraries(test_pg_map_server
+    dddmr_pg_map_server
+    ${PCL_LIBRARIES}
+  )
+  ament_target_dependencies(test_pg_map_server
+    ${dependencies}
+  )
+endif()
+
 ament_package()
