@@ -63,6 +63,7 @@ install(TARGETS
 install(PROGRAMS
   scripts/go2_nav_cmd_gate.py
   scripts/go2_nav_gate_policy.py
+  scripts/go2_pointcloud_stream_gate.py
   scripts/go2_sport_cmd_vel_dry_run.py
   scripts/go2_sport_cmd_vel_adapter.py
   DESTINATION lib/${PROJECT_NAME}
@@ -74,6 +75,16 @@ if(BUILD_TESTING)
     NAME test_go2_nav_gate_policy
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/test/test_go2_nav_gate_policy.py
+  )
+  add_test(
+    NAME test_go2_pointcloud_stream_gate
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/test/test_go2_pointcloud_stream_gate.py
+  )
+  add_test(
+    NAME test_go2_dds_receive_buffers
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/test/test_go2_dds_receive_buffers.py
   )
 endif()
 

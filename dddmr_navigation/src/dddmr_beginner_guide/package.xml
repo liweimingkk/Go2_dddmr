@@ -25,6 +25,7 @@
   <depend>tf2_ros</depend>
   <depend>pluginlib</depend>
   <depend>libpcl-all</depend>
+  <exec_depend>dddmr_route_navigation</exec_depend>
   <exec_depend>rclpy</exec_depend>
 
   <test_depend>ament_lint_common</test_depend>

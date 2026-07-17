@@ -1,0 +1,50 @@
+recorded_route_controller:
+  ros__parameters:
+    # This node has no auto-enable parameter by design. A route load always
+    # leaves output disabled until ~/set_enabled is called explicitly.
+    controller_frequency: 10.0
+    route_topic: "/recorded_route"
+    localization_status_topic: "/localization_status"
+    localization_status_timeout_sec: 0.75
+    pose_timeout_sec: 0.75
+    blocked_timeout_sec: 5.0
+
+    main_trajectory_generator: "differential_drive_simple"
+    initial_heading_trajectory_generator: "differential_drive_rotate_shortest_angle"
+    goal_heading_trajectory_generator: "differential_drive_rotate_shortest_angle"
+    align_goal_heading: true
+    allow_nearest_start: false
+    allow_reverse: false
+
+    # These are a second clamp after trajectory generation. The downstream Go2
+    # command gate remains authoritative and is also localization-gated.
+    max_linear_x: 0.35
+    max_linear_y: 0.0
+    max_angular_z: 0.50
+
+    route:
+      duplicate_distance: 0.02
+      resample_spacing: 0.10
+      max_input_segment_length: 2.0
+      progress_search_backward: 0.60
+      progress_search_forward: 2.00
+      local_plan_backward: 0.50
+      local_plan_forward: 5.00
+      corridor_max_xy_error: 0.60
+      corridor_max_z_error: 0.35
+      start_max_xy_error: 0.60
+      start_max_z_error: 0.35
+      goal_max_xy_error: 0.35
+      goal_max_z_error: 0.25
+
+mpc_critics:
+  ros__parameters:
+    # Keep the existing Go2 critics and add a hard 3D corridor only to the
+    # forward local-avoidance generator. Rotation remains collision-checked;
+    # the controller separately checks the robot's current corridor position.
+    plugins: ["collision", "route_corridor", "stick_path", "pure_pursuit", "toward_global_plan", "collision_rotate", "collision_rotate_shortest", "prefer_rotate_shortest", "collision_go2_heading_arc", "prefer_go2_heading_arc"]
+    route_corridor:
+      plugin: "mpc_critics::RouteCorridorModel"
+      trajectory_generator: differential_drive_simple
+      max_xy_distance: 0.60
+      max_z_distance: 0.35

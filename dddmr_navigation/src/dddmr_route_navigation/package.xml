@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>dddmr_route_navigation</name>
+  <version>0.1.0</version>
+  <description>Fail-closed 3D recorded-route following for DDDMR local navigation.</description>
+
+  <maintainer email="maintainer@example.com">DDDMR Go2 integration maintainers</maintainer>
+  <license>BSD-3-Clause</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>local_planner</depend>
+  <depend>perception_3d</depend>
+  <depend>mpc_critics</depend>
+  <depend>trajectory_generators</depend>
+  <depend>dddmr_sys_core</depend>
+  <depend>base_trajectory</depend>
+
+  <exec_depend>rclpy</exec_depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
