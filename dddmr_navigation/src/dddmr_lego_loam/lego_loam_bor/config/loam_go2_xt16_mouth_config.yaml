@@ -54,13 +54,14 @@ lego_loam_ip:
         # aligned. The 35 degree surface envelope below tolerates normal body
         # attitude changes while still rejecting stair risers.
         mouth_filter_frame: "base_link"
-        # Clouds are not motion-compensated across timestamps. Keep this close
-        # to the measured pairing window so walking motion is not written into
-        # the map as a spatial offset.
+        # Keep this reusable YAML deterministic for bag/direct-handler replay.
+        # The live mouth launch explicitly overrides it to receipt_time because
+        # the sensor clock epoch can change after a link reconnect.
+        mouth_sync_mode: "header_offset"
+        # Clouds are not motion-compensated across timestamps. This is the
+        # maximum pairing error and, in live receipt mode, the future wait cap.
         mouth_max_time_diff: 0.03
-        # Add a positive offset only after confirming the live mouth cloud
-        # header lag is stable. Values above 0.03 are stationary geometry
-        # smoke-test overrides until cross-timestamp motion compensation exists.
+        # The live launch overrides the mode and ignores this header offset.
         mouth_time_offset_sec: 0.0
         # Used only when mouth_ground_mode=fixed_z.
         mouth_ground_z_min: -0.42

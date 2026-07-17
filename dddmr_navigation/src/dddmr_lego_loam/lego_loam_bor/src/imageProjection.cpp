@@ -234,11 +234,42 @@ ImageProjection::ImageProjection(std::string name, Channel<ProjectionOut>& outpu
 
   declare_parameter("imageProjection.mouth_max_time_diff", rclcpp::ParameterValue(0.03));
   this->get_parameter("imageProjection.mouth_max_time_diff", mouth_max_time_diff_);
+  if (!std::isfinite(mouth_max_time_diff_) || mouth_max_time_diff_ < 0.0) {
+    throw std::invalid_argument(
+        "imageProjection.mouth_max_time_diff must be finite and nonnegative");
+  }
   RCLCPP_INFO(this->get_logger(), "imageProjection.mouth_max_time_diff: %.3f", mouth_max_time_diff_);
+
+  declare_parameter(
+      "imageProjection.mouth_sync_mode", rclcpp::ParameterValue("header_offset"));
+  this->get_parameter("imageProjection.mouth_sync_mode", mouth_sync_mode_);
+  if (mouth_sync_mode_ != "header_offset" &&
+      mouth_sync_mode_ != "receipt_time") {
+    throw std::invalid_argument(
+        "imageProjection.mouth_sync_mode must be header_offset or receipt_time");
+  }
+  if (mouth_sync_mode_ == "receipt_time" && mouth_max_time_diff_ <= 0.0) {
+    throw std::invalid_argument(
+        "imageProjection.mouth_max_time_diff must be positive in receipt_time mode");
+  }
+  RCLCPP_INFO(
+      this->get_logger(), "imageProjection.mouth_sync_mode: %s",
+      mouth_sync_mode_.c_str());
 
   declare_parameter("imageProjection.mouth_time_offset_sec", rclcpp::ParameterValue(0.0));
   this->get_parameter("imageProjection.mouth_time_offset_sec", mouth_time_offset_sec_);
+  if (!std::isfinite(mouth_time_offset_sec_)) {
+    throw std::invalid_argument(
+        "imageProjection.mouth_time_offset_sec must be finite");
+  }
   RCLCPP_INFO(this->get_logger(), "imageProjection.mouth_time_offset_sec: %.3f", mouth_time_offset_sec_);
+  if (mouth_sync_mode_ == "receipt_time" &&
+      std::abs(mouth_time_offset_sec_) > 1e-9) {
+    RCLCPP_WARN(
+        this->get_logger(),
+        "mouth_time_offset_sec %.6f is ignored in receipt_time mode",
+        mouth_time_offset_sec_);
+  }
 
   declare_parameter("imageProjection.mouth_ground_z_min", rclcpp::ParameterValue(-0.08));
   this->get_parameter("imageProjection.mouth_ground_z_min", mouth_ground_z_min_);
@@ -380,14 +411,24 @@ ImageProjection::ImageProjection(std::string name, Channel<ProjectionOut>& outpu
   }
 
   if (enable_mouth_ground_fusion_) {
+    // cloudHandler performs substantial projection work. Keep the auxiliary
+    // subscription in a different mutually-exclusive group so it can update
+    // the buffer while the main callback is running under a multi-threaded
+    // executor.
+    mouth_callback_group_ = this->create_callback_group(
+        rclcpp::CallbackGroupType::MutuallyExclusive);
+    rclcpp::SubscriptionOptions mouth_subscription_options;
+    mouth_subscription_options.callback_group = mouth_callback_group_;
     _sub_mouth_cloud = this->create_subscription<sensor_msgs::msg::PointCloud2>(
         mouth_cloud_topic_,
         rclcpp::QoS(rclcpp::KeepLast(mouth_buffer_size_)).durability_volatile().best_effort(),
-        std::bind(&ImageProjection::mouthCloudHandler, this, std::placeholders::_1));
+        std::bind(&ImageProjection::mouthCloudHandler, this, std::placeholders::_1),
+        mouth_subscription_options);
 
     RCLCPP_INFO(this->get_logger(),
-                "Mouth ground fusion enabled in %s mode. Subscribing to %s",
-                mouth_ground_mode_.c_str(), mouth_cloud_topic_.c_str());
+                "Mouth ground fusion enabled in %s mode with %s sync. Subscribing to %s",
+                mouth_ground_mode_.c_str(), mouth_sync_mode_.c_str(),
+                mouth_cloud_topic_.c_str());
   }
 
   this->declare_parameter("imageProjection.trt_model_path", rclcpp::ParameterValue(""));
@@ -559,15 +600,20 @@ bool ImageProjection::allEssentialTFReady(std::string sensor_frame){
 void ImageProjection::mouthCloudHandler(
     const sensor_msgs::msg::PointCloud2::SharedPtr msg)
 {
-  std::lock_guard<std::mutex> lock(mouth_cloud_mutex_);
-  mouth_cloud_buffer_.push_back(msg);
-  while (static_cast<int>(mouth_cloud_buffer_.size()) > mouth_buffer_size_) {
-    mouth_cloud_buffer_.pop_front();
+  const auto receipt = std::chrono::steady_clock::now();
+  {
+    std::lock_guard<std::mutex> lock(mouth_cloud_mutex_);
+    mouth_cloud_buffer_.push_back({msg, receipt});
+    while (static_cast<int>(mouth_cloud_buffer_.size()) > mouth_buffer_size_) {
+      mouth_cloud_buffer_.pop_front();
+    }
   }
+  mouth_cloud_cv_.notify_all();
 }
 
 void ImageProjection::appendMouthGroundToPatchedGround(
-    const rclcpp::Time& main_stamp)
+    const rclcpp::Time& main_stamp,
+    const std::chrono::steady_clock::time_point& main_receipt)
 {
   if (!enable_mouth_ground_fusion_) {
     return;
@@ -576,23 +622,104 @@ void ImageProjection::appendMouthGroundToPatchedGround(
   sensor_msgs::msg::PointCloud2::SharedPtr mouth_msg;
   double dt = std::numeric_limits<double>::infinity();
   rclcpp::Time selected_mouth_stamp = main_stamp;
+  double selected_time_offset_sec = mouth_time_offset_sec_;
+  double signed_receipt_dt_sec = std::numeric_limits<double>::quiet_NaN();
+  double raw_header_offset_sec = std::numeric_limits<double>::quiet_NaN();
+  bool needs_future_sample = true;
+  std::size_t buffered_samples = 0U;
   {
-    std::lock_guard<std::mutex> lock(mouth_cloud_mutex_);
-    for (const auto& candidate : mouth_cloud_buffer_) {
-      const rclcpp::Time corrected_stamp =
-          rclcpp::Time(candidate->header.stamp) +
-          rclcpp::Duration::from_seconds(mouth_time_offset_sec_);
-      const double candidate_dt =
-          std::abs((corrected_stamp - main_stamp).seconds());
-      if (candidate_dt < dt) {
-        mouth_msg = candidate;
-        dt = candidate_dt;
-        selected_mouth_stamp = corrected_stamp;
+    std::unique_lock<std::mutex> lock(mouth_cloud_mutex_);
+    const int64_t main_receipt_ns =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            main_receipt.time_since_epoch()).count();
+    const lego_loam_bor::ReceiptSyncSample receipt_target{
+        main_stamp.nanoseconds(), main_receipt_ns};
+
+    auto select_best = [&]() {
+      mouth_msg.reset();
+      dt = std::numeric_limits<double>::infinity();
+      signed_receipt_dt_sec = std::numeric_limits<double>::quiet_NaN();
+      raw_header_offset_sec = std::numeric_limits<double>::quiet_NaN();
+      needs_future_sample = true;
+      buffered_samples = mouth_cloud_buffer_.size();
+
+      if (mouth_sync_mode_ == "receipt_time") {
+        std::vector<lego_loam_bor::ReceiptSyncSample> candidates;
+        candidates.reserve(mouth_cloud_buffer_.size());
+        for (const auto & candidate : mouth_cloud_buffer_) {
+          const int64_t receipt_ns =
+              std::chrono::duration_cast<std::chrono::nanoseconds>(
+                  candidate.receipt.time_since_epoch()).count();
+          candidates.push_back({
+              rclcpp::Time(candidate.message->header.stamp).nanoseconds(),
+              receipt_ns});
+        }
+        const auto selection = lego_loam_bor::selectClosestReceiptSample(
+            candidates, receipt_target, mouth_max_time_diff_);
+        needs_future_sample = selection.needs_future;
+        if (!selection.has_sample) {
+          return;
+        }
+        mouth_msg = mouth_cloud_buffer_[selection.index].message;
+        dt = selection.sync_error_sec;
+        signed_receipt_dt_sec =
+            static_cast<double>(selection.signed_receipt_delta_ns) * 1e-9;
+        raw_header_offset_sec =
+            (main_stamp - rclcpp::Time(mouth_msg->header.stamp)).seconds();
+        selected_time_offset_sec =
+            static_cast<double>(selection.inferred_time_offset_ns) * 1e-9;
+        const int64_t shifted_stamp_ns =
+            lego_loam_bor::shiftHeaderByReceiptDelta(
+                main_stamp.nanoseconds(), selection.signed_receipt_delta_ns);
+        selected_mouth_stamp = rclcpp::Time(
+            std::max<int64_t>(shifted_stamp_ns, 0), main_stamp.get_clock_type());
+        return;
+      }
+
+      for (const auto & candidate : mouth_cloud_buffer_) {
+        const rclcpp::Time corrected_stamp =
+            rclcpp::Time(candidate.message->header.stamp) +
+            rclcpp::Duration::from_seconds(mouth_time_offset_sec_);
+        const double candidate_dt =
+            std::abs((corrected_stamp - main_stamp).seconds());
+        if (candidate_dt < dt) {
+          mouth_msg = candidate.message;
+          dt = candidate_dt;
+          selected_mouth_stamp = corrected_stamp;
+          const int64_t receipt_ns =
+              std::chrono::duration_cast<std::chrono::nanoseconds>(
+                  candidate.receipt.time_since_epoch()).count();
+          signed_receipt_dt_sec =
+              static_cast<double>(receipt_ns - main_receipt_ns) * 1e-9;
+          raw_header_offset_sec =
+              (main_stamp - rclcpp::Time(candidate.message->header.stamp)).seconds();
+          needs_future_sample = false;
+        }
+      }
+    };
+
+    select_best();
+    if (mouth_sync_mode_ == "receipt_time" && mouth_max_time_diff_ > 0.0) {
+      const auto deadline = main_receipt +
+          std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+              std::chrono::duration<double>(mouth_max_time_diff_));
+      // Use the closest causal sample immediately when it is inside the
+      // tolerance. Wait only when the buffer is empty or all samples are old.
+      while (needs_future_sample &&
+             std::chrono::steady_clock::now() < deadline) {
+        mouth_cloud_cv_.wait_until(lock, deadline);
+        select_best();
       }
     }
   }
 
   if (!mouth_msg) {
+    RCLCPP_WARN_THROTTLE(
+        this->get_logger(),
+        *this->get_clock(),
+        2000,
+        "Skip mouth cloud: sync_mode=%s no sample arrived within %.3f sec (buffered=%zu)",
+        mouth_sync_mode_.c_str(), mouth_max_time_diff_, buffered_samples);
     return;
   }
 
@@ -601,10 +728,14 @@ void ImageProjection::appendMouthGroundToPatchedGround(
         this->get_logger(),
         *this->get_clock(),
         2000,
-        "Skip mouth cloud: selected_dt %.3f > %.3f sec with mouth_time_offset_sec %.3f",
+        "Skip mouth cloud: sync_mode=%s selected_dt=%.3f max_dt=%.3f signed_receipt_dt=%.3f xt_minus_mouth_header=%.3f effective_offset=%.3f buffered=%zu",
+        mouth_sync_mode_.c_str(),
         dt,
         mouth_max_time_diff_,
-        mouth_time_offset_sec_);
+        signed_receipt_dt_sec,
+        raw_header_offset_sec,
+        selected_time_offset_sec,
+        buffered_samples);
     return;
   }
 
@@ -727,7 +858,7 @@ void ImageProjection::appendMouthGroundToPatchedGround(
         dt,
         raw_mouth_points,
         mouth_roi_filter->size(),
-        mouth_time_offset_sec_);
+        selected_time_offset_sec);
     return;
   }
 
@@ -828,7 +959,7 @@ void ImageProjection::appendMouthGroundToPatchedGround(
         mouth_roi_filter->size(),
         mouth_ground_filter->size(),
         mouth_min_points_,
-        mouth_time_offset_sec_);
+        selected_time_offset_sec);
   }
 
   pcl::PointCloud<PointType>::Ptr mouth_ground_sensor(
@@ -890,7 +1021,7 @@ void ImageProjection::appendMouthGroundToPatchedGround(
       mouth_unknown_count,
       appended_count,
       mouth_mapping_obstacle_->size(),
-      mouth_time_offset_sec_);
+      selected_time_offset_sec);
 
   if (appended_count > 0U && _pub_mouth_ground_cloud &&
       _pub_mouth_ground_cloud->get_subscription_count() > 0) {
@@ -905,6 +1036,8 @@ void ImageProjection::appendMouthGroundToPatchedGround(
 
 void ImageProjection::cloudHandler(
     const sensor_msgs::msg::PointCloud2::SharedPtr laserCloudMsg){
+
+  const auto main_receipt = std::chrono::steady_clock::now();
 
   if(!allEssentialTFReady(laserCloudMsg->header.frame_id))
     return;
@@ -954,7 +1087,8 @@ void ImageProjection::cloudHandler(
   // Mark ground points
   zPitchRollFeatureRemoval();
   // Append ground-only ROI from the Go2 mouth lidar after patched_ground_ is rebuilt.
-  appendMouthGroundToPatchedGround(rclcpp::Time(laserCloudMsg->header.stamp));
+  appendMouthGroundToPatchedGround(
+      rclcpp::Time(laserCloudMsg->header.stamp), main_receipt);
   // Point cloud segmentation
   cloudSegmentation();
   //publish (optionally)

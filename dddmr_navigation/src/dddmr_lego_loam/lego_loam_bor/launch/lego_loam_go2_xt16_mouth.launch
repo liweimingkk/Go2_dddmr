@@ -20,6 +20,7 @@
   <arg name="mouth_frame_override" default=""/>
   <arg name="mouth_filter_frame" default="base_link"/>
   <arg name="mouth_ground_mode" default="connected_surface"/>
+  <arg name="mouth_sync_mode" default="receipt_time"/>
   <arg name="mouth_max_time_diff" default="0.03"/>
   <arg name="mouth_time_offset_sec" default="0.0"/>
   <arg name="mouth_ground_z_min" default="-0.42"/>
@@ -60,6 +61,7 @@
     <param name="imageProjection.mouth_frame_override" value="$(var mouth_frame_override)"/>
     <param name="imageProjection.mouth_filter_frame" value="$(var mouth_filter_frame)"/>
     <param name="imageProjection.mouth_ground_mode" value="$(var mouth_ground_mode)"/>
+    <param name="imageProjection.mouth_sync_mode" value="$(var mouth_sync_mode)"/>
     <param name="imageProjection.mouth_max_time_diff" value="$(var mouth_max_time_diff)"/>
     <param name="imageProjection.mouth_time_offset_sec" value="$(var mouth_time_offset_sec)"/>
     <param name="imageProjection.mouth_ground_z_min" value="$(var mouth_ground_z_min)"/>
