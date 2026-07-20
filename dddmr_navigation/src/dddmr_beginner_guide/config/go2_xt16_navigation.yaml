@@ -173,8 +173,8 @@ local_planner:
     prune_plane_timeout: 3.0
     # Coarse base alignment for arm grasping. Camera/arm control performs the
     # final object-relative correction after navigation succeeds.
-    xy_goal_tolerance: 0.08
-    yaw_goal_tolerance: 0.10
+    xy_goal_tolerance: 0.25
+    yaw_goal_tolerance: 0.15
     controller_frequency: 10.0
     debug_rejection_report: true
     # Hold a collision-accepted in-place turn direction across control cycles.
