@@ -32,6 +32,8 @@ Common environment overrides:
   AUTO_MEASURE_ODOM_TIME_OFFSET=true
   ODOM_SYNC_TOLERANCE_SEC=0.05
   ODOM_SYNC_WAIT_TIMEOUT_SEC=0.1
+  LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC=0.35
+  GO2_NAV_OBSERVATION_WINDOW_SEC=20.0
   DDDMR_BAGS_DIR=../bags
   NAV_CONTAINER_NAME=...
 
@@ -86,6 +88,9 @@ ODOM_SYNC_TOLERANCE_SEC_VALUE="${ODOM_SYNC_TOLERANCE_SEC:-0.05}"
 ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE="${ODOM_SYNC_WAIT_TIMEOUT_SEC:-0.1}"
 ODOM_OFFSET_RESOLVER="${GO2_ODOM_TIME_OFFSET_RESOLVER:-${SCRIPT_DIR}/resolve_go2_odom_time_offset.sh}"
 ODOM_SYNC_CHECKER="${GO2_ODOM_SYNC_CHECKER:-${SCRIPT_DIR}/check_go2_odom_sync.py}"
+DDS_BUFFER_CHECK="${SCRIPT_DIR}/check_go2_dds_receive_buffers.sh"
+OBSERVATION_GATE_SOURCE="${WS_ROOT}/src/dddmr_beginner_guide/scripts/go2_pointcloud_stream_gate.py"
+CURRENT_OBSERVATION_TOPIC="/perception_3d_local/lidar/current_observation"
 BUILD_BASE_VALUE="${DDDMR_BUILD_BASE:-.docker_go2_xt16_build}"
 INSTALL_BASE_VALUE="${DDDMR_INSTALL_BASE:-.docker_go2_xt16_install}"
 LOG_BASE_VALUE="${DDDMR_LOG_BASE:-.docker_go2_xt16_log}"
@@ -96,11 +101,20 @@ MAX_YAW_VALUE="${MAX_YAW:-0.50}"
 MAX_Y_VALUE="${MAX_Y:-0.0}"
 RUN_SECONDS_VALUE="${RUN_SECONDS:-}"
 STOP_EXISTING_VALUE="${STOP_EXISTING:-false}"
+LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC_VALUE="${LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC:-0.35}"
+OBSERVATION_WINDOW_SEC_VALUE="${GO2_NAV_OBSERVATION_WINDOW_SEC:-20.0}"
+OBSERVATION_TIMEOUT_SEC_VALUE="${GO2_NAV_OBSERVATION_TIMEOUT_SEC:-30.0}"
+OBSERVATION_MIN_SAMPLES_VALUE="${GO2_NAV_OBSERVATION_MIN_SAMPLES:-140}"
+OBSERVATION_MIN_RATE_HZ_VALUE="${GO2_NAV_OBSERVATION_MIN_RATE_HZ:-7.0}"
+OBSERVATION_MAX_HEADER_GAP_SEC_VALUE="${GO2_NAV_OBSERVATION_MAX_HEADER_GAP_SEC:-0.25}"
+OBSERVATION_MAX_RECEIVE_GAP_SEC_VALUE="${GO2_NAV_OBSERVATION_MAX_RECEIVE_GAP_SEC:-0.25}"
+OBSERVATION_MAX_FUTURE_SKEW_SEC_VALUE="${GO2_NAV_OBSERVATION_MAX_FUTURE_SKEW_SEC:-0.05}"
 LIVE_CONFIRM_PHRASE="I_AM_SUPERVISING_GO2_NAV"
 CONTAINER_NAME="${NAV_CONTAINER_NAME:-go2_xt16_nav_${mode//-/_}_x${MAX_X_VALUE//./}_yaw${MAX_YAW_VALUE//./}_$(date +%Y%m%d_%H%M%S)}"
 RUN_LOG_DIR="${RUN_LOG_DIR:-${WS_ROOT}/run_logs}"
 ADAPTER_LOG_CONTAINER="/root/dddmr_navigation/run_logs/${CONTAINER_NAME}_adapter.log"
 ADAPTER_LOG_HOST="${RUN_LOG_DIR}/${CONTAINER_NAME}_adapter.log"
+PERCEPTION_GATE_LOG_HOST="${RUN_LOG_DIR}/${CONTAINER_NAME}_perception_gate.log"
 runtime_started="false"
 
 if [[ "${mode}" == "live" && -z "${RUN_SECONDS_VALUE}" ]]; then
@@ -122,6 +136,43 @@ is_number() {
 
 is_nonnegative_number() {
   is_number "$1" && awk -v value="$1" 'BEGIN { exit !(value >= 0) }'
+}
+
+is_positive_number() {
+  is_number "$1" && awk -v value="$1" 'BEGIN { exit !(value > 0) }'
+}
+
+validate_perception_settings() {
+  [[ -x "${DDS_BUFFER_CHECK}" ]] || \
+    die "Go2 DDS receive-buffer check is not executable: ${DDS_BUFFER_CHECK}"
+  [[ -f "${OBSERVATION_GATE_SOURCE}" ]] || \
+    die "Local perception stream gate is missing: ${OBSERVATION_GATE_SOURCE}"
+  is_positive_number "${LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC_VALUE}" || \
+    die "LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC must be a finite positive number."
+  awk -v value="${LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC_VALUE}" \
+    'BEGIN { exit !(value <= 0.35) }' || \
+    die "LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC must not exceed the 0.35s safety cap."
+  is_positive_number "${OBSERVATION_WINDOW_SEC_VALUE}" || \
+    die "GO2_NAV_OBSERVATION_WINDOW_SEC must be a finite positive number."
+  is_positive_number "${OBSERVATION_TIMEOUT_SEC_VALUE}" || \
+    die "GO2_NAV_OBSERVATION_TIMEOUT_SEC must be a finite positive number."
+  [[ "${OBSERVATION_MIN_SAMPLES_VALUE}" =~ ^[1-9][0-9]*$ ]] && \
+    (( OBSERVATION_MIN_SAMPLES_VALUE >= 2 )) || \
+    die "GO2_NAV_OBSERVATION_MIN_SAMPLES must be an integer of at least 2."
+  is_positive_number "${OBSERVATION_MIN_RATE_HZ_VALUE}" || \
+    die "GO2_NAV_OBSERVATION_MIN_RATE_HZ must be a finite positive number."
+  is_positive_number "${OBSERVATION_MAX_HEADER_GAP_SEC_VALUE}" || \
+    die "GO2_NAV_OBSERVATION_MAX_HEADER_GAP_SEC must be a finite positive number."
+  is_positive_number "${OBSERVATION_MAX_RECEIVE_GAP_SEC_VALUE}" || \
+    die "GO2_NAV_OBSERVATION_MAX_RECEIVE_GAP_SEC must be a finite positive number."
+  is_nonnegative_number "${OBSERVATION_MAX_FUTURE_SKEW_SEC_VALUE}" || \
+    die "GO2_NAV_OBSERVATION_MAX_FUTURE_SKEW_SEC must be finite and nonnegative."
+  awk \
+    -v timeout="${OBSERVATION_TIMEOUT_SEC_VALUE}" \
+    -v window="${OBSERVATION_WINDOW_SEC_VALUE}" \
+    -v gap="${OBSERVATION_MAX_RECEIVE_GAP_SEC_VALUE}" \
+    'BEGIN { exit !(timeout > window + gap && timeout <= 45.0) }' || \
+    die "Observation timeout must exceed window plus receive gap and be at most 45s."
 }
 
 resolve_odom_time_offset() {
@@ -395,6 +446,57 @@ check_topic_contract() {
     die "Topic ${topic} requires at least ${minimum_subscriptions} subscriber(s); found ${subscription_count}."
 }
 
+read_local_lidar_freshness_limit() {
+  local report value
+  report="$(docker_ros \
+    "timeout 10 ros2 param get /perception_3d_local lidar.expected_sensor_time" \
+    2>&1)" || {
+    printf '%s\n' "${report}" >&2
+    die "Could not read the local LiDAR freshness limit."
+  }
+  value="$(awk -F': ' '/Double value is:/ {print $2; exit}' <<<"${report}")"
+  is_positive_number "${value}" || \
+    die "Invalid lidar.expected_sensor_time response: ${report}"
+  awk \
+    -v actual="${value}" \
+    -v requested="${LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC_VALUE}" \
+    'BEGIN { delta=actual-requested; if(delta<0) delta=-delta; exit !(delta <= 1e-6) }' || \
+    die "Local LiDAR freshness limit ${value}s does not match requested ${LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC_VALUE}s."
+  LOCAL_LIDAR_RUNTIME_FRESHNESS_SEC_VALUE="${value}"
+  log "Local LiDAR hard freshness limit: ${value}s"
+}
+
+require_current_observation_stream() {
+  local output status gate_path
+  gate_path="/root/dddmr_navigation/src/dddmr_beginner_guide/scripts/go2_pointcloud_stream_gate.py"
+
+  read_local_lidar_freshness_limit
+  log "Validating ${OBSERVATION_WINDOW_SEC_VALUE}s of fresh local LiDAR observations before enabling Sport output..."
+  set +e
+  output="$(docker_ros \
+    "timeout -s INT -k 1s 50s python3 '${gate_path}' \
+      --topic '${CURRENT_OBSERVATION_TOPIC}' \
+      --window-sec '${OBSERVATION_WINDOW_SEC_VALUE}' \
+      --timeout-sec '${OBSERVATION_TIMEOUT_SEC_VALUE}' \
+      --min-samples '${OBSERVATION_MIN_SAMPLES_VALUE}' \
+      --min-rate-hz '${OBSERVATION_MIN_RATE_HZ_VALUE}' \
+      --max-header-gap-sec '${OBSERVATION_MAX_HEADER_GAP_SEC_VALUE}' \
+      --max-receive-gap-sec '${OBSERVATION_MAX_RECEIVE_GAP_SEC_VALUE}' \
+      --max-header-age-sec '${LOCAL_LIDAR_RUNTIME_FRESHNESS_SEC_VALUE}' \
+      --max-future-skew-sec '${OBSERVATION_MAX_FUTURE_SKEW_SEC_VALUE}' \
+      --expected-publishers 1" 2>&1)"
+  status=$?
+  set -e
+  printf '%s\n' "${output}" | tee "${PERCEPTION_GATE_LOG_HOST}"
+
+  if (( status != 0 )) || \
+     ! grep -Fxq 'CURRENT_OBSERVATION_GATE=PASS' <<<"${output}"; then
+    docker logs --tail 120 "${CONTAINER_NAME}" 2>&1 || true
+    die "Local LiDAR observations did not remain fresh; Sport output was not enabled."
+  fi
+  log "Sustained local LiDAR freshness gate passed."
+}
+
 start_container() {
   mkdir -p "${BAGS_DIR}" "${RUN_LOG_DIR}"
 
@@ -403,6 +505,9 @@ start_container() {
   fi
 
   log "Starting navigation container: ${CONTAINER_NAME}"
+  if [[ "${mode}" == "live" ]]; then
+    log "Do not send an RViz goal until all readiness checks have passed."
+  fi
   docker run -d \
     --name "${CONTAINER_NAME}" \
     --label "dddmr.go2_xt16_navigation=true" \
@@ -437,6 +542,7 @@ exec ros2 launch dddmr_beginner_guide go2_xt16_navigation.launch \
   odom_sync_tolerance_sec:=${ODOM_SYNC_TOLERANCE_SEC_VALUE} \
   odom_sync_wait_timeout_sec:=${ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE} \
   odom_time_offset_sec:=${ODOM_TIME_OFFSET_SEC_VALUE} \
+  local_lidar_expected_sensor_time_sec:=${LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC_VALUE} \
   go2_nav_cmd_gate_max_x:=${MAX_X_VALUE} \
   go2_nav_cmd_gate_max_y:=${MAX_Y_VALUE} \
   sport_dry_run_max_x:=${MAX_X_VALUE} \
@@ -445,6 +551,10 @@ exec ros2 launch dddmr_beginner_guide go2_xt16_navigation.launch \
   go2_sport_max_y:=${MAX_Y_VALUE} \
   go2_nav_cmd_gate_max_yaw:=${MAX_YAW_VALUE} \
   sport_dry_run_max_yaw:=${MAX_YAW_VALUE} \
+  start_sport_dry_run_adapter:=true \
+  start_go2_sport_adapter:=false \
+  go2_sport_enable_output:=false \
+  go2_sport_allow_real_request_topic:=false \
   go2_sport_max_yaw:=${MAX_YAW_VALUE}" >/dev/null
 
   printf '%s\n' "${CONTAINER_NAME}" >/tmp/go2_xt16_nav_current_name.txt
@@ -520,6 +630,9 @@ main() {
 
   require_docker_image
   assert_clean_runtime
+  validate_perception_settings
+  log "Checking host DDS receive buffers before starting any ROS node..."
+  "${DDS_BUFFER_CHECK}" || die "Host DDS receive-buffer check failed."
   resolve_odom_time_offset
   start_container
   runtime_started="true"
@@ -551,6 +664,7 @@ main() {
     check_topic_contract /lowstate unitree_go/msg/LowState 1 0
     wait_for_topic /sportmodestate 60 || die "Timed out waiting for /sportmodestate"
     check_topic_contract /sportmodestate unitree_go/msg/SportModeState 1 0
+    require_current_observation_stream
     start_live_adapter
     sleep 2
   fi

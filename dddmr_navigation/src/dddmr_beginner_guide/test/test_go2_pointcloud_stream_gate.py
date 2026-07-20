@@ -15,6 +15,8 @@ from go2_pointcloud_stream_gate import (  # noqa: E402
 
 
 class PointCloudStreamGateTest(unittest.TestCase):
+    ROS_BASE_NS = 1_000_000_000_000_000_000
+
     def setUp(self):
         self.thresholds = StreamThresholds(
             window_sec=3.0,
@@ -22,6 +24,8 @@ class PointCloudStreamGateTest(unittest.TestCase):
             min_rate_hz=7.0,
             max_header_gap_sec=0.25,
             max_receive_gap_sec=0.20,
+            max_header_age_sec=0.20,
+            max_future_skew_sec=0.05,
         )
 
     def evaluate(
@@ -30,18 +34,30 @@ class PointCloudStreamGateTest(unittest.TestCase):
         header_times=None,
         *,
         evaluation_time=3.05,
+        header_age_sec=0.05,
+        evaluation_ros_time=None,
         publisher_count=1,
         topic_types=(POINTCLOUD2_TYPE,),
     ):
         if header_times is None:
             header_times = receipt_times
+        if evaluation_ros_time is None:
+            evaluation_ros_time = evaluation_time + header_age_sec
         return evaluate_stream(
             receipt_times=receipt_times,
+            ros_receipt_times_ns=[
+                self.ROS_BASE_NS
+                + int((value + header_age_sec) * 1_000_000_000)
+                for value in receipt_times
+            ],
             header_stamps_ns=[
-                1_000_000_000 + int(value * 1_000_000_000)
+                self.ROS_BASE_NS + int(value * 1_000_000_000)
                 for value in header_times
             ],
             evaluation_time=evaluation_time,
+            evaluation_ros_time_ns=(
+                self.ROS_BASE_NS + int(evaluation_ros_time * 1_000_000_000)
+            ),
             publisher_count=publisher_count,
             topic_types=topic_types,
             thresholds=self.thresholds,
@@ -110,6 +126,43 @@ class PointCloudStreamGateTest(unittest.TestCase):
         wrong_type = self.evaluate(times, topic_types=("std_msgs/msg/String",))
         self.assertFalse(wrong_type.passed)
         self.assertTrue(any(reason.startswith("topic_types=") for reason in wrong_type.reasons))
+
+    def test_consistently_delayed_stream_fails_absolute_age(self):
+        times = [index / 10.0 for index in range(31)]
+        result = self.evaluate(times, header_age_sec=0.25, evaluation_ros_time=3.25)
+        self.assertFalse(result.passed)
+        self.assertTrue(any(reason.startswith("max_header_age=") for reason in result.reasons))
+
+    def test_future_header_stamp_fails_clock_skew(self):
+        times = [index / 10.0 for index in range(31)]
+        result = self.evaluate(times, header_age_sec=-0.10, evaluation_ros_time=2.90)
+        self.assertFalse(result.passed)
+        self.assertTrue(any(reason.startswith("max_future_skew=") for reason in result.reasons))
+
+    def test_latest_header_age_includes_tail_delay(self):
+        times = [index / 10.0 for index in range(31)]
+        result = self.evaluate(
+            times,
+            header_age_sec=0.15,
+            evaluation_time=3.10,
+            evaluation_ros_time=3.25,
+        )
+        self.assertFalse(result.passed)
+        self.assertAlmostEqual(result.max_header_age_sec, 0.25)
+        self.assertTrue(any(reason.startswith("max_header_age=") for reason in result.reasons))
+
+    def test_ros_receipt_count_must_match_samples(self):
+        with self.assertRaises(ValueError):
+            evaluate_stream(
+                receipt_times=(0.0, 0.1),
+                ros_receipt_times_ns=(self.ROS_BASE_NS,),
+                header_stamps_ns=(self.ROS_BASE_NS, self.ROS_BASE_NS + 100_000_000),
+                evaluation_time=0.1,
+                evaluation_ros_time_ns=self.ROS_BASE_NS + 100_000_000,
+                publisher_count=1,
+                topic_types=(POINTCLOUD2_TYPE,),
+                thresholds=self.thresholds,
+            )
 
 
 if __name__ == "__main__":

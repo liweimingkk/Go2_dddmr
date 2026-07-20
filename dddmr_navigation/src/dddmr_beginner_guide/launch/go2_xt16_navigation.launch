@@ -27,6 +27,9 @@
   <arg name="odom_sync_wait_timeout_sec" default="0.1"/>
   <arg name="odom_time_offset_sec" default="0.0"/>
   <arg name="feature_odom_time_offset_sec" default="0.0"/>
+  <!-- Keep the upstream/config default at 0.20s. Supervised launchers may use
+       a bounded startup override after proving the processed stream's age. -->
+  <arg name="local_lidar_expected_sensor_time_sec" default="0.20"/>
   <arg name="start_go2_nav_cmd_gate" default="true"/>
   <arg name="go2_nav_cmd_gate_input_topic" default="/dddmr_go2/dry_run_cmd_vel"/>
   <arg name="go2_nav_cmd_gate_output_topic" default="/dddmr_go2/safe_cmd_vel"/>
@@ -138,6 +141,8 @@
   <!-- No-motion test path: DDDMR velocity output is intentionally isolated. -->
   <node pkg="p2p_move_base" exec="p2p_move_base_node" output="screen" respawn="false" if="$(var start_move_base)">
     <param from="$(var config_file)" />
+    <param name="lidar.expected_sensor_time"
+           value="$(var local_lidar_expected_sensor_time_sec)" type="float"/>
     <remap from="/cmd_vel" to="/dddmr_go2/dry_run_cmd_vel"/>
     <remap from="/cmd_vel_stamped" to="/dddmr_go2/dry_run_cmd_vel_stamped"/>
     <param name="use_sim_time" value="false"/>

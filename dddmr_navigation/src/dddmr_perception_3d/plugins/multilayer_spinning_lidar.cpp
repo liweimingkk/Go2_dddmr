@@ -30,6 +30,7 @@
 */
 #include <perception_3d/multilayer_spinning_lidar.h>
 
+#include <chrono>
 #include <stdexcept>
 #include <utility>
 
@@ -213,21 +214,12 @@ void MultiLayerSpinningLidar::cbSensor(
   const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg)
 { 
   const rclcpp::Time sensor_receipt_time = clock_->now();
-
-  //@ Sanity check
-  rclcpp::Time time1(last_sensor_receiving_time_.stamp);
-  rclcpp::Time time2(msg->header.stamp);
-  rclcpp::Duration diff = time2 - time1;
-  double seconds_between_expectation = fabs(diff.seconds() - expected_sensor_time_);
-  last_sensor_receiving_time_ = msg->header;
-  if(seconds_between_expectation>0.05){
-    RCLCPP_WARN_THROTTLE(node_->get_logger().get_child(name_), 
-        *clock_, 1000, "Topic: %s received with lantency higher than your expection: %.3f seconds difference and your are expecting: %.3f", 
-          topic_.c_str(), diff.seconds(), expected_sensor_time_);
-  }
+  const int64_t sensor_receipt_steady_time_ns =
+    std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
 
   if(!is_local_planner_){
-    processSensor(msg, sensor_receipt_time);
+    processSensor(msg, sensor_receipt_time, sensor_receipt_steady_time_ns);
     return;
   }
 
@@ -238,8 +230,14 @@ void MultiLayerSpinningLidar::cbSensor(
     if(sensor_worker_stop_){
       return;
     }
+    ++received_sensor_count_;
+    if(pending_sensor_msg_){
+      ++overwritten_sensor_count_;
+    }
     pending_sensor_msg_ = msg;
     pending_sensor_receipt_time_ns_ = sensor_receipt_time.nanoseconds();
+    pending_sensor_receipt_steady_time_ns_ = sensor_receipt_steady_time_ns;
+    latest_sensor_receipt_time_ns_ = sensor_receipt_time.nanoseconds();
   }
   sensor_worker_cv_.notify_one();
 }
@@ -249,6 +247,7 @@ void MultiLayerSpinningLidar::sensorWorkerLoop()
   while(true){
     sensor_msgs::msg::PointCloud2::ConstSharedPtr msg;
     int64_t sensor_receipt_time_ns = 0;
+    int64_t sensor_receipt_steady_time_ns = 0;
     {
       std::unique_lock<std::mutex> lock(sensor_worker_mutex_);
       sensor_worker_cv_.wait(lock, [this]() {
@@ -259,18 +258,28 @@ void MultiLayerSpinningLidar::sensorWorkerLoop()
       }
       msg = std::move(pending_sensor_msg_);
       sensor_receipt_time_ns = pending_sensor_receipt_time_ns_;
+      sensor_receipt_steady_time_ns = pending_sensor_receipt_steady_time_ns_;
     }
 
     try{
       processSensor(
-        msg, rclcpp::Time(sensor_receipt_time_ns, clock_->get_clock_type()));
+        msg, rclcpp::Time(sensor_receipt_time_ns, clock_->get_clock_type()),
+        sensor_receipt_steady_time_ns);
     }
     catch(const std::exception& e){
-      RCLCPP_ERROR(node_->get_logger().get_child(name_),
+      {
+        std::lock_guard<std::mutex> lock(sensor_worker_mutex_);
+        ++failed_sensor_count_;
+      }
+      RCLCPP_ERROR_THROTTLE(node_->get_logger().get_child(name_), *clock_, 2000,
         "Failed to process local LiDAR observation: %s", e.what());
     }
     catch(...){
-      RCLCPP_ERROR(node_->get_logger().get_child(name_),
+      {
+        std::lock_guard<std::mutex> lock(sensor_worker_mutex_);
+        ++failed_sensor_count_;
+      }
+      RCLCPP_ERROR_THROTTLE(node_->get_logger().get_child(name_), *clock_, 2000,
         "Failed to process local LiDAR observation: unknown exception");
     }
   }
@@ -278,8 +287,13 @@ void MultiLayerSpinningLidar::sensorWorkerLoop()
 
 void MultiLayerSpinningLidar::processSensor(
   const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg,
-  const rclcpp::Time& sensor_receipt_time)
+  const rclcpp::Time& sensor_receipt_time,
+  int64_t sensor_receipt_steady_time_ns)
 {
+  const auto processing_start_steady = std::chrono::steady_clock::now();
+  const auto sensor_receipt_steady_time = std::chrono::steady_clock::time_point(
+    std::chrono::nanoseconds(sensor_receipt_steady_time_ns));
+  const rclcpp::Time header_time(msg->header.stamp, clock_->get_clock_type());
 
   // Build the next observation privately.  selfMark() runs in another callback
   // group and must never observe a PointCloud while fromROSMsg/filtering is
@@ -320,7 +334,12 @@ void MultiLayerSpinningLidar::processSensor(
   }
   catch (tf2::TransformException& e)
   {
-    RCLCPP_INFO(node_->get_logger().get_child(name_), "Failed to get transforms: %s", e.what());
+    if(is_local_planner_){
+      std::lock_guard<std::mutex> lock(sensor_worker_mutex_);
+      ++failed_sensor_count_;
+    }
+    RCLCPP_INFO_THROTTLE(node_->get_logger().get_child(name_), *clock_, 2000,
+      "Failed to get transforms: %s", e.what());
     return;
   }
 
@@ -394,15 +413,28 @@ void MultiLayerSpinningLidar::processSensor(
     pcl::PointCloud<pcl::PointXYZI>::Ptr next_local_observation(
       new pcl::PointCloud<pcl::PointXYZI>);
     pcl::copyPointCloud(*next_pcl_msg, *next_local_observation);
-    const rclcpp::Time header_time(
-      msg->header.stamp, clock_->get_clock_type());
     const rclcpp::Time observation_time =
       header_time < sensor_receipt_time ? header_time : sensor_receipt_time;
     {
       std::lock_guard<std::mutex> lock(observation_mutex_);
+      const rclcpp::Time ready_time = clock_->now();
+      const auto ready_steady_time = std::chrono::steady_clock::now();
       sensor_current_observation_ = next_local_observation;
       last_observation_time_ = observation_time;
       has_observation_ = true;
+      last_header_age_at_receipt_sec_ =
+        (sensor_receipt_time - header_time).seconds();
+      last_queue_delay_sec_ =
+        std::chrono::duration<double>(
+          processing_start_steady - sensor_receipt_steady_time).count();
+      last_processing_duration_sec_ =
+        std::chrono::duration<double>(
+          ready_steady_time - processing_start_steady).count();
+      last_ready_header_age_sec_ = (ready_time - header_time).seconds();
+      last_input_point_count_ =
+        static_cast<size_t>(msg->width) * static_cast<size_t>(msg->height);
+      last_output_point_count_ = next_local_observation->points.size();
+      ++processed_sensor_count_;
     }
   }
   else{
@@ -1090,10 +1122,28 @@ bool MultiLayerSpinningLidar::isCurrent(){
 
   rclcpp::Time last_observation_time;
   bool has_observation = false;
+  double header_age_at_receipt_sec = 0.0;
+  double queue_delay_sec = 0.0;
+  double processing_duration_sec = 0.0;
+  double ready_header_age_sec = 0.0;
+  size_t input_point_count = 0;
+  size_t output_point_count = 0;
+  uint64_t processed_sensor_count = 0;
+  uint64_t received_sensor_count = 0;
+  uint64_t overwritten_sensor_count = 0;
+  uint64_t failed_sensor_count = 0;
+  int64_t latest_sensor_receipt_time_ns = 0;
   if(is_local_planner_){
     std::lock_guard<std::mutex> lock(observation_mutex_);
     last_observation_time = last_observation_time_;
     has_observation = has_observation_;
+    header_age_at_receipt_sec = last_header_age_at_receipt_sec_;
+    queue_delay_sec = last_queue_delay_sec_;
+    processing_duration_sec = last_processing_duration_sec_;
+    ready_header_age_sec = last_ready_header_age_sec_;
+    input_point_count = last_input_point_count_;
+    output_point_count = last_output_point_count_;
+    processed_sensor_count = processed_sensor_count_;
   }
   else{
     std::unique_lock<std::recursive_mutex> lock(
@@ -1102,18 +1152,70 @@ bool MultiLayerSpinningLidar::isCurrent(){
     has_observation = has_observation_;
   }
 
-  if(!has_observation){
-    current_ = false;
-    return current_;
+  if(is_local_planner_){
+    std::lock_guard<std::mutex> lock(sensor_worker_mutex_);
+    received_sensor_count = received_sensor_count_;
+    overwritten_sensor_count = overwritten_sensor_count_;
+    failed_sensor_count = failed_sensor_count_;
+    latest_sensor_receipt_time_ns = latest_sensor_receipt_time_ns_;
   }
 
-  auto time_diff = (clock_->now() - last_observation_time).seconds();
-  if(time_diff < 0.0 || time_diff > expected_sensor_time_)
-    current_ = false;
-  else
-    current_ = true;
+  if(!has_observation){
+    if(is_local_planner_){
+      RCLCPP_WARN_THROTTLE(node_->get_logger().get_child(name_), *clock_, 2000,
+        "No successfully processed local LiDAR observation: received=%llu "
+        "overwritten=%llu failures=%llu",
+        static_cast<unsigned long long>(received_sensor_count),
+        static_cast<unsigned long long>(overwritten_sensor_count),
+        static_cast<unsigned long long>(failed_sensor_count));
+    }
+    return false;
+  }
 
-  return current_;
+  const rclcpp::Time now = clock_->now();
+  const double time_diff = (now - last_observation_time).seconds();
+  const bool is_current =
+    time_diff >= 0.0 && time_diff <= expected_sensor_time_;
+
+  if(is_local_planner_){
+    const double latest_receipt_age_sec = latest_sensor_receipt_time_ns > 0 ?
+      (now - rclcpp::Time(
+        latest_sensor_receipt_time_ns, clock_->get_clock_type())).seconds() : -1.0;
+
+    if(!is_current){
+      const char* reason = time_diff < 0.0 ? "clock_rollback" : "age_limit";
+      RCLCPP_WARN_THROTTLE(node_->get_logger().get_child(name_), *clock_, 2000,
+        "Local LiDAR stale (%s): safety_age=%.3fs limit=%.3fs "
+        "header_age_at_receipt=%.3fs queue=%.3fs processing=%.3fs "
+        "ready_header_age=%.3fs latest_receipt_age=%.3fs received=%llu "
+        "processed=%llu overwritten=%llu failures=%llu points=%zu->%zu",
+        reason, time_diff, expected_sensor_time_, header_age_at_receipt_sec,
+        queue_delay_sec, processing_duration_sec, ready_header_age_sec,
+        latest_receipt_age_sec,
+        static_cast<unsigned long long>(received_sensor_count),
+        static_cast<unsigned long long>(processed_sensor_count),
+        static_cast<unsigned long long>(overwritten_sensor_count),
+        static_cast<unsigned long long>(failed_sensor_count),
+        input_point_count, output_point_count);
+    }
+    else{
+      RCLCPP_INFO_THROTTLE(node_->get_logger().get_child(name_), *clock_, 5000,
+        "Local LiDAR freshness: safety_age=%.3fs limit=%.3fs "
+        "header_age_at_receipt=%.3fs queue=%.3fs processing=%.3fs "
+        "ready_header_age=%.3fs latest_receipt_age=%.3fs received=%llu "
+        "processed=%llu overwritten=%llu failures=%llu points=%zu->%zu",
+        time_diff, expected_sensor_time_, header_age_at_receipt_sec,
+        queue_delay_sec, processing_duration_sec, ready_header_age_sec,
+        latest_receipt_age_sec,
+        static_cast<unsigned long long>(received_sensor_count),
+        static_cast<unsigned long long>(processed_sensor_count),
+        static_cast<unsigned long long>(overwritten_sensor_count),
+        static_cast<unsigned long long>(failed_sensor_count),
+        input_point_count, output_point_count);
+    }
+  }
+
+  return is_current;
 }
 
 pcl::PointCloud<pcl::PointXYZI>::Ptr MultiLayerSpinningLidar::getObservation(){

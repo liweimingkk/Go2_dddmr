@@ -18,6 +18,8 @@ class StreamThresholds:
     min_rate_hz: float
     max_header_gap_sec: float
     max_receive_gap_sec: float
+    max_header_age_sec: float
+    max_future_skew_sec: float
     expected_publishers: int = 1
 
 
@@ -32,6 +34,8 @@ class StreamEvaluation:
     max_receive_gap_sec: float
     max_header_gap_sec: float
     tail_age_sec: float
+    max_header_age_sec: float
+    max_future_skew_sec: float
 
 
 def validate_thresholds(thresholds: StreamThresholds) -> None:
@@ -40,9 +44,15 @@ def validate_thresholds(thresholds: StreamThresholds) -> None:
         thresholds.min_rate_hz,
         thresholds.max_header_gap_sec,
         thresholds.max_receive_gap_sec,
+        thresholds.max_header_age_sec,
     )
     if not all(math.isfinite(value) and value > 0.0 for value in numeric_values):
         raise ValueError("stream timing thresholds must be finite and positive")
+    if (
+        not math.isfinite(thresholds.max_future_skew_sec)
+        or thresholds.max_future_skew_sec < 0.0
+    ):
+        raise ValueError("max_future_skew_sec must be finite and nonnegative")
     if thresholds.min_samples < 2:
         raise ValueError("min_samples must be at least 2")
     if thresholds.expected_publishers < 1:
@@ -62,8 +72,10 @@ def _rate(sample_count: int, span_sec: float) -> float:
 def evaluate_stream(
     *,
     receipt_times: Sequence[float],
+    ros_receipt_times_ns: Sequence[int],
     header_stamps_ns: Sequence[int],
     evaluation_time: float,
+    evaluation_ros_time_ns: int,
     publisher_count: int,
     topic_types: Iterable[str],
     thresholds: StreamThresholds,
@@ -72,11 +84,15 @@ def evaluate_stream(
     validate_thresholds(thresholds)
     reasons = []
     receipts = tuple(float(value) for value in receipt_times)
+    ros_receipts_ns = tuple(int(value) for value in ros_receipt_times_ns)
     stamps_ns = tuple(int(value) for value in header_stamps_ns)
     advertised_types = tuple(topic_types)
 
-    if len(receipts) != len(stamps_ns):
-        raise ValueError("receipt_times and header_stamps_ns must have equal lengths")
+    if len(receipts) != len(stamps_ns) or len(receipts) != len(ros_receipts_ns):
+        raise ValueError(
+            "receipt_times, ros_receipt_times_ns, and header_stamps_ns "
+            "must have equal lengths"
+        )
     if publisher_count != thresholds.expected_publishers:
         reasons.append(
             "publisher_count=%d expected=%d"
@@ -95,6 +111,8 @@ def evaluate_stream(
     max_receive_gap_sec = math.inf
     max_header_gap_sec = math.inf
     tail_age_sec = math.inf
+    max_header_age_sec = math.inf
+    max_future_skew_sec = math.inf
 
     if sample_count == 0:
         reasons.append("no_samples")
@@ -116,6 +134,32 @@ def evaluate_stream(
         reasons.append(
             "sample_count=%d min=%d" % (sample_count, thresholds.min_samples)
         )
+
+    if sample_count > 0:
+        signed_header_ages_sec = tuple(
+            (receipt_ns - stamp_ns) * 1e-9
+            for receipt_ns, stamp_ns in zip(ros_receipts_ns, stamps_ns)
+        )
+        # The planner checks freshness after processing, not only at callback
+        # receipt. Include the latest sample's age at evaluation time so a
+        # healthy-rate stream that is consistently delayed cannot pass.
+        latest_header_age_sec = (evaluation_ros_time_ns - stamps_ns[-1]) * 1e-9
+        max_header_age_sec = max(
+            0.0, max((*signed_header_ages_sec, latest_header_age_sec))
+        )
+        max_future_skew_sec = max(
+            0.0, -min((*signed_header_ages_sec, latest_header_age_sec))
+        )
+        if max_header_age_sec > thresholds.max_header_age_sec + 1e-9:
+            reasons.append(
+                "max_header_age=%.3f max=%.3f"
+                % (max_header_age_sec, thresholds.max_header_age_sec)
+            )
+        if max_future_skew_sec > thresholds.max_future_skew_sec + 1e-9:
+            reasons.append(
+                "max_future_skew=%.3f max=%.3f"
+                % (max_future_skew_sec, thresholds.max_future_skew_sec)
+            )
 
     if sample_count >= 2:
         receive_deltas = _positive_deltas(receipts)
@@ -165,6 +209,8 @@ def evaluate_stream(
         max_receive_gap_sec=max_receive_gap_sec,
         max_header_gap_sec=max_header_gap_sec,
         tail_age_sec=tail_age_sec,
+        max_header_age_sec=max_header_age_sec,
+        max_future_skew_sec=max_future_skew_sec,
     )
 
 
@@ -182,6 +228,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--min-rate-hz", type=float, default=7.0)
     parser.add_argument("--max-header-gap-sec", type=float, default=0.25)
     parser.add_argument("--max-receive-gap-sec", type=float, default=0.20)
+    parser.add_argument("--max-header-age-sec", type=float, default=0.20)
+    parser.add_argument("--max-future-skew-sec", type=float, default=0.05)
     parser.add_argument("--expected-publishers", type=int, default=1)
     args = parser.parse_args(argv)
 
@@ -191,6 +239,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         min_rate_hz=args.min_rate_hz,
         max_header_gap_sec=args.max_header_gap_sec,
         max_receive_gap_sec=args.max_receive_gap_sec,
+        max_header_age_sec=args.max_header_age_sec,
+        max_future_skew_sec=args.max_future_skew_sec,
         expected_publishers=args.expected_publishers,
     )
     try:
@@ -228,6 +278,7 @@ def run_ros_gate(args: argparse.Namespace) -> int:
         def __init__(self) -> None:
             super().__init__("go2_pointcloud_stream_gate")
             self.receipt_times = []
+            self.ros_receipt_times_ns = []
             self.header_stamps_ns = []
             qos = QoSProfile(
                 history=HistoryPolicy.KEEP_LAST,
@@ -241,6 +292,7 @@ def run_ros_gate(args: argparse.Namespace) -> int:
 
         def _callback(self, msg: PointCloud2) -> None:
             self.receipt_times.append(time.monotonic())
+            self.ros_receipt_times_ns.append(self.get_clock().now().nanoseconds)
             self.header_stamps_ns.append(
                 int(msg.header.stamp.sec) * 1_000_000_000
                 + int(msg.header.stamp.nanosec)
@@ -252,6 +304,8 @@ def run_ros_gate(args: argparse.Namespace) -> int:
         min_rate_hz=args.min_rate_hz,
         max_header_gap_sec=args.max_header_gap_sec,
         max_receive_gap_sec=args.max_receive_gap_sec,
+        max_header_age_sec=args.max_header_age_sec,
+        max_future_skew_sec=args.max_future_skew_sec,
         expected_publishers=args.expected_publishers,
     )
 
@@ -268,11 +322,14 @@ def run_ros_gate(args: argparse.Namespace) -> int:
             ):
                 break
         evaluation_time = time.monotonic()
+        evaluation_ros_time_ns = node.get_clock().now().nanoseconds
         topic_types = dict(node.get_topic_names_and_types()).get(args.topic, [])
         result = evaluate_stream(
             receipt_times=node.receipt_times,
+            ros_receipt_times_ns=node.ros_receipt_times_ns,
             header_stamps_ns=node.header_stamps_ns,
             evaluation_time=evaluation_time,
+            evaluation_ros_time_ns=evaluation_ros_time_ns,
             publisher_count=node.count_publishers(args.topic),
             topic_types=topic_types,
             thresholds=thresholds,
@@ -290,6 +347,8 @@ def run_ros_gate(args: argparse.Namespace) -> int:
     print("MAX_RECEIVE_GAP_SEC=%s" % _format_metric(result.max_receive_gap_sec))
     print("MAX_HEADER_GAP_SEC=%s" % _format_metric(result.max_header_gap_sec))
     print("TAIL_AGE_SEC=%s" % _format_metric(result.tail_age_sec))
+    print("MAX_HEADER_AGE_SEC=%s" % _format_metric(result.max_header_age_sec))
+    print("MAX_FUTURE_SKEW_SEC=%s" % _format_metric(result.max_future_skew_sec))
     if result.reasons:
         print("REASONS=%s" % ";".join(result.reasons))
     return 0 if result.passed else 1

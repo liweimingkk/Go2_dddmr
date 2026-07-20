@@ -123,7 +123,8 @@ class MultiLayerSpinningLidar: public Sensor{
     void cbSensor(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg);
     void processSensor(
       const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg,
-      const rclcpp::Time& sensor_receipt_time);
+      const rclcpp::Time& sensor_receipt_time,
+      int64_t sensor_receipt_steady_time_ns);
     void sensorWorkerLoop();
 
     /*call back of the map*/
@@ -194,19 +195,30 @@ class MultiLayerSpinningLidar: public Sensor{
     std::mutex observation_mutex_;
     rclcpp::Time last_observation_time_;
     bool has_observation_{false};
+    double last_header_age_at_receipt_sec_{0.0};
+    double last_queue_delay_sec_{0.0};
+    double last_processing_duration_sec_{0.0};
+    double last_ready_header_age_sec_{0.0};
+    size_t last_input_point_count_{0};
+    size_t last_output_point_count_{0};
+    uint64_t processed_sensor_count_{0};
 
     /*Latest-frame handoff for local sensor processing*/
     std::mutex sensor_worker_mutex_;
     std::condition_variable sensor_worker_cv_;
     sensor_msgs::msg::PointCloud2::ConstSharedPtr pending_sensor_msg_;
     int64_t pending_sensor_receipt_time_ns_{0};
+    int64_t pending_sensor_receipt_steady_time_ns_{0};
     std::thread sensor_worker_;
     bool sensor_worker_stop_{false};
+    uint64_t received_sensor_count_{0};
+    uint64_t overwritten_sensor_count_{0};
+    uint64_t failed_sensor_count_{0};
+    int64_t latest_sensor_receipt_time_ns_{0};
 
     //@ list of pointcloud sticher for non-repetitive scan lidar
     std::list<pcl::PointCloud<pcl::PointXYZ>> pcl_stitcher_;
 
-    std_msgs::msg::Header last_sensor_receiving_time_;
 };
 
 }//end of name space
