@@ -1,13 +1,13 @@
 lego_loam_ip:
   ros__parameters:
     use_sim_time: false
-    # Derived from loam_go2_xt16_live.yaml. The XT16 scan parameters are kept
-    # unchanged so this launch can be compared against the single-XT16 path.
+    # Derived from loam_go2_xt16_live.yaml. Keep the XT16 scan parameters
+    # matched to the active 32000-point, 10 Hz driver mode.
     laser:
         odom_type: "wheel_odometry"
         base_ground_frame: "base_link"
         num_vertical_scans: 16
-        num_horizontal_scans: 4000
+        num_horizontal_scans: 2000
         vertical_angle_bottom: -15.0
         vertical_angle_top: 15.0
         scan_period: 0.1
@@ -38,6 +38,11 @@ lego_loam_ip:
         ground_negative_stop: -3.1415926
 
         enable_mouth_ground_fusion: true
+        # Use local planar geometry plus a support-connected search. This lets
+        # successive treads enter the existing mapground without encoding the
+        # temporary test stair's height. fixed_z remains available as a
+        # stationary troubleshooting fallback.
+        mouth_ground_mode: "connected_surface"
         # Current validated Go2 topic. Raw /utlidar/cloud has frame
         # utlidar_lidar in this live graph and must not be treated as validated
         # until a correct utlidar_lidar TF is provided and checked.
@@ -45,18 +50,16 @@ lego_loam_ip:
         # /utlidar/cloud_base already publishes frame_id=base_link. Keep empty
         # by default so future frame mistakes are visible instead of masked.
         mouth_frame_override: ""
-        # Temporary stationary-test filter frame. For walking mapping, prefer a
-        # trusted base_footprint or roll/pitch-compensated ground frame and
-        # retune mouth_ground_z_min/max around that frame's ground height.
+        # The Go2 body controller keeps base_link approximately gravity
+        # aligned. The 35 degree surface envelope below tolerates normal body
+        # attitude changes while still rejecting stair risers.
         mouth_filter_frame: "base_link"
         mouth_max_time_diff: 0.08
         # Add a positive offset only after confirming the live mouth cloud
         # header lag is stable. Keep mouth_max_time_diff near 0.08-0.15 for
         # deployment; larger values are stationary geometry smoke-test only.
         mouth_time_offset_sec: 0.0
-        # base_link-frame ground window for stationary Go2 standing height.
-        # Tune in RViz before any motion; do not use as a final walking setup
-        # without validating body roll/pitch effects.
+        # Used only when mouth_ground_mode=fixed_z.
         mouth_ground_z_min: -0.42
         mouth_ground_z_max: -0.18
         mouth_x_min: 0.05
@@ -64,9 +67,34 @@ lego_loam_ip:
         mouth_y_abs: 1.2
         mouth_range_min: 0.15
         mouth_range_max: 4.5
-        mouth_voxel_size: 0.06
+        mouth_voxel_size: 0.03
+        mouth_mapping_obstacle_voxel_size: 0.10
         mouth_buffer_size: 90
         mouth_min_points: 20
+        mouth_normal_radius: 0.18
+        mouth_min_normal_neighbors: 6
+        mouth_max_support_slope: 0.6108652382  # 35 degrees
+        mouth_min_obstacle_slope: 0.9599310886  # 55 degrees; 35-55 degrees remains unknown
+        mouth_max_planarity_residual: 0.035
+        mouth_min_planar_spread: 0.020
+        # This broad band describes the current foot-support surface relative
+        # to base_link. It anchors the connected search but does not limit the
+        # height of later treads.
+        mouth_support_seed_z_min: -0.50
+        mouth_support_seed_z_max: -0.18
+        mouth_support_seed_x_max: 0.70
+        mouth_support_seed_y_abs: 0.55
+        mouth_support_reference_radius: 0.12
+        # Robot capability/sampling envelope, not a measured stair constant.
+        mouth_support_connection_radius: 0.34
+        mouth_maximum_step_height: 0.26
+        mouth_same_surface_height_tolerance: 0.05
+        mouth_minimum_patch_span: 0.20
+        mouth_minimum_patch_minor_span: 0.10
+        mouth_min_supported_component_points: 8
+        # A single raised top is kept as an obstacle. Floor + at least two
+        # successive tread heights is treated as a stair chain.
+        mouth_minimum_stair_height_levels: 3
 
 lego_loam_fa:
   ros__parameters:
@@ -93,7 +121,9 @@ lego_loam_mo:
     use_sim_time: false
 
     mapping:
-        distance_between_key_frame: 0.5
+        # Preserve treads that are visible for less than the default 0.5 m.
+        # This is spatial sampling resolution, independent of stair height.
+        distance_between_key_frame: 0.15
         angle_between_key_frame: 0.5
         enable_loop_closure: false
         surrounding_keyframe_search_num: 50
@@ -127,5 +157,5 @@ lego_loam_mo:
 lego_loam_map_visualization:
   ros__parameters:
     use_sim_time: false
-    ground_voxel_size: 0.3
+    ground_voxel_size: 0.1
     ground_edge_threshold_num: 50

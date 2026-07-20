@@ -22,7 +22,20 @@ Common environment overrides:
   DDDMR_BAGS_DIR=...         Host bags directory. Default: ../bags.
   GO2_NET_IFACE=enp46s0      Network interface used for Go2 DDS.
   MOUTH_MAX_TIME_DIFF=0.15
-  MOUTH_TIME_OFFSET_SEC=0.03424
+  MOUTH_TIME_OFFSET_SEC=...   Explicit override; skips automatic measurement.
+  AUTO_MEASURE_MOUTH_TIME_OFFSET=true
+                             Measure and inject the mouth/XT16 clock offset first.
+  MOUTH_OFFSET_MEASURE_SECONDS=8
+  MOUTH_OFFSET_MEASURE_ATTEMPTS=2
+  MOUTH_OFFSET_MIN_PAIRS=20
+  MOUTH_OFFSET_ARRIVAL_WINDOW_SEC=0.03
+  MOUTH_OFFSET_STABLE_STDEV_SEC=0.02
+  MOUTH_OFFSET_STABLE_RANGE_SEC=0.08
+  MOUTH_CLOUD_TOPIC=/utlidar/cloud_base
+                             Use this topic for both measurement and mapping.
+  MOUTH_GROUND_TOPIC=/mouth_ground_cloud
+  MOUTH_GROUND_SAMPLE_TIMEOUT_SEC=20
+                             Refuse to save without a /mouth_ground_cloud sample.
   AUTO_MEASURE_ODOM_TIME_OFFSET=true
                              Measure and inject the odom/XT16 clock offset first.
   ODOM_OFFSET_MEASURE_SECONDS=8
@@ -61,7 +74,17 @@ MAP_RVIZ_CONFIG="${MAP_RVIZ_CONFIG:-/root/dddmr_navigation/src/dddmr_lego_loam/l
 PUBLISH_STATIC_TF_VALUE="${PUBLISH_STATIC_TF:-true}"
 MAPPING_SECONDS_VALUE="${MAPPING_SECONDS:-}"
 MOUTH_MAX_TIME_DIFF_VALUE="${MOUTH_MAX_TIME_DIFF:-0.15}"
-MOUTH_TIME_OFFSET_SEC_VALUE="${MOUTH_TIME_OFFSET_SEC:-0.03424}"
+MOUTH_TIME_OFFSET_SEC_VALUE="${MOUTH_TIME_OFFSET_SEC:-}"
+AUTO_MEASURE_MOUTH_TIME_OFFSET_VALUE="${AUTO_MEASURE_MOUTH_TIME_OFFSET:-true}"
+MOUTH_OFFSET_MEASURE_SECONDS_VALUE="${MOUTH_OFFSET_MEASURE_SECONDS:-8}"
+MOUTH_OFFSET_MEASURE_ATTEMPTS_VALUE="${MOUTH_OFFSET_MEASURE_ATTEMPTS:-2}"
+MOUTH_OFFSET_MIN_PAIRS_VALUE="${MOUTH_OFFSET_MIN_PAIRS:-20}"
+MOUTH_OFFSET_ARRIVAL_WINDOW_SEC_VALUE="${MOUTH_OFFSET_ARRIVAL_WINDOW_SEC:-0.03}"
+MOUTH_OFFSET_STABLE_STDEV_SEC_VALUE="${MOUTH_OFFSET_STABLE_STDEV_SEC:-0.02}"
+MOUTH_OFFSET_STABLE_RANGE_SEC_VALUE="${MOUTH_OFFSET_STABLE_RANGE_SEC:-0.08}"
+MOUTH_GROUND_SAMPLE_TIMEOUT_SEC_VALUE="${MOUTH_GROUND_SAMPLE_TIMEOUT_SEC:-20}"
+MOUTH_CLOUD_TOPIC_VALUE="${MOUTH_CLOUD_TOPIC:-/utlidar/cloud_base}"
+MOUTH_GROUND_TOPIC_VALUE="${MOUTH_GROUND_TOPIC:-/mouth_ground_cloud}"
 AUTO_MEASURE_ODOM_TIME_OFFSET_VALUE="${AUTO_MEASURE_ODOM_TIME_OFFSET:-true}"
 ODOM_TIME_OFFSET_SEC_VALUE="${ODOM_TIME_OFFSET_SEC:-}"
 ODOM_OFFSET_MEASURE_SECONDS_VALUE="${ODOM_OFFSET_MEASURE_SECONDS:-8}"
@@ -116,6 +139,14 @@ is_number() {
 
 is_positive_integer() {
   [[ "$1" =~ ^[1-9][0-9]*$ ]]
+}
+
+is_positive_number() {
+  is_number "$1" && awk -v value="$1" 'BEGIN { exit !(value > 0) }'
+}
+
+is_nonnegative_number() {
+  is_number "$1" && awk -v value="$1" 'BEGIN { exit !(value >= 0) }'
 }
 
 nav_container_names() {
@@ -351,6 +382,118 @@ print_summary() {
   fi
 }
 
+measure_mouth_time_offset() {
+  if [[ -n "${MOUTH_TIME_OFFSET_SEC_VALUE}" ]]; then
+    is_number "${MOUTH_TIME_OFFSET_SEC_VALUE}" || \
+      die "MOUTH_TIME_OFFSET_SEC must be a finite number: ${MOUTH_TIME_OFFSET_SEC_VALUE}"
+    log "Using explicit mouth time offset: ${MOUTH_TIME_OFFSET_SEC_VALUE}s"
+    return 0
+  fi
+
+  case "${AUTO_MEASURE_MOUTH_TIME_OFFSET_VALUE}" in
+    true)
+      ;;
+    false)
+      die "Automatic mouth offset measurement is disabled; set MOUTH_TIME_OFFSET_SEC explicitly."
+      ;;
+    *)
+      die "AUTO_MEASURE_MOUTH_TIME_OFFSET must be true or false."
+      ;;
+  esac
+
+  require_file "${SCRIPT_DIR}/measure_go2_mouth_xt16_time_offset.py"
+  is_positive_number "${MOUTH_OFFSET_MEASURE_SECONDS_VALUE}" || \
+    die "MOUTH_OFFSET_MEASURE_SECONDS must be greater than zero."
+  is_positive_integer "${MOUTH_OFFSET_MEASURE_ATTEMPTS_VALUE}" || \
+    die "MOUTH_OFFSET_MEASURE_ATTEMPTS must be a positive integer."
+  is_positive_integer "${MOUTH_OFFSET_MIN_PAIRS_VALUE}" || \
+    die "MOUTH_OFFSET_MIN_PAIRS must be a positive integer."
+  is_positive_number "${MOUTH_OFFSET_ARRIVAL_WINDOW_SEC_VALUE}" || \
+    die "MOUTH_OFFSET_ARRIVAL_WINDOW_SEC must be greater than zero."
+  is_nonnegative_number "${MOUTH_OFFSET_STABLE_STDEV_SEC_VALUE}" || \
+    die "MOUTH_OFFSET_STABLE_STDEV_SEC must be nonnegative."
+  is_nonnegative_number "${MOUTH_OFFSET_STABLE_RANGE_SEC_VALUE}" || \
+    die "MOUTH_OFFSET_STABLE_RANGE_SEC must be nonnegative."
+
+  local attempt report rc stable measured_offset paired_count
+  for ((attempt = 1; attempt <= MOUTH_OFFSET_MEASURE_ATTEMPTS_VALUE; ++attempt)); do
+    log "Measuring mouth/XT16 time offset (${attempt}/${MOUTH_OFFSET_MEASURE_ATTEMPTS_VALUE}, ${MOUTH_OFFSET_MEASURE_SECONDS_VALUE}s)..."
+    set +e
+    report="$(docker run --rm \
+      --network=host \
+      -e "ROS_DOMAIN_ID=${ROS_DOMAIN_ID_VALUE}" \
+      -e "GO2_DDS_IP=${GO2_DDS_IP_VALUE}" \
+      -e "GO2_NET_IFACE=${GO2_NET_IFACE_VALUE}" \
+      -e "RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}" \
+      -e "MOUTH_TOPIC=${MOUTH_CLOUD_TOPIC_VALUE}" \
+      -e "XT16_TOPIC=${XT16_TOPIC_VALUE}" \
+      -e "MEASURE_SECONDS=${MOUTH_OFFSET_MEASURE_SECONDS_VALUE}" \
+      -e "ARRIVAL_WINDOW_SEC=${MOUTH_OFFSET_ARRIVAL_WINDOW_SEC_VALUE}" \
+      -e "STABLE_STDEV_SEC=${MOUTH_OFFSET_STABLE_STDEV_SEC_VALUE}" \
+      -e "STABLE_RANGE_SEC=${MOUTH_OFFSET_STABLE_RANGE_SEC_VALUE}" \
+      -v "${WS_ROOT}:/root/dddmr_navigation:ro" \
+      "${IMAGE}" \
+      bash -lc 'set -eo pipefail
+set +u
+source /opt/ros/humble/setup.bash
+source /root/dddmr_navigation/scripts/setup_go2_dds_env.sh
+set -u
+exec python3 /root/dddmr_navigation/scripts/measure_go2_mouth_xt16_time_offset.py \
+  --mouth-topic "${MOUTH_TOPIC}" \
+  --xt16-topic "${XT16_TOPIC}" \
+  --duration "${MEASURE_SECONDS}" \
+  --arrival-window "${ARRIVAL_WINDOW_SEC}" \
+  --stable-stdev "${STABLE_STDEV_SEC}" \
+  --stable-range "${STABLE_RANGE_SEC}"' 2>&1)"
+    rc=$?
+    set -e
+
+    printf '%s\n' "${report}"
+    stable="$(awk -F= '$1 == "OFFSET_STABLE_FOR_SMOKE" {print $2}' <<<"${report}" | tail -n 1)"
+    measured_offset="$(awk -F= '$1 == "recommended_mouth_time_offset_sec" {print $2}' <<<"${report}" | tail -n 1)"
+    paired_count="$(sed -nE 's/.*paired_by_arrival=([0-9]+).*/\1/p' <<<"${report}" | tail -n 1)"
+    if [[ "${rc}" -eq 0 && "${stable}" == "True" && "${paired_count}" =~ ^[0-9]+$ ]] && \
+       (( paired_count >= MOUTH_OFFSET_MIN_PAIRS_VALUE )) && \
+       is_number "${measured_offset}"; then
+      MOUTH_TIME_OFFSET_SEC_VALUE="${measured_offset}"
+      export MOUTH_TIME_OFFSET_SEC="${MOUTH_TIME_OFFSET_SEC_VALUE}"
+      log "Automatic mouth time offset accepted and injected: ${MOUTH_TIME_OFFSET_SEC_VALUE}s (${paired_count} pairs)"
+      return 0
+    fi
+
+    if [[ "${paired_count}" =~ ^[0-9]+$ ]] && (( paired_count < MOUTH_OFFSET_MIN_PAIRS_VALUE )); then
+      log "Mouth offset measurement had ${paired_count} pairs; at least ${MOUTH_OFFSET_MIN_PAIRS_VALUE} are required."
+    fi
+    if (( attempt < MOUTH_OFFSET_MEASURE_ATTEMPTS_VALUE )); then
+      log "Mouth offset measurement was unavailable or unstable (exit ${rc}); retrying..."
+    fi
+  done
+
+  die "Could not obtain a stable mouth/XT16 time offset after ${MOUTH_OFFSET_MEASURE_ATTEMPTS_VALUE} attempt(s). Refusing to create a mouth-fusion map; check both point-cloud topics and timestamps, or set MOUTH_TIME_OFFSET_SEC explicitly."
+}
+
+require_mouth_ground_sample() {
+  is_positive_integer "${MOUTH_GROUND_SAMPLE_TIMEOUT_SEC_VALUE}" || \
+    die "MOUTH_GROUND_SAMPLE_TIMEOUT_SEC must be a positive integer."
+
+  local report rc width
+  log "Waiting for a fresh ${MOUTH_GROUND_TOPIC_VALUE} sample before save..."
+  set +e
+  report="$(docker_ros "timeout '${MOUTH_GROUND_SAMPLE_TIMEOUT_SEC_VALUE}' ros2 topic echo --once --field width '${MOUTH_GROUND_TOPIC_VALUE}' sensor_msgs/msg/PointCloud2" 2>&1)"
+  rc=$?
+  set -e
+  if [[ "${rc}" -ne 0 ]]; then
+    printf '%s\n' "${report}" >&2
+    die "No ${MOUTH_GROUND_TOPIC_VALUE} sample arrived within ${MOUTH_GROUND_SAMPLE_TIMEOUT_SEC_VALUE}s. Refusing to save a map without proven mouth-LiDAR ground contribution."
+  fi
+  printf '%s\n' "${report}"
+  width="$(grep -Eo '[0-9]+' <<<"${report}" | head -n 1 || true)"
+  if [[ ! "${width}" =~ ^[0-9]+$ ]] || (( 10#${width} <= 0 )); then
+    die "${MOUTH_GROUND_TOPIC_VALUE} arrived but contained no points. Refusing to save a map without proven mouth-LiDAR ground contribution."
+  fi
+  log "Received ${MOUTH_GROUND_TOPIC_VALUE} with width=${width}; mouth-LiDAR ground contribution is active."
+}
+
 measure_odom_time_offset() {
   if [[ -n "${ODOM_TIME_OFFSET_SEC_VALUE}" ]]; then
     is_number "${ODOM_TIME_OFFSET_SEC_VALUE}" || \
@@ -465,7 +608,7 @@ source /opt/ros/humble/setup.bash
 source /root/dddmr_navigation/scripts/setup_go2_dds_env.sh
 source /root/dddmr_navigation/${INSTALL_BASE_VALUE}/setup.bash
 set -u
-echo 'MOUTH_MAPPING_CONTRACT mouth_cloud_topic=/utlidar/cloud_base mouth_filter_frame=base_link'
+echo 'MOUTH_MAPPING_CONTRACT mouth_cloud_topic=${MOUTH_CLOUD_TOPIC_VALUE} mouth_filter_frame=base_link'
 echo 'MOUTH_MAPPING_TIMING mouth_max_time_diff=${MOUTH_MAX_TIME_DIFF_VALUE} mouth_time_offset_sec=${MOUTH_TIME_OFFSET_SEC_VALUE}'
 echo 'ODOM_MAPPING_TIMING odom_topic=${ODOM_TOPIC_VALUE} xt16_topic=${XT16_TOPIC_VALUE} odom_sync_tolerance_sec=${ODOM_SYNC_TOLERANCE_SEC_VALUE} odom_sync_wait_timeout_sec=${ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE} odom_time_offset_sec=${ODOM_TIME_OFFSET_SEC_VALUE}'
 exec ros2 launch lego_loam_bor lego_loam_go2_xt16_mouth.launch \
@@ -474,7 +617,7 @@ exec ros2 launch lego_loam_bor lego_loam_go2_xt16_mouth.launch \
   publish_static_tf:=${PUBLISH_STATIC_TF_VALUE} \
   xt16_topic:=${XT16_TOPIC_VALUE} \
   odom_topic:=${ODOM_TOPIC_VALUE} \
-  mouth_cloud_topic:=/utlidar/cloud_base \
+  mouth_cloud_topic:=${MOUTH_CLOUD_TOPIC_VALUE} \
   mouth_filter_frame:=base_link \
   mouth_max_time_diff:=${MOUTH_MAX_TIME_DIFF_VALUE} \
   mouth_time_offset_sec:=${MOUTH_TIME_OFFSET_SEC_VALUE} \
@@ -494,6 +637,7 @@ main() {
     if docker ps -a --format '{{.Names}}' | grep -Fxq "${CONTAINER_NAME}"; then
       die "Container already exists: ${CONTAINER_NAME}"
     fi
+    measure_mouth_time_offset
     measure_odom_time_offset
     start_mapping_container
   else
@@ -513,6 +657,8 @@ main() {
     log "Mapping is running. Press Enter to save and update navigation config."
     read -r _
   fi
+
+  require_mouth_ground_sample
 
   local before_dir
   before_dir="$(newest_tmp_map_dir || true)"

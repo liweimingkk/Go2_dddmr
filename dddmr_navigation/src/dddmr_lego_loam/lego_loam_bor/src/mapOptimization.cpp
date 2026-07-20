@@ -410,6 +410,7 @@ void MapOptimization::pcdSaver(const std::shared_ptr<std_srvs::srv::Empty::Reque
     pt.pitch = pitch;
     pt.yaw = yaw;
     pt.intensity = (*it).intensity;
+    pt.time = (*it).time;
     cloudKeyPoses6DBaseLink.push_back(pt);
 
     geometry_msgs::msg::TransformStamped pose_6d_geo;
@@ -2350,6 +2351,14 @@ void MapOptimization::run() {
   
   pcl::transformPointCloud(*association.cloud_patched_ground_last, *laserCloudPatchedGroundLast, trans_c2s_af3_);
   pcl::transformPointCloud(*association.cloud_patched_ground_edge_last, *laserCloudPatchedGroundEdgeLast, trans_c2s_af3_);
+  pcl::PointCloud<PointType>::Ptr mappingObstacleLast(
+      new pcl::PointCloud<PointType>());
+  if (association.cloud_mapping_obstacle_last) {
+    pcl::transformPointCloud(
+        *association.cloud_mapping_obstacle_last,
+        *mappingObstacleLast,
+        trans_c2s_af3_);
+  }
 
   OdometryToTransform(decisive_odometry, transformSum);
   if (axis_split_factor_enabled_) {
@@ -2389,6 +2398,12 @@ void MapOptimization::run() {
   downsampleCurrentScan();
   
   scan2MapOptimization();
+
+  // Mouth-lidar non-ground points are valid mapping surfaces, but they are
+  // added only after optimizing the current pose so unselected raw returns do
+  // not influence this frame's scan-to-map solution. They become part of the
+  // saved surface keyframe and can constrain later frames normally.
+  *laserCloudSurfLastDS += *mappingObstacleLast;
 
   saveKeyFramesAndFactor();
 
