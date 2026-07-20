@@ -68,16 +68,19 @@ namespace mpc_critics
 class ModelSharedData{
   public:
 
-    ModelSharedData(std::shared_ptr<tf2_ros::Buffer> m_tf2Buffer):tf2Buffer_(m_tf2Buffer){};
+    ModelSharedData(std::shared_ptr<tf2_ros::Buffer> m_tf2Buffer):tf2Buffer_(m_tf2Buffer){
+      pcl_perception_.reset(new pcl::PointCloud<pcl::PointXYZI>());
+      pcl_perception_kdtree_.reset(new pcl::KdTreeFLANN<pcl::PointXYZI>());
+    };
     
     std::shared_ptr<tf2_ros::Buffer> tf2Buffer(){return tf2Buffer_;}
 
     void updateData(){
       global_frame_ = robot_pose_.header.frame_id;
       base_frame_ = robot_pose_.child_frame_id;
-      /* Critics get kd tree generated in perception_ros when calling aggregateObservations in local planner*/
-      if(pcl_perception_->points.size()>=5){
-        pcl_perception_kdtree_.reset(new pcl::KdTreeFLANN<pcl::PointXYZI>());
+      /* Critics get a fresh kd-tree after aggregateObservations in local planner. */
+      pcl_perception_kdtree_.reset(new pcl::KdTreeFLANN<pcl::PointXYZI>());
+      if(pcl_perception_ && !pcl_perception_->points.empty()){
         pcl_perception_kdtree_->setInputCloud(pcl_perception_);        
       }
       

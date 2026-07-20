@@ -81,6 +81,7 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_map_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_surf_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_ground_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_planning_ground_;
   rclcpp::Service<dddmr_sys_core::srv::GetKeyFrameCloud>::SharedPtr srv_get_key_frame_;
   rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr pub_key_pose_arr_;
 
@@ -96,6 +97,9 @@ private:
 
   void readPoseGraph();
 
+  pcl::PointCloud<dddmr_pg_map_server::pcl_t>::Ptr buildPlanningGround(
+      const pcl::PointCloud<dddmr_pg_map_server::pcl_t>::ConstPtr & observed_ground);
+
   void getKeyFrameCloud(
       const std::shared_ptr<dddmr_sys_core::srv::GetKeyFrameCloud::Request>
           request,
@@ -103,11 +107,20 @@ private:
           response);
 
   float complete_map_voxel_size_;
+  float complete_ground_voxel_size_;
+  bool merge_non_ground_surface_into_mapcloud_;
+  float surface_ground_exclusion_radius_;
+  std::string planning_ground_overlay_path_;
+  double planning_ground_overlay_max_distance_;
+  double planning_ground_overlay_max_fraction_;
+  double planning_ground_voxel_size_;
   geometry_msgs::msg::PoseArray key_poses_;
   
 public:
 
-  DDDMRPGMapServer(std::string name);
+  explicit DDDMRPGMapServer(
+      const std::string & name,
+      const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
   ~DDDMRPGMapServer();
 
   // Provide a typedef to ease future code maintenance
@@ -116,7 +129,7 @@ public:
   {
     return access_;
   }
-  sub_maps_mutex_t * access_;
+  sub_maps_mutex_t * access_{nullptr};
 
 };
 }  // namespace dddmr_pg_map_server

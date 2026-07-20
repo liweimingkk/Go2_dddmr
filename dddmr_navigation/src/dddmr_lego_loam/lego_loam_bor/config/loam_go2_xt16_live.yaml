@@ -24,7 +24,8 @@ lego_loam_ip:
         odom_type: "wheel_odometry"         # wheel_odometry/laser_odometry
         base_ground_frame: "base_link"
         num_vertical_scans: 16
-        num_horizontal_scans: 4000
+        # Active driver mode: 2000 samples/ring, 32000 points/scan at 10 Hz.
+        num_horizontal_scans: 2000
         vertical_angle_bottom: -15.0        # degrees
         vertical_angle_top: 15.0            # degrees
         scan_period: 0.1                    # seconds

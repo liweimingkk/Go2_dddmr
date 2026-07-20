@@ -30,13 +30,17 @@
 #include <mcl_3dl/sub_maps.h>
 namespace mcl_3dl
 {
-SubMaps::SubMaps(std::string name) : Node(name), is_current_ready_(false), 
-  prepare_warm_up_(false), is_warm_up_ready_(false), is_initial_(false), key_poses_received_(false){
-  
+SubMaps::SubMaps(std::string name) : Node(name), is_current_ready_(false),
+  prepare_warm_up_(false), is_warm_up_ready_(false), is_initial_(false),
+  key_poses_received_(false), global_map_received_(false),
+  global_ground_received_(false), is_global_ready_(false){
+
   map_current_ = std::make_shared<pcl::PointCloud<pcl_t>>();
   ground_current_ = std::make_shared<pcl::PointCloud<pcl_t>>();
   map_warmup_ = std::make_shared<pcl::PointCloud<pcl_t>>();
   ground_warmup_ = std::make_shared<pcl::PointCloud<pcl_t>>();
+  map_global_ = std::make_shared<pcl::PointCloud<pcl_t>>();
+  ground_global_ = std::make_shared<pcl::PointCloud<pcl_t>>();
 
   clock_ = this->get_clock();
   
@@ -60,6 +64,16 @@ SubMaps::SubMaps(std::string name) : Node(name), is_current_ready_(false),
 
   sub_key_poses_ = this->create_subscription<geometry_msgs::msg::PoseArray>(
     pg_map_server_name_ + "/key_poses", rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable(), std::bind(&SubMaps::keyPosesCb, this, std::placeholders::_1));
+
+  sub_global_map_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
+    pg_map_server_name_ + "/mapcloud",
+    rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable(),
+    std::bind(&SubMaps::globalMapCb, this, std::placeholders::_1));
+
+  sub_global_ground_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
+    pg_map_server_name_ + "/mapground",
+    rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable(),
+    std::bind(&SubMaps::globalGroundCb, this, std::placeholders::_1));
 
   //@ Latched topic, Create a publisher using the QoS settings to emulate a ROS1 latched topic
   pub_sub_map_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("sub_mapcloud",
@@ -86,7 +100,9 @@ SubMaps::~SubMaps(){
 
 void SubMaps::keyPosesCb(const geometry_msgs::msg::PoseArray::SharedPtr msg)
 {
+  std::unique_lock<sub_maps_mutex_t> lock(*access_);
   poses_pcl_t_.reset(new pcl::PointCloud<pcl_t>());
+  key_poses_ = msg->poses;
   for(auto i=msg->poses.begin();i!=msg->poses.end();i++){
     pcl_t pt;
     pt.x = (*i).position.x;
@@ -97,6 +113,67 @@ void SubMaps::keyPosesCb(const geometry_msgs::msg::PoseArray::SharedPtr msg)
   kdtree_poses_.reset(new pcl::KdTreeFLANN<pcl_t>());
   kdtree_poses_->setInputCloud(poses_pcl_t_);
   key_poses_received_ = true;
+  prepareGlobalMapLocked();
+}
+
+void SubMaps::globalMapCb(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
+{
+  std::unique_lock<sub_maps_mutex_t> lock(*access_);
+  pcl::fromROSMsg(*msg, *map_global_);
+  global_map_received_ = !map_global_->empty();
+  if (!global_map_received_)
+  {
+    RCLCPP_ERROR(this->get_logger(), "Received an empty complete map from %s/mapcloud",
+      pg_map_server_name_.c_str());
+  }
+  prepareGlobalMapLocked();
+}
+
+void SubMaps::globalGroundCb(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
+{
+  std::unique_lock<sub_maps_mutex_t> lock(*access_);
+  pcl::fromROSMsg(*msg, *ground_global_);
+  global_ground_received_ = !ground_global_->empty();
+  if (!global_ground_received_)
+  {
+    RCLCPP_ERROR(this->get_logger(), "Received an empty complete ground map from %s/mapground",
+      pg_map_server_name_.c_str());
+  }
+  prepareGlobalMapLocked();
+}
+
+void SubMaps::prepareGlobalMapLocked()
+{
+  if (is_global_ready_.load() || !key_poses_received_ ||
+      !global_map_received_ || !global_ground_received_)
+  {
+    return;
+  }
+
+  kdtree_map_global_.setInputCloud(map_global_);
+  kdtree_ground_global_.setInputCloud(ground_global_);
+
+  pcl::NormalEstimation<mcl_3dl::pcl_t, pcl::Normal> normal_estimator;
+  pcl::search::KdTree<mcl_3dl::pcl_t>::Ptr tree(
+    new pcl::search::KdTree<mcl_3dl::pcl_t>);
+  tree->setInputCloud(ground_global_);
+  normal_estimator.setInputCloud(ground_global_);
+  normal_estimator.setSearchMethod(tree);
+  normal_estimator.setKSearch(
+    std::min(20, static_cast<int>(ground_global_->points.size())));
+  normal_estimator.compute(normals_ground_global_);
+
+  is_global_ready_.store(true);
+  RCLCPP_INFO(
+    this->get_logger(),
+    "Global relocalization map ready: %lu map points, %lu ground points, %lu key poses",
+    map_global_->points.size(), ground_global_->points.size(), key_poses_.size());
+}
+
+std::vector<geometry_msgs::msg::Pose> SubMaps::getKeyPoses()
+{
+  std::unique_lock<sub_maps_mutex_t> lock(*access_);
+  return key_poses_;
 }
 
 void SubMaps::syncMapThread(){
@@ -106,7 +183,7 @@ void SubMaps::syncMapThread(){
 
   auto request = std::make_shared<dddmr_sys_core::srv::GetKeyFrameCloud::Request>();
   request->key_frame_number = cornerCloudKeyFrames_.size();
-  
+
   if(request->key_frame_number>=poses_pcl_t_->size())
   {
     RCLCPP_WARN(this->get_logger(), "Exceed request key frame number, shutdown thread.");
@@ -115,7 +192,7 @@ void SubMaps::syncMapThread(){
     RCLCPP_INFO(this->get_logger(), "Sync ground key frame number: %lu with total size: %lu", groundCloudKeyFrames_.size(), poses_pcl_t_->size());
     is_initial_ = true;
     sync_map_timer_->cancel();
-    return; 
+    return;
   }
 
   if (!get_key_frame_cloud_client_->wait_for_service(std::chrono::seconds(1))) {
@@ -123,7 +200,7 @@ void SubMaps::syncMapThread(){
     return;
   }
 
-  get_key_frame_cloud_client_->async_send_request(request, 
+  get_key_frame_cloud_client_->async_send_request(request,
     [this](rclcpp::Client<dddmr_sys_core::srv::GetKeyFrameCloud>::SharedFuture future) {
       try {
         auto result = future.get();
@@ -179,7 +256,7 @@ void SubMaps::syncMapThread(){
 }
 
 void SubMaps::warmUpThread(){
-  
+
   if(!is_initial_)
     return;
   

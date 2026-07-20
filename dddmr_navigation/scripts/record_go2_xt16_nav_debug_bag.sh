@@ -23,11 +23,19 @@ Topics:
   /tf_static
   /global_path
   /awared_global_path
+  /map1/mapcloud
+  /map1/mapsurface
+  /map1/mapground
+  /perception_3d_ros/dGraph
+  /perception_3d_global/map/dGraph
+  /perception_3d_global/lidar/global_marking
   /prune_plan
   /trajectory
   /accepted_trajectory
   /best_trajectory
   /segmented_cloud_pure
+  /laser_cloud_less_sharp
+  /laser_cloud_less_flat
   /utlidar/cloud_base
 EOF
 }
@@ -91,11 +99,19 @@ topics=(
   /tf_static
   /global_path
   /awared_global_path
+  /map1/mapcloud
+  /map1/mapsurface
+  /map1/mapground
+  /perception_3d_ros/dGraph
+  /perception_3d_global/map/dGraph
+  /perception_3d_global/lidar/global_marking
   /prune_plan
   /trajectory
   /accepted_trajectory
   /best_trajectory
   /segmented_cloud_pure
+  /laser_cloud_less_sharp
+  /laser_cloud_less_flat
   /utlidar/cloud_base
 )
 

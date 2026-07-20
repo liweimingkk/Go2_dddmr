@@ -30,7 +30,12 @@
 */
 #include <local_planner/local_planner.h>
 
+#include <chrono>
+#include <cmath>
 #include <sstream>
+#include <stdexcept>
+
+#include "planner_state_arbitration.h"
 
 namespace local_planner {
 
@@ -98,6 +103,78 @@ void Local_Planner::initial(
   declare_parameter("debug_rejection_report", rclcpp::ParameterValue(false));
   this->get_parameter("debug_rejection_report", debug_rejection_report_);
   RCLCPP_INFO(this->get_logger(), "debug_rejection_report: %d", debug_rejection_report_);
+
+  declare_parameter("in_place_direction_hysteresis_enabled", rclcpp::ParameterValue(true));
+  this->get_parameter(
+    "in_place_direction_hysteresis_enabled", in_place_direction_hysteresis_enabled_);
+  RCLCPP_INFO(
+    this->get_logger(), "in_place_direction_hysteresis_enabled: %d",
+    in_place_direction_hysteresis_enabled_);
+
+  declare_parameter(
+    "in_place_direction_hysteresis_generator",
+    rclcpp::ParameterValue("differential_drive_simple"));
+  this->get_parameter(
+    "in_place_direction_hysteresis_generator", in_place_direction_hysteresis_generator_);
+  RCLCPP_INFO(
+    this->get_logger(), "in_place_direction_hysteresis_generator: %s",
+    in_place_direction_hysteresis_generator_.c_str());
+
+  double in_place_direction_min_hold_sec = 1.0;
+  declare_parameter("in_place_direction_min_hold_sec", rclcpp::ParameterValue(1.0));
+  this->get_parameter("in_place_direction_min_hold_sec", in_place_direction_min_hold_sec);
+
+  double in_place_direction_switch_cost_margin = 0.05;
+  declare_parameter("in_place_direction_switch_cost_margin", rclcpp::ParameterValue(0.05));
+  this->get_parameter(
+    "in_place_direction_switch_cost_margin", in_place_direction_switch_cost_margin);
+
+  double in_place_direction_reset_gap_sec = 2.0;
+  declare_parameter("in_place_direction_reset_gap_sec", rclcpp::ParameterValue(2.0));
+  this->get_parameter("in_place_direction_reset_gap_sec", in_place_direction_reset_gap_sec);
+
+  bool in_place_direction_allow_cost_switch = true;
+  declare_parameter("in_place_direction_allow_cost_switch", rclcpp::ParameterValue(true));
+  this->get_parameter(
+    "in_place_direction_allow_cost_switch", in_place_direction_allow_cost_switch);
+
+  double in_place_direction_unavailable_grace_sec = 0.0;
+  declare_parameter(
+    "in_place_direction_unavailable_grace_sec", rclcpp::ParameterValue(0.0));
+  this->get_parameter(
+    "in_place_direction_unavailable_grace_sec",
+    in_place_direction_unavailable_grace_sec);
+
+  if(
+    !std::isfinite(in_place_direction_min_hold_sec) ||
+    in_place_direction_min_hold_sec < 0.0 ||
+    !std::isfinite(in_place_direction_switch_cost_margin) ||
+    in_place_direction_switch_cost_margin < 0.0 ||
+    !std::isfinite(in_place_direction_reset_gap_sec) ||
+    in_place_direction_reset_gap_sec <= 0.0 ||
+    !std::isfinite(in_place_direction_unavailable_grace_sec) ||
+    in_place_direction_unavailable_grace_sec < 0.0 ||
+    in_place_direction_hysteresis_generator_.empty())
+  {
+    throw std::invalid_argument(
+      "in-place direction hysteresis requires a non-empty generator, non-negative "
+      "hold/margin/unavailable grace, and a positive reset gap");
+  }
+  in_place_rotation_hysteresis_.configure(
+    in_place_direction_min_hold_sec,
+    in_place_direction_switch_cost_margin,
+    in_place_direction_reset_gap_sec,
+    in_place_direction_allow_cost_switch,
+    in_place_direction_unavailable_grace_sec);
+  RCLCPP_INFO(
+    this->get_logger(),
+    "in_place_direction_hysteresis: hold=%.2f cost_margin=%.3f reset_gap=%.2f "
+    "allow_cost_switch=%d unavailable_grace=%.2f",
+    in_place_direction_min_hold_sec,
+    in_place_direction_switch_cost_margin,
+    in_place_direction_reset_gap_sec,
+    in_place_direction_allow_cost_switch,
+    in_place_direction_unavailable_grace_sec);
 
   //@Initialize transform listener and broadcaster
   tf_listener_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
@@ -338,8 +415,7 @@ bool Local_Planner::isGoalReached(){
   final_pose = global_plan_.back();
   double dx = trans_gbl2b_.transform.translation.x - final_pose.pose.position.x;
   double dy = trans_gbl2b_.transform.translation.y - final_pose.pose.position.y;
-  double dz = trans_gbl2b_.transform.translation.z - final_pose.pose.position.z;
-  double distance = sqrt(dx*dx + dy*dy + dz*dz);
+  double distance = std::hypot(dx, dy);
   if(xy_goal_tolerance_>distance)
     return true;
   else
@@ -506,17 +582,27 @@ void Local_Planner::getBestTrajectory(std::string traj_gen_name, base_trajectory
   best_traj.cost_ = -1;
 
   double minimum_cost = 9999999;
+  std::size_t preferred_index = trajectories_->size();
+  std::vector<InPlaceRotationCandidate> hysteresis_candidates;
+  hysteresis_candidates.reserve(trajectories_->size());
   geometry_msgs::msg::PoseArray accepted_pose_arr;
   pcl::PointCloud<pcl::PointXYZ> cuboids_pcl;
   
   rejected_trajectories_.clear();
 
-  for(auto traj_it=trajectories_->begin();traj_it!=trajectories_->end();traj_it++){
+  std::size_t trajectory_index = 0;
+  for(auto traj_it=trajectories_->begin();traj_it!=trajectories_->end();traj_it++, trajectory_index++){
 
     mpc_critics_ros_->scoreTrajectory(traj_gen_name, (*traj_it));
+
+    InPlaceRotationCandidate hysteresis_candidate;
+    hysteresis_candidate.linear_x = (*traj_it).xv_;
+    hysteresis_candidate.angular_z = (*traj_it).thetav_;
+    hysteresis_candidate.cost = (*traj_it).cost_;
+    hysteresis_candidates.push_back(hysteresis_candidate);
     
     if((*traj_it).cost_>=0 && (*traj_it).cost_<=minimum_cost){
-      best_traj = (*traj_it);
+      preferred_index = trajectory_index;
       minimum_cost = (*traj_it).cost_;
     }
 
@@ -526,6 +612,39 @@ void Local_Planner::getBestTrajectory(std::string traj_gen_name, base_trajectory
 
     rejected_trajectories_[(*traj_it).rejected_by_].push_back(*traj_it);
     
+  }
+
+  std::size_t selected_index = preferred_index;
+  if(
+    in_place_direction_hysteresis_enabled_ &&
+    traj_gen_name == in_place_direction_hysteresis_generator_)
+  {
+    selected_index = in_place_rotation_hysteresis_.select(
+      hysteresis_candidates, preferred_index, std::chrono::steady_clock::now());
+  }
+  // Other generators can run briefly during the same avoidance manoeuvre.
+  // They must not erase this generator's lock; the time gap or an explicit
+  // new-goal reset defines the end of the direction episode.
+
+  if(selected_index < trajectories_->size()){
+    best_traj = trajectories_->at(selected_index);
+    if(selected_index != preferred_index && preferred_index < trajectories_->size()){
+      const auto & preferred = trajectories_->at(preferred_index);
+      RCLCPP_INFO_THROTTLE(
+        this->get_logger().get_child(name_), *clock_, 1000,
+        "in_place_direction_hysteresis held yaw sign: preferred=(%.3f,cost=%.3f) "
+        "selected=(%.3f,cost=%.3f)",
+        preferred.thetav_, preferred.cost_, best_traj.thetav_, best_traj.cost_);
+    }
+  }
+  else if(
+    in_place_direction_hysteresis_enabled_ &&
+    traj_gen_name == in_place_direction_hysteresis_generator_ &&
+    preferred_index < trajectories_->size())
+  {
+    RCLCPP_INFO_THROTTLE(
+      this->get_logger().get_child(name_), *clock_, 1000,
+      "in_place_direction_hysteresis stopped during direction-unavailable grace period");
   }
   
   if(best_traj.cost_ < 0 || debug_rejection_report_){
@@ -540,7 +659,9 @@ void Local_Planner::getBestTrajectory(std::string traj_gen_name, base_trajectory
     report << "trajectory_report gen=" << traj_gen_name
            << " total=" << total
            << " accepted=" << accepted
-           << " best_cost=" << best_traj.cost_;
+           << " best_cost=" << best_traj.cost_
+           << " best_vx=" << best_traj.xv_
+           << " best_vyaw=" << best_traj.thetav_;
     for(auto report_it=rejected_trajectories_.begin(); report_it!=rejected_trajectories_.end(); report_it++){
       double rate = total > 0 ? static_cast<double>((*report_it).second.size()) / static_cast<double>(total) : 0.0;
       report << " rejected_by=" << (*report_it).first
@@ -562,6 +683,11 @@ void Local_Planner::getBestTrajectory(std::string traj_gen_name, base_trajectory
   best_pose_arr.header.stamp = clock_->now();
   pub_best_trajectory_pose_->publish(best_pose_arr);
 
+}
+
+void Local_Planner::resetInPlaceRotationHysteresis()
+{
+  in_place_rotation_hysteresis_.reset();
 }
 
 dddmr_sys_core::PlannerState Local_Planner::computeVelocityCommand(std::string traj_gen_name, base_trajectory::Trajectory& best_traj){
@@ -684,27 +810,53 @@ dddmr_sys_core::PlannerState Local_Planner::computeVelocityCommand(std::string t
     RCLCPP_WARN(this->get_logger().get_child(name_), "Local planner control time exceed expect time: %.2f but is %.2f", 1./controller_frequency_, t_diff.seconds());
   }
   
-  //@Loop opinions
+  //@Loop opinions.  Keep them as fallback states: a trajectory with a valid
+  //@cost has already passed the collision critic and is the local detour that
+  //@must be executed when the reference path itself is obstructed.
   std::vector<perception_3d::PerceptionOpinion> opinions = perception_3d_ros_->getStackedPerception()->getOpinions();
+  bool path_blocked_wait = false;
+  bool path_blocked_replanning = false;
   for(auto opinion_it=opinions.begin(); opinion_it!=opinions.end();opinion_it++){
     if((*opinion_it)==perception_3d::PATH_BLOCKED_WAIT){
-      RCLCPP_WARN_THROTTLE(this->get_logger().get_child(name_), *clock_, 5000, "Found the prune plan is blocked, go to wait state.");
-      return dddmr_sys_core::PATH_BLOCKED_WAIT;
+      path_blocked_wait = true;
     }
     else if((*opinion_it)==perception_3d::PATH_BLOCKED_REPLANNING){
-      RCLCPP_WARN_THROTTLE(this->get_logger().get_child(name_), *clock_, 5000, "Found the prune plan is blocked, go to replanning.");
-      return dddmr_sys_core::PATH_BLOCKED_REPLANNING;      
+      path_blocked_replanning = true;
     }
   }
 
+  const auto planner_state = arbitratePlannerState(
+    best_traj.cost_, path_blocked_wait, path_blocked_replanning);
 
-  if(best_traj.cost_<0){
+  if(planner_state == dddmr_sys_core::TRAJECTORY_FOUND){
+    if(path_blocked_wait || path_blocked_replanning){
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger().get_child(name_), *clock_, 5000,
+        "Reference path is blocked, but collision critics found a safe local trajectory; continue local avoidance.");
+    }
+    return planner_state;
+  }
+
+  if(planner_state == dddmr_sys_core::PATH_BLOCKED_WAIT){
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger().get_child(name_), *clock_, 5000,
+      "Reference path is blocked and no safe local trajectory exists; go to wait state.");
+    return planner_state;
+  }
+
+  if(planner_state == dddmr_sys_core::PATH_BLOCKED_REPLANNING){
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger().get_child(name_), *clock_, 5000,
+      "Reference path is blocked and no safe local trajectory exists; go to replanning.");
+    return planner_state;
+  }
+
+  if(planner_state == dddmr_sys_core::ALL_TRAJECTORIES_FAIL){
     RCLCPP_WARN_THROTTLE(this->get_logger().get_child(name_), *clock_, 5000, "All trajectories are rejected by critics.");
-    return dddmr_sys_core::ALL_TRAJECTORIES_FAIL;
+    return planner_state;
   }
-  else{
-    return dddmr_sys_core::TRAJECTORY_FOUND;
-  }
+
+  return planner_state;
   
   //@ Reset kd tree/observations because it is shared_ptr and copied from perception_ros
   mpc_critics_ros_->getSharedDataPtr()->pcl_perception_.reset(new pcl::PointCloud<pcl::PointXYZI>());

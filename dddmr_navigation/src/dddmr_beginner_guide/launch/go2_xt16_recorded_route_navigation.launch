@@ -1,0 +1,52 @@
+<launch>
+  <arg name="config_file" default="$(find-pkg-share dddmr_beginner_guide)/config/go2_xt16_navigation.yaml"/>
+  <arg name="relocalization_config_file" default="$(find-pkg-share dddmr_beginner_guide)/config/go2_xt16_relocalization.yaml"/>
+  <arg name="route_config_file" default="$(find-pkg-share dddmr_route_navigation)/config/go2_xt16_recorded_route.yaml"/>
+  <arg name="route_file" default=""/>
+  <arg name="start_route_file_publisher" default="false"/>
+  <arg name="rviz" default="true"/>
+  <arg name="rviz_config" default="$(find-pkg-share dddmr_beginner_guide)/rviz/go2_xt16_navigation.rviz"/>
+
+  <arg name="publish_static_tf" default="true"/>
+  <arg name="standardize_odom" default="true"/>
+  <arg name="raw_odom_topic" default="/utlidar/robot_odom"/>
+  <arg name="odom_topic" default="/dddmr_go2/robot_odom_standard"/>
+  <arg name="lidar_topic" default="/lidar_points"/>
+
+  <!-- Reuse map server, MCL, perception prerequisites and the Go2 safety gate,
+       but explicitly omit DDDMR global_planner, P2PMoveBase and clicked2goal. -->
+  <include file="$(find-pkg-share dddmr_beginner_guide)/launch/go2_xt16_navigation.launch">
+    <arg name="config_file" value="$(var config_file)"/>
+    <arg name="relocalization_config_file" value="$(var relocalization_config_file)"/>
+    <arg name="rviz" value="$(var rviz)"/>
+    <arg name="rviz_config" value="$(var rviz_config)"/>
+    <arg name="start_move_base" value="false"/>
+    <arg name="publish_static_tf" value="$(var publish_static_tf)"/>
+    <arg name="standardize_odom" value="$(var standardize_odom)"/>
+    <arg name="raw_odom_topic" value="$(var raw_odom_topic)"/>
+    <arg name="odom_topic" value="$(var odom_topic)"/>
+    <arg name="lidar_topic" value="$(var lidar_topic)"/>
+    <arg name="start_go2_nav_cmd_gate" value="true"/>
+    <arg name="go2_nav_cmd_gate_input_topic" value="/dddmr_go2/dry_run_cmd_vel"/>
+    <arg name="start_sport_dry_run_adapter" value="true"/>
+    <arg name="start_go2_sport_adapter" value="false"/>
+    <arg name="go2_sport_enable_output" value="false"/>
+    <arg name="go2_sport_allow_real_request_topic" value="false"/>
+  </include>
+
+  <!-- The only velocity produced by this launch is remapped into the existing
+       dry-run chain. This launch cannot publish Unitree Sport requests. -->
+  <node pkg="dddmr_route_navigation" exec="recorded_route_move_base_node"
+        output="screen" respawn="false">
+    <param from="$(var config_file)"/>
+    <param from="$(var route_config_file)"/>
+    <remap from="/cmd_vel" to="/dddmr_go2/dry_run_cmd_vel"/>
+    <param name="use_sim_time" value="false"/>
+  </node>
+
+  <node pkg="dddmr_route_navigation" exec="route_tool.py"
+        output="screen" respawn="false"
+        if="$(var start_route_file_publisher)"
+        args="publish $(var route_file) --topic /recorded_route --wait-seconds 3.0">
+  </node>
+</launch>

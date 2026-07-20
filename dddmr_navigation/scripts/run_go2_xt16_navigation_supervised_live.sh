@@ -40,6 +40,8 @@ Environment:
   GO2_YAW_ARC_NOMOTION_REPORT=<required when GO2_YAW_ARC_SHIM_MODE=live>
   GO2_DECISION_TOPIC=/dddmr_go2/p2p_decision
   GO2_DECISION_TIMEOUT_SEC=0.30
+  GO2_REQUIRE_MOTION_DECISION=true
+  GO2_MOTION_ALLOWED_DECISIONS=d_controlling,d_align_heading,d_align_goal_heading,d_recovery_waitdone
   GO2_ZERO_YAW_ONLY_WHEN_SHIM_DISALLOWED=true
   GO2_MAX_CONTINUOUS_YAW_ARC_SEC=4.0
 
@@ -99,6 +101,8 @@ yaw_arc_allowed_decisions="${GO2_YAW_ARC_ALLOWED_DECISIONS:-d_align_heading}"
 yaw_arc_nomotion_report="${GO2_YAW_ARC_NOMOTION_REPORT:-}"
 decision_topic="${GO2_DECISION_TOPIC:-/dddmr_go2/p2p_decision}"
 decision_timeout_sec="${GO2_DECISION_TIMEOUT_SEC:-0.30}"
+require_motion_decision="${GO2_REQUIRE_MOTION_DECISION:-true}"
+motion_allowed_decisions="${GO2_MOTION_ALLOWED_DECISIONS:-d_controlling,d_align_heading,d_align_goal_heading,d_recovery_waitdone}"
 zero_yaw_only_when_shim_disallowed="${GO2_ZERO_YAW_ONLY_WHEN_SHIM_DISALLOWED:-true}"
 max_continuous_yaw_arc_sec="${GO2_MAX_CONTINUOUS_YAW_ARC_SEC:-4.0}"
 rviz="${RVIZ:-true}"
@@ -175,6 +179,8 @@ YAW_ARC_ALLOWED_DECISIONS=${yaw_arc_allowed_decisions}
 YAW_ARC_NOMOTION_REPORT=${yaw_arc_nomotion_report}
 DECISION_TOPIC=${decision_topic}
 DECISION_TIMEOUT_SEC=${decision_timeout_sec}
+REQUIRE_MOTION_DECISION=${require_motion_decision}
+MOTION_ALLOWED_DECISIONS=${motion_allowed_decisions}
 ZERO_YAW_ONLY_WHEN_SHIM_DISALLOWED=${zero_yaw_only_when_shim_disallowed}
 MAX_CONTINUOUS_YAW_ARC_SEC=${max_continuous_yaw_arc_sec}
 EOF
@@ -336,7 +342,12 @@ PY
     true|false) ;;
     *) die "GO2_ZERO_YAW_ONLY_WHEN_SHIM_DISALLOWED must be true or false" ;;
   esac
+  case "${require_motion_decision}" in
+    true|false) ;;
+    *) die "GO2_REQUIRE_MOTION_DECISION must be true or false" ;;
+  esac
   validate_allowed_decisions "${yaw_arc_allowed_decisions}"
+  validate_allowed_decisions "${motion_allowed_decisions}"
 
   if [[ "${enable_yaw_arc_shim}" == "true" && "${yaw_arc_shim_mode}" == "live" ]]; then
     [[ "${GO2_YAW_ARC_SHIM_CONFIRM:-}" == "${YAW_ARC_CONFIRM_PHRASE}" ]] || \
@@ -366,7 +377,7 @@ validate_yaw_arc_nomotion_report() {
   rg -q --fixed-strings 'RESULT=GO2_YAW_ARC_SHIM_NOMOTION_PASS' "${report}" || \
     die "GO2_YAW_ARC_NOMOTION_REPORT did not pass: ${report}"
 
-  local allowed_log recovery_log stale_log report_forward_x report_min_abs_yaw report_allowed_decisions report_max_continuous report_yaw expected_transform
+  local allowed_log recovery_log stale_log report_forward_x report_min_abs_yaw report_allowed_decisions report_motion_allowed_decisions report_max_continuous report_yaw expected_transform
   allowed_log="$(awk -F= '$1=="ALLOWED_LOG"{print $2}' "${report}")"
   recovery_log="$(awk -F= '$1=="RECOVERY_LOG"{print $2}' "${report}")"
   stale_log="$(awk -F= '$1=="STALE_LOG"{print $2}' "${report}")"
@@ -374,6 +385,7 @@ validate_yaw_arc_nomotion_report() {
   report_forward_x="$(awk -F= '$1=="FORWARD_X"{print $2}' "${report}")"
   report_min_abs_yaw="$(awk -F= '$1=="MIN_ABS_YAW"{print $2}' "${report}")"
   report_allowed_decisions="$(awk -F= '$1=="ALLOWED_DECISIONS"{print $2}' "${report}")"
+  report_motion_allowed_decisions="$(awk -F= '$1=="MOTION_ALLOWED_DECISIONS"{print $2}' "${report}")"
   report_max_continuous="$(awk -F= '$1=="MAX_CONTINUOUS_YAW_ARC_SEC"{print $2}' "${report}")"
 
   [[ -f "${allowed_log}" ]] || die "missing allowed yaw-arc no-motion log: ${allowed_log}"
@@ -381,6 +393,8 @@ validate_yaw_arc_nomotion_report() {
   [[ -f "${stale_log}" ]] || die "missing stale yaw-arc no-motion log: ${stale_log}"
   [[ "${report_allowed_decisions}" == "${yaw_arc_allowed_decisions}" ]] || \
     die "GO2_YAW_ARC_NOMOTION_REPORT allowed decisions (${report_allowed_decisions}) do not match current (${yaw_arc_allowed_decisions})"
+  [[ "${report_motion_allowed_decisions}" == "${motion_allowed_decisions}" ]] || \
+    die "GO2_YAW_ARC_NOMOTION_REPORT motion decisions (${report_motion_allowed_decisions}) do not match current (${motion_allowed_decisions})"
   /usr/bin/python3 - "${report_forward_x}" "${yaw_arc_forward_x}" "${report_min_abs_yaw}" "${yaw_arc_min_abs_yaw}" "${report_max_continuous}" "${max_continuous_yaw_arc_sec}" <<'PY'
 import math
 import sys
@@ -418,9 +432,9 @@ PY
 
   rg -q --fixed-strings "transformed_sport=${expected_transform}" "${allowed_log}" || \
     die "allowed no-motion log does not show expected transform ${expected_transform}"
-  rg -q --fixed-strings 'shim=blocked_blocked_state=d_recovery_waitdone' "${recovery_log}" || \
-    die "recovery no-motion log does not show blocked recovery state"
-  rg -q --fixed-strings 'shim=blocked_stale_decision=d_align_heading' "${stale_log}" || \
+  rg -q --fixed-strings 'shim=recovery_pure_yaw_no_arc' "${recovery_log}" || \
+    die "recovery no-motion log does not show pure-yaw pass without an arc"
+  rg -q --fixed-strings 'motion decision gate blocked stale_decision=d_align_heading' "${stale_log}" || \
     die "stale no-motion log does not show blocked stale decision"
 
   echo "Validated yaw-arc no-motion report: ${report}"
@@ -498,6 +512,8 @@ start_adapter() {
     -p yaw_arc_allowed_decisions:="'${yaw_arc_allowed_decisions}'" \
     -p decision_topic:="${decision_topic}" \
     -p decision_timeout_sec:="${decision_timeout_sec}" \
+    -p require_motion_decision:="${require_motion_decision}" \
+    -p motion_allowed_decisions:="'${motion_allowed_decisions}'" \
     -p zero_yaw_only_when_shim_disallowed:="${zero_yaw_only_when_shim_disallowed}" \
     -p max_continuous_yaw_arc_sec:="${max_continuous_yaw_arc_sec}" \
     >"${adapter_log}" 2>&1 &

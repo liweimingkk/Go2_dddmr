@@ -35,6 +35,11 @@
 //      (IROS). October 2018.
 
 #include "featureAssociation.h"
+#include "degeneracy_utils.h"
+
+#include <chrono>
+#include <iomanip>
+#include <sstream>
 
 const float RAD2DEG = 180.0 / M_PI;
 
@@ -71,6 +76,9 @@ FeatureAssociation::FeatureAssociation(std::string name, Channel<ProjectionOut> 
       ("originized_wheel_odom_path", 1);
   pubOriginizedLaserOdometryPath = this->create_publisher<nav_msgs::msg::Path>
       ("originized_laser_odom_path", 1);
+  pubOdomSyncDiagnostics =
+      this->create_publisher<diagnostic_msgs::msg::DiagnosticArray>(
+      "odom_sync_diagnostics", 10);
 
   //TF broadcaster
   tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
@@ -95,6 +103,25 @@ FeatureAssociation::FeatureAssociation(std::string name, Channel<ProjectionOut> 
   this->get_parameter("mapping.to_map_optimization", to_map_optimization_);
   RCLCPP_INFO(this->get_logger(), "mapping.to_map_optimization: %d", to_map_optimization_);
 
+  odom_sync_enabled_ = declare_parameter<bool>(
+      "featureAssociation.odom_sync_enabled", false);
+  odom_sync_tolerance_sec_ = declare_parameter<double>(
+      "featureAssociation.odom_sync_tolerance_sec", 0.05);
+  odom_buffer_duration_sec_ = declare_parameter<double>(
+      "featureAssociation.odom_buffer_duration_sec", 5.0);
+  odom_interpolation_max_gap_sec_ = declare_parameter<double>(
+      "featureAssociation.odom_interpolation_max_gap_sec", 0.1);
+  odom_sync_wait_timeout_sec_ = declare_parameter<double>(
+      "featureAssociation.odom_sync_wait_timeout_sec", 0.1);
+  odom_time_offset_sec_ = declare_parameter<double>(
+      "featureAssociation.odom_time_offset_sec", 0.0);
+  RCLCPP_INFO(
+      this->get_logger(),
+      "odom sync: enabled=%d tolerance=%.3f buffer=%.2f interpolation_gap=%.3f wait=%.3f offset=%.6f",
+      odom_sync_enabled_, odom_sync_tolerance_sec_, odom_buffer_duration_sec_,
+      odom_interpolation_max_gap_sec_, odom_sync_wait_timeout_sec_,
+      odom_time_offset_sec_);
+
   odom_cb_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   timer_cb_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive); 
 
@@ -105,7 +132,7 @@ FeatureAssociation::FeatureAssociation(std::string name, Channel<ProjectionOut> 
   rclcpp::SubscriptionOptions sub_options;
   sub_options.callback_group = odom_cb_group_;
   subOdom = this->create_subscription<nav_msgs::msg::Odometry>(
-      "odom", rclcpp::QoS(rclcpp::KeepLast(1)).durability_volatile().best_effort(),
+      "odom", rclcpp::QoS(rclcpp::KeepLast(200)).durability_volatile().best_effort(),
       std::bind(&FeatureAssociation::odomHandler, this, std::placeholders::_1), sub_options);
 
   //initializationValue();
@@ -158,6 +185,7 @@ void FeatureAssociation::initializeValue() {
   for (int i = 0; i < 6; ++i) {
     transformCur[i] = 0;
     transformLaserOdometrySum[i] = 0;
+    transformExternalOdometrySum[i] = 0;
   }
 
   systemInitedLM = false;
@@ -199,9 +227,35 @@ void FeatureAssociation::tfInitial(){
 }
 
 void FeatureAssociation::odomHandler(const nav_msgs::msg::Odometry::SharedPtr odomIn){
-  
+  const int64_t odom_stamp_ns = lego_loam_bor::stampNanoseconds(odomIn->header.stamp);
+  if (odom_stamp_ns <= 0) {
+    RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *this->get_clock(), 2000,
+        "Reject odometry with a zero/invalid header stamp");
+    return;
+  }
+
   odom_topic_alive_ = true;
-  exteralOdometry = (*odomIn);
+  {
+    std::lock_guard<std::mutex> lock(odom_buffer_mutex_);
+    const auto insert_at = std::upper_bound(
+        odom_buffer_.begin(), odom_buffer_.end(), odom_stamp_ns,
+        [](const int64_t stamp, const nav_msgs::msg::Odometry & odom) {
+          return stamp < lego_loam_bor::stampNanoseconds(odom.header.stamp);
+        });
+    odom_buffer_.insert(insert_at, *odomIn);
+
+    const int64_t buffer_duration_ns = static_cast<int64_t>(
+        std::max(odom_buffer_duration_sec_, 0.1) * 1e9);
+    const int64_t newest_stamp_ns = lego_loam_bor::stampNanoseconds(
+        odom_buffer_.back().header.stamp);
+    while (odom_buffer_.size() > 2 &&
+           newest_stamp_ns - lego_loam_bor::stampNanoseconds(
+               odom_buffer_.front().header.stamp) > buffer_duration_ns) {
+      odom_buffer_.pop_front();
+    }
+  }
+  odom_buffer_cv_.notify_all();
 
   if(!odom_tf_alive_ && odom_tf_detect_number_<3){
 
@@ -221,23 +275,6 @@ void FeatureAssociation::odomHandler(const nav_msgs::msg::Odometry::SharedPtr od
     
   }
 
-  
-  if(odom_type_!="wheel_odometry"){
-    return;
-  }
-
-  //ROS_INFO_ONCE("Recieve odom.");
-  //@ If odom is not initilized with 0, we record it and then transform it
-  //@ Because odom in lego loam should always start with 0
-  if(!first_odom_prepared_){
-    tf2_first_odom2b_.setOrigin(tf2::Vector3(odomIn->pose.pose.position.x, odomIn->pose.pose.position.y, odomIn->pose.pose.position.z));
-    tf2_first_odom2b_.setRotation(tf2::Quaternion(odomIn->pose.pose.orientation.x, odomIn->pose.pose.orientation.y, odomIn->pose.pose.orientation.z, odomIn->pose.pose.orientation.w));
-    tf2_first_odom2s_.mult(tf2_first_odom2b_, tf2_trans_b2s_);
-    tf2_first_odom2s_inverse_ = tf2_first_odom2s_.inverse();
-    first_odom_prepared_ = true;
-    RCLCPP_WARN(this->get_logger(), "The first odom is record: %.2f, %.2f, %.2f", odomIn->pose.pose.position.x, odomIn->pose.pose.position.y, odomIn->pose.pose.position.z);
-  }
-  
   // sanity check of odom->child_frame to base_link frame 
   if(!odom_sanity_check_){
     try
@@ -253,32 +290,160 @@ void FeatureAssociation::odomHandler(const nav_msgs::msg::Odometry::SharedPtr od
       RCLCPP_ERROR(this->get_logger(), "Could not get %s to %s, check your odom topic and baselink frame", odomIn->child_frame_id.c_str(), baselink_frame_.c_str());
     }
   }
+}
 
-  tf2::Transform tf2_trans_o2b, tf2_trans_o2s, tf2_trans_first_s2s;
-  tf2_trans_o2b.setOrigin(tf2::Vector3(odomIn->pose.pose.position.x, odomIn->pose.pose.position.y, odomIn->pose.pose.position.z));
-  tf2_trans_o2b.setRotation(tf2::Quaternion(odomIn->pose.pose.orientation.x, odomIn->pose.pose.orientation.y, odomIn->pose.pose.orientation.z, odomIn->pose.pose.orientation.w));
+FeatureAssociation::OdomSyncResult FeatureAssociation::selectOdometryForCloud(
+    const builtin_interfaces::msg::Time & cloud_stamp)
+{
+  OdomSyncResult result;
+  const auto deadline = std::chrono::steady_clock::now() +
+      std::chrono::duration<double>(std::max(odom_sync_wait_timeout_sec_, 0.0));
+
+  std::unique_lock<std::mutex> lock(odom_buffer_mutex_);
+  auto try_select = [&](const bool allow_nearest) -> bool {
+    if (odom_buffer_.empty()) {
+      return false;
+    }
+
+    if (!odom_sync_enabled_) {
+      result.odometry = odom_buffer_.back();
+      const int64_t corrected_stamp_ns =
+          lego_loam_bor::stampNanoseconds(result.odometry.header.stamp) +
+          static_cast<int64_t>(std::llround(odom_time_offset_sec_ * 1e9));
+      result.oldest_corrected_stamp_sec = static_cast<double>(
+          lego_loam_bor::stampNanoseconds(odom_buffer_.front().header.stamp)) * 1e-9 +
+          odom_time_offset_sec_;
+      result.newest_corrected_stamp_sec = static_cast<double>(corrected_stamp_ns) * 1e-9;
+      result.sync_error_sec = static_cast<double>(
+          corrected_stamp_ns - lego_loam_bor::stampNanoseconds(cloud_stamp)) * 1e-9;
+      result.odometry.header.stamp = cloud_stamp;
+      result.valid = true;
+      return true;
+    }
+    result = lego_loam_bor::selectTimeAlignedOdometry(
+        odom_buffer_, cloud_stamp, odom_time_offset_sec_,
+        odom_sync_tolerance_sec_, odom_interpolation_max_gap_sec_,
+        allow_nearest);
+    return result.valid;
+  };
+
+  if (try_select(false)) {
+    return result;
+  }
+  while (odom_sync_enabled_ && odom_sync_wait_timeout_sec_ > 0.0 &&
+         odom_buffer_cv_.wait_until(lock, deadline) != std::cv_status::timeout) {
+    if (try_select(false)) {
+      return result;
+    }
+  }
+  try_select(true);
+  return result;
+}
+
+void FeatureAssociation::publishOdomSyncDiagnostic(
+    const builtin_interfaces::msg::Time & cloud_stamp,
+    const OdomSyncResult & result, const std::string & message)
+{
+  diagnostic_msgs::msg::DiagnosticArray array;
+  array.header.stamp = cloud_stamp;
+  diagnostic_msgs::msg::DiagnosticStatus status;
+  status.name = "lego_loam/odom_sync";
+  status.hardware_id = "external_odometry";
+  status.level = result.valid ? diagnostic_msgs::msg::DiagnosticStatus::OK :
+      diagnostic_msgs::msg::DiagnosticStatus::ERROR;
+  status.message = message;
+  const auto add_value = [&status](const std::string & key, const auto & value) {
+      std::ostringstream stream;
+      stream << std::setprecision(9) << value;
+      diagnostic_msgs::msg::KeyValue item;
+      item.key = key;
+      item.value = stream.str();
+      status.values.push_back(std::move(item));
+    };
+  add_value("sync_enabled", odom_sync_enabled_);
+  add_value("valid", result.valid);
+  add_value("interpolated", result.interpolated);
+  add_value("cloud_stamp_sec", static_cast<double>(
+      lego_loam_bor::stampNanoseconds(cloud_stamp)) * 1e-9);
+  add_value("sync_error_sec", result.sync_error_sec);
+  add_value("bracket_span_sec", result.bracket_span_sec);
+  add_value("oldest_corrected_odom_stamp_sec", result.oldest_corrected_stamp_sec);
+  add_value("newest_corrected_odom_stamp_sec", result.newest_corrected_stamp_sec);
+  add_value("configured_time_offset_sec", odom_time_offset_sec_);
+  add_value("sync_tolerance_sec", odom_sync_tolerance_sec_);
+  add_value("wait_timeout_sec", odom_sync_wait_timeout_sec_);
+  array.status.push_back(std::move(status));
+  pubOdomSyncDiagnostics->publish(array);
+}
+
+bool FeatureAssociation::prepareExternalOdometryForCloud(
+    const builtin_interfaces::msg::Time & cloud_stamp,
+    OdomSyncResult & sync_result)
+{
+  sync_result = selectOdometryForCloud(cloud_stamp);
+  if (!sync_result.valid) {
+    publishOdomSyncDiagnostic(cloud_stamp, sync_result, "no time-aligned odometry; frame rejected");
+    RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *this->get_clock(), 1000,
+        "Reject lidar frame: no odom within %.3fs after applying offset %.6fs (buffer %.6f..%.6f)",
+        odom_sync_tolerance_sec_, odom_time_offset_sec_,
+        sync_result.oldest_corrected_stamp_sec,
+        sync_result.newest_corrected_stamp_sec);
+    return false;
+  }
+
+  exteralOdometry = sync_result.odometry;
+  tf2::Transform tf2_trans_o2b;
+  tf2_trans_o2b.setOrigin(tf2::Vector3(
+      exteralOdometry.pose.pose.position.x,
+      exteralOdometry.pose.pose.position.y,
+      exteralOdometry.pose.pose.position.z));
+  tf2::Quaternion odom_orientation(
+      exteralOdometry.pose.pose.orientation.x,
+      exteralOdometry.pose.pose.orientation.y,
+      exteralOdometry.pose.pose.orientation.z,
+      exteralOdometry.pose.pose.orientation.w);
+  if (odom_orientation.length2() <= 1e-12) {
+    sync_result.valid = false;
+    publishOdomSyncDiagnostic(cloud_stamp, sync_result, "invalid odometry quaternion; frame rejected");
+    return false;
+  }
+  odom_orientation.normalize();
+  tf2_trans_o2b.setRotation(odom_orientation);
+
+  tf2::Transform tf2_trans_o2s;
   tf2_trans_o2s.mult(tf2_trans_o2b, tf2_trans_b2s_);
+  if (!first_odom_prepared_) {
+    tf2_first_odom2b_ = tf2_trans_o2b;
+    tf2_first_odom2s_ = tf2_trans_o2s;
+    tf2_first_odom2s_inverse_ = tf2_first_odom2s_.inverse();
+    first_odom_prepared_ = true;
+    RCLCPP_INFO(
+        this->get_logger(), "Synchronized odom origin: %.3f, %.3f, %.3f",
+        exteralOdometry.pose.pose.position.x,
+        exteralOdometry.pose.pose.position.y,
+        exteralOdometry.pose.pose.position.z);
+  }
 
+  tf2::Transform tf2_trans_first_s2s;
   tf2_trans_first_s2s.mult(tf2_first_odom2s_inverse_, tf2_trans_o2s);
+  tf2::Matrix3x3 orientation(tf2_trans_first_s2s.getRotation());
+  double roll = 0.0;
+  double pitch = 0.0;
+  double yaw = 0.0;
+  orientation.getRPY(roll, pitch, yaw);
+  transformExternalOdometrySum[0] = pitch;
+  transformExternalOdometrySum[1] = yaw;
+  transformExternalOdometrySum[2] = roll;
+  transformExternalOdometrySum[3] = tf2_trans_first_s2s.getOrigin().y();
+  transformExternalOdometrySum[4] = tf2_trans_first_s2s.getOrigin().z();
+  transformExternalOdometrySum[5] = tf2_trans_first_s2s.getOrigin().x();
 
-  //@Get RPY
-  tf2::Matrix3x3 m(tf2_trans_first_s2s.getRotation());
-  double roll, pitch, yaw;
-  m.getRPY(roll, pitch, yaw);
-  double odom_time = static_cast<double>(odomIn->header.stamp.sec) + static_cast<double>(odomIn->header.stamp.nanosec) * 1e-9;
-  double cloud_time = static_cast<double>(segInfo.header.stamp.sec) + static_cast<double>(segInfo.header.stamp.nanosec) * 1e-9;
-  //if(fabs(odom_time-cloud_time)<0.05 || fabs(odom_time)<=0.1 || fabs(cloud_time)<=0.1){ //@ try to handle 0 timestamp
-  
-    transformExternalOdometrySum[0] = pitch;
-    transformExternalOdometrySum[1] = yaw;
-    transformExternalOdometrySum[2] = roll;
-    transformExternalOdometrySum[3] = tf2_trans_first_s2s.getOrigin().y();
-    transformExternalOdometrySum[4] = tf2_trans_first_s2s.getOrigin().z();
-    transformExternalOdometrySum[5] = tf2_trans_first_s2s.getOrigin().x();
-    
-  //}
-  
-  //RCLCPP_WARN(this->get_logger(), "%.2f, %.2f, %.2f <> %.2f, %.2f, %.2f", roll, pitch, yaw, odomIn->pose.pose.position.x, odomIn->pose.pose.position.y, odomIn->pose.pose.position.z);
+  publishOdomSyncDiagnostic(
+      cloud_stamp, sync_result,
+      sync_result.interpolated ? "time-aligned odometry interpolated" :
+      (odom_sync_enabled_ ? "time-aligned nearest odometry" : "sync disabled; latest odometry used"));
+  return true;
 }
 
 void FeatureAssociation::adjustDistortion() {
@@ -968,34 +1133,16 @@ bool FeatureAssociation::calculateTransformationSurf(int iterCount) {
   matX = matAtA.colPivHouseholderQr().solve(matAtB);
 
   if (iterCount == 0) {
-    Eigen::Matrix<float,1,3> matE;
-    Eigen::Matrix<float,3,3> matV;
-    Eigen::Matrix<float,3,3> matV2;
-    
-    Eigen::SelfAdjointEigenSolver< Eigen::Matrix<float,3,3> > esolver(matAtA);
-    matE = esolver.eigenvalues().real();
-    matV = esolver.eigenvectors().real();
-    matV2 = matV;
-
-    isDegenerate = false;
-    float eignThre[3] = {10, 10, 10};
-    for (int i = 2; i >= 0; i--) {
-      if (matE(0, i) < eignThre[i]) {
-        for (int j = 0; j < 3; j++) {
-          matV2(i, j) = 0;
-        }
-        isDegenerate = true;
-      } else {
-        break;
-      }
-    }
-    matP = matV.inverse() * matV2;
+    Eigen::Matrix<float, 3, 1> thresholds;
+    thresholds.setConstant(10.0F);
+    const auto degeneracy = lego_loam_bor::computeDegeneracyProjection(
+        matAtA, thresholds);
+    matP = degeneracy.projection;
+    isDegenerate = degeneracy.is_degenerate;
   }
 
   if (isDegenerate) {
-    Eigen::Matrix<float,3,1> matX2;
-    matX2 = matX;
-    matX = matP * matX2;
+    matX = matP * matX;
   }
 
   transformCur[0] += matX(0, 0);
@@ -1074,34 +1221,16 @@ bool FeatureAssociation::calculateTransformationCorner(int iterCount) {
   matX = matAtA.colPivHouseholderQr().solve(matAtB);
 
   if (iterCount == 0) {
-    Eigen::Matrix<float,1, 3> matE;
-    Eigen::Matrix<float,3, 3> matV;
-    Eigen::Matrix<float,3, 3> matV2;
-
-    Eigen::SelfAdjointEigenSolver< Eigen::Matrix<float,3,3> > esolver(matAtA);
-    matE = esolver.eigenvalues().real();
-    matV = esolver.eigenvectors().real();
-    matV2 = matV;
-
-    isDegenerate = false;
-    float eignThre[3] = {10, 10, 10};
-    for (int i = 2; i >= 0; i--) {
-      if (matE(0, i) < eignThre[i]) {
-        for (int j = 0; j < 3; j++) {
-          matV2(i, j) = 0;
-        }
-        isDegenerate = true;
-      } else {
-        break;
-      }
-    }
-    matP = matV.inverse() * matV2;
+    Eigen::Matrix<float, 3, 1> thresholds;
+    thresholds.setConstant(10.0F);
+    const auto degeneracy = lego_loam_bor::computeDegeneracyProjection(
+        matAtA, thresholds);
+    matP = degeneracy.projection;
+    isDegenerate = degeneracy.is_degenerate;
   }
 
   if (isDegenerate) {
-    Eigen::Matrix<float,3,1> matX2;
-    matX2 = matX;
-    matX = matP * matX2;
+    matX = matP * matX;
   }
 
   transformCur[1] += matX(0, 0);
@@ -1214,34 +1343,16 @@ bool FeatureAssociation::calculateTransformation(int iterCount) {
   matX = matAtA.colPivHouseholderQr().solve(matAtB);
 
   if (iterCount == 0) {
-    Eigen::Matrix<float,1, 6> matE;
-    Eigen::Matrix<float,6, 6> matV;
-    Eigen::Matrix<float,6, 6> matV2;
-
-    Eigen::SelfAdjointEigenSolver< Eigen::Matrix<float,6,6> > esolver(matAtA);
-    matE = esolver.eigenvalues().real();
-    matV = esolver.eigenvectors().real();
-    matV2 = matV;
-
-    isDegenerate = false;
-    float eignThre[6] = {10, 10, 10, 10, 10, 10};
-    for (int i = 5; i >= 0; i--) {
-      if (matE(0, i) < eignThre[i]) {
-        for (int j = 0; j < 6; j++) {
-          matV2(i, j) = 0;
-        }
-        isDegenerate = true;
-      } else {
-        break;
-      }
-    }
-    matP = matV.inverse() * matV2;
+    Eigen::Matrix<float, 6, 1> thresholds;
+    thresholds.setConstant(10.0F);
+    const auto degeneracy = lego_loam_bor::computeDegeneracyProjection(
+        matAtA, thresholds);
+    matP = degeneracy.projection;
+    isDegenerate = degeneracy.is_degenerate;
   }
 
   if (isDegenerate) {
-    Eigen::Matrix<float,6,1> matX2;
-    matX2 = matX;
-    matX = matP * matX2;
+    matX = matP * matX;
   }
 
   transformCur[0] += matX(0, 0);
@@ -1488,9 +1599,8 @@ void FeatureAssociation::runFeatureAssociation() {
 
   ProjectionOut projection;
   _input_channel.receive(projection);
-
-  //--------------
-  std::lock_guard<std::mutex> lock(_odom_mutex);
+  OdomSyncResult odom_sync_result;
+  bool external_odometry_valid = false;
 
   outlierCloud = projection.outlier_cloud;
   segmentedCloud = projection.segmented_cloud;
@@ -1518,6 +1628,9 @@ void FeatureAssociation::runFeatureAssociation() {
     exteralOdometry.child_frame_id = baselink_frame_;
 
     initialize_laser_odom_at_first_frame_ = true;
+    if (odom_type_ != "laser_odometry") {
+      prepareExternalOdometryForCloud(cloudHeader.stamp, odom_sync_result);
+    }
     return;
   }
   adjustDistortion();
@@ -1529,6 +1642,16 @@ void FeatureAssociation::runFeatureAssociation() {
   extractFeatures();
 
   publishCloud();  // cloud for visualization
+
+  if (odom_type_ != "laser_odometry") {
+    external_odometry_valid =
+        prepareExternalOdometryForCloud(cloudHeader.stamp, odom_sync_result);
+    if (!external_odometry_valid) {
+      // Do not forward this frame to map optimization: no keyframe can be
+      // inserted without an odometry sample aligned to the lidar timestamp.
+      return;
+    }
+  }
 
   // Feature Association
   if (!systemInitedLM) {
@@ -1544,13 +1667,6 @@ void FeatureAssociation::runFeatureAssociation() {
   }
   else{
     assignMappingOdometry(transformExternalOdometrySum);
-  }
-  
-  if(odom_type_!="laser_odometry"){
-    if(!first_odom_prepared_){
-      RCLCPP_WARN(this->get_logger(), "External odometry is asked, but the topic is not received yet.");
-      return;
-    }
   }
   
   //publishOdometryPath();
@@ -1571,15 +1687,21 @@ void FeatureAssociation::runFeatureAssociation() {
 
     out.cloud_patched_ground_last.reset(new pcl::PointCloud<PointType>());
     out.cloud_patched_ground_edge_last.reset(new pcl::PointCloud<PointType>());
+    out.cloud_mapping_obstacle_last.reset(new pcl::PointCloud<PointType>());
 
     out.cloud_patched_ground_last = projection.patched_ground;
     out.cloud_patched_ground_edge_last = projection.patched_ground_edge;
+    out.cloud_mapping_obstacle_last = projection.mapping_obstacle;
 
     out.decisive_odometry = mappingOdometry;
     out.trans_c2s = trans_c2s_;
     out.trans_b2s = projection.trans_b2s;
     out.trans_m2ci = projection.trans_m2ci;
     out.external_odometry = exteralOdometry;
+    out.external_odometry_valid = external_odometry_valid;
+    out.external_odometry_interpolated = odom_sync_result.interpolated;
+    out.external_odometry_sync_error_sec = odom_sync_result.sync_error_sec;
+    out.external_odometry_bracket_span_sec = odom_sync_result.bracket_span_sec;
     _output_channel.send(std::move(out));
   }
   

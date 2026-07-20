@@ -40,10 +40,14 @@ export GO2_NET_IFACE
 export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
 
 GO2_DDS_RCVBUF_MAX="${GO2_DDS_RCVBUF_MAX:-16MiB}"
+# Keep the receive minimum fail-closed. If GO2_DDS_RCVBUF_MAX is overridden
+# below this value, CycloneDDS must reject the invalid/unsatisfied request.
+GO2_DDS_RCVBUF_MIN="16MiB"
 GO2_DDS_SNDBUF_MAX="${GO2_DDS_SNDBUF_MAX:-16MiB}"
 GO2_DDS_FRAGMENT_SIZE="${GO2_DDS_FRAGMENT_SIZE:-65000B}"
 GO2_DDS_ALLOW_MULTICAST="${GO2_DDS_ALLOW_MULTICAST:-true}"
 export GO2_DDS_RCVBUF_MAX
+export GO2_DDS_RCVBUF_MIN
 export GO2_DDS_SNDBUF_MAX
 export GO2_DDS_FRAGMENT_SIZE
 export GO2_DDS_ALLOW_MULTICAST
@@ -51,5 +55,5 @@ export GO2_DDS_ALLOW_MULTICAST
 export CYCLONEDDS_URI="<CycloneDDS><Domain><General><Interfaces>
   <NetworkInterface name=\"${GO2_NET_IFACE}\" priority=\"default\" multicast=\"${GO2_DDS_ALLOW_MULTICAST}\" />
 </Interfaces><AllowMulticast>${GO2_DDS_ALLOW_MULTICAST}</AllowMulticast><MaxMessageSize>65500B</MaxMessageSize><FragmentSize>${GO2_DDS_FRAGMENT_SIZE}</FragmentSize></General>
-<Internal><SocketReceiveBufferSize min=\"default\" max=\"${GO2_DDS_RCVBUF_MAX}\" /><SocketSendBufferSize min=\"default\" max=\"${GO2_DDS_SNDBUF_MAX}\" /></Internal>
+<Internal><SocketReceiveBufferSize min=\"${GO2_DDS_RCVBUF_MIN}\" max=\"${GO2_DDS_RCVBUF_MAX}\" /><SocketSendBufferSize min=\"default\" max=\"${GO2_DDS_SNDBUF_MAX}\" /></Internal>
 </Domain></CycloneDDS>"

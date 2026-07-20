@@ -69,6 +69,7 @@ struct ProjectionOut
   pcl::PointCloud<PointType>::Ptr outlier_cloud;
   pcl::PointCloud<PointType>::Ptr patched_ground;
   pcl::PointCloud<PointType>::Ptr patched_ground_edge;
+  pcl::PointCloud<PointType>::Ptr mapping_obstacle;
   std::string odom_type;
   geometry_msgs::msg::TransformStamped trans_c2s;
   geometry_msgs::msg::TransformStamped trans_b2s;
@@ -87,11 +88,16 @@ struct AssociationOut
   pcl::PointCloud<PointType>::Ptr cloud_surf_last;
   pcl::PointCloud<PointType>::Ptr cloud_patched_ground_last;
   pcl::PointCloud<PointType>::Ptr cloud_patched_ground_edge_last;
+  pcl::PointCloud<PointType>::Ptr cloud_mapping_obstacle_last;
   geometry_msgs::msg::TransformStamped trans_c2s;
   geometry_msgs::msg::TransformStamped trans_b2s;
   geometry_msgs::msg::TransformStamped trans_m2ci;
   nav_msgs::msg::Odometry decisive_odometry; //in the lego_loam definition frame
   nav_msgs::msg::Odometry external_odometry; //external odom, odom->baselink frame
+  bool external_odometry_valid = false;
+  bool external_odometry_interpolated = false;
+  double external_odometry_sync_error_sec = 0.0;
+  double external_odometry_bracket_span_sec = 0.0;
   bool broadcast_odom_tf;
 };
 

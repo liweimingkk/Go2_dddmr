@@ -251,15 +251,19 @@ def parse_args(argv):
     parser.add_argument("--topic", default="/lidar_points")
     parser.add_argument("--samples", type=int, default=3)
     parser.add_argument("--timeout", type=float, default=8.0)
-    parser.add_argument("--qos-reliability", choices=["reliable", "best_effort"], default="reliable")
+    parser.add_argument(
+        "--qos-reliability",
+        choices=["reliable", "best_effort"],
+        default="best_effort",
+    )
     parser.add_argument("--qos-depth", type=int, default=10)
     parser.add_argument("--expect-frame", default="hesai_lidar")
-    parser.add_argument("--expect-width", type=int, default=64000)
+    parser.add_argument("--expect-width", type=int, default=32000)
     parser.add_argument("--expect-point-step", type=int, default=26)
     parser.add_argument("--expect-rings", type=int, default=16)
     parser.add_argument("--expect-ring-min", type=int, default=0)
     parser.add_argument("--expect-ring-max", type=int, default=15)
-    parser.add_argument("--expect-points-per-ring", type=int, default=4000)
+    parser.add_argument("--expect-points-per-ring", type=int, default=2000)
     parser.add_argument("--ring-field", default="ring")
     parser.add_argument("--timestamp-field", default="timestamp")
     parser.add_argument("--timestamp-span-min", type=float, default=0.08)

@@ -14,6 +14,7 @@ Modes:
                   and GO2_SPORT_LIVE_CONFIRM=I_AM_SUPERVISING_GO2.
 
 Environment:
+  GO2_SETUP=<repo>/.unitree_msg_ws/install/setup.bash
   GO2_SPORT_PROBE_X=0.05
   GO2_SPORT_PROBE_Y=0.0
   GO2_SPORT_PROBE_YAW=0.0
@@ -43,6 +44,8 @@ Environment:
   GO2_YAW_ARC_ALLOWED_DECISIONS=d_align_heading
   GO2_DECISION_TOPIC=/dddmr_go2/p2p_decision
   GO2_DECISION_TIMEOUT_SEC=0.30
+  GO2_REQUIRE_MOTION_DECISION=false
+  GO2_MOTION_ALLOWED_DECISIONS=d_controlling,d_align_heading,d_align_goal_heading,d_recovery_waitdone
   GO2_ZERO_YAW_ONLY_WHEN_SHIM_DISALLOWED=true
   GO2_MAX_CONTINUOUS_YAW_ARC_SEC=4.0
 
@@ -85,7 +88,8 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ADAPTER="${WS_ROOT}/src/dddmr_beginner_guide/scripts/go2_sport_cmd_vel_adapter.py"
-GO2_SETUP="${GO2_SETUP:-/home/lin/go2_workspace/unitree_ros2/setup.sh}"
+ADAPTER_SHA256="$(sha256sum -- "${ADAPTER}" | awk '{print $1}')"
+GO2_SETUP="${GO2_SETUP:-${WS_ROOT}/.unitree_msg_ws/install/setup.bash}"
 CMD_TOPIC="${GO2_SPORT_CMD_TOPIC:-/dddmr_go2/safe_cmd_vel}"
 REAL_REQUEST_TOPIC="/api/sport/request"
 PREVIEW_REQUEST_TOPIC="/dddmr_go2/sport_request_preview"
@@ -114,6 +118,8 @@ yaw_arc_trigger_abs_yaw="${GO2_YAW_ARC_TRIGGER_ABS_YAW:-0.03}"
 yaw_arc_allowed_decisions="${GO2_YAW_ARC_ALLOWED_DECISIONS:-d_align_heading}"
 decision_topic="${GO2_DECISION_TOPIC:-/dddmr_go2/p2p_decision}"
 decision_timeout_sec="${GO2_DECISION_TIMEOUT_SEC:-0.30}"
+require_motion_decision="${GO2_REQUIRE_MOTION_DECISION:-false}"
+motion_allowed_decisions="${GO2_MOTION_ALLOWED_DECISIONS:-d_controlling,d_align_heading,d_align_goal_heading,d_recovery_waitdone}"
 zero_yaw_only_when_shim_disallowed="${GO2_ZERO_YAW_ONLY_WHEN_SHIM_DISALLOWED:-true}"
 max_continuous_yaw_arc_sec="${GO2_MAX_CONTINUOUS_YAW_ARC_SEC:-4.0}"
 skip_live_topic_check="${GO2_SPORT_SKIP_LIVE_TOPIC_CHECK:-false}"
@@ -244,6 +250,11 @@ validate_yaw_arc_settings() {
     true|false) ;;
     *) die "GO2_ZERO_YAW_ONLY_WHEN_SHIM_DISALLOWED must be true or false" ;;
   esac
+  case "${require_motion_decision}" in
+    true|false) ;;
+    *) die "GO2_REQUIRE_MOTION_DECISION must be true or false" ;;
+  esac
+  validate_allowed_decisions "${motion_allowed_decisions}"
 
   /usr/bin/python3 - \
     "${yaw_arc_forward_x}" \
@@ -305,7 +316,7 @@ validate_allowed_decisions() {
 assert_no_conflicting_runtime() {
   local docker_matches
   docker_matches="$(docker ps --format '{{.Names}} {{.Image}}' 2>/dev/null | \
-    rg 'go2_xt16|dddmr_go2_xt16|dddmr_navigation' || true)"
+    grep -E 'go2_xt16|dddmr_go2_xt16|dddmr_navigation' || true)"
   if [[ -n "${docker_matches}" ]]; then
     echo "${docker_matches}" >&2
     die "stop Go2/DDDMR Docker containers before running the supervised probe"
@@ -313,8 +324,8 @@ assert_no_conflicting_runtime() {
 
   local proc_matches
   proc_matches="$(ps -eo pid,args | \
-    rg 'go2_sport_cmd_vel_adapter|go2_sport_cmd_vel_dry_run|go2_xt16_navigation.launch|rviz2|p2p_move_base_node' | \
-    rg -v 'run_go2_sport_adapter_supervised_probe|bash -lc|py_compile|sed -n|nl -ba|rg |ps -eo' || true)"
+    grep -E 'go2_sport_cmd_vel_adapter|go2_sport_cmd_vel_dry_run|go2_xt16_navigation.launch|rviz2|p2p_move_base_node' | \
+    grep -Ev 'run_go2_sport_adapter_supervised_probe|bash -lc|py_compile|sed -n|nl -ba|grep |ps -eo' || true)"
   if [[ -n "${proc_matches}" ]]; then
     echo "${proc_matches}" >&2
     die "stop existing navigation/RViz/Sport adapter processes before running the probe"
@@ -417,6 +428,8 @@ start_adapter() {
     -p yaw_arc_allowed_decisions:="'${yaw_arc_allowed_decisions}'" \
     -p decision_topic:="${decision_topic}" \
     -p decision_timeout_sec:="${decision_timeout_sec}" \
+    -p require_motion_decision:="${require_motion_decision}" \
+    -p motion_allowed_decisions:="'${motion_allowed_decisions}'" \
     -p zero_yaw_only_when_shim_disallowed:="${zero_yaw_only_when_shim_disallowed}" \
     -p max_continuous_yaw_arc_sec:="${max_continuous_yaw_arc_sec}" \
     >"${adapter_log}" 2>&1 &
@@ -505,6 +518,7 @@ echo "PUB_LOG=${pub_log}"
 echo "DECISION_PUB_LOG=${decision_pub_log}"
 echo "SUMMARY_LOG=${summary_log}"
 echo "MODE=${mode}"
+echo "ADAPTER_SHA256=${ADAPTER_SHA256}"
 echo "PROBE x=${probe_x} y=${probe_y} yaw=${probe_yaw} duration=${probe_duration} decision=${probe_decision:-<none>} pre_cmd_sleep=${probe_pre_cmd_sleep}"
 echo "CMD_TOPIC=${CMD_TOPIC}"
 echo "ADAPTER_TIMER publish_rate_hz=${publish_rate_hz} cmd_timeout_sec=${cmd_timeout_sec} max_x=${max_x} max_y=${max_y} max_yaw=${max_yaw} zero_epsilon=${zero_epsilon} stop_keepalive_hz=${stop_keepalive_hz}"
@@ -591,6 +605,7 @@ result="GO2_SPORT_ADAPTER_${mode//-/_}_COMPLETE"
 cat >"${summary_log}" <<EOF
 MODE=${mode}
 RESULT=${result}
+ADAPTER_SHA256=${ADAPTER_SHA256}
 REQUEST_ID_BASE=${request_id_base}
 ADAPTER_LOG=${adapter_log}
 PUB_LOG=${pub_log}
@@ -617,6 +632,8 @@ YAW_ARC_ALLOWED_DECISIONS=${yaw_arc_allowed_decisions}
 DECISION_TOPIC=${decision_topic}
 DECISION_TIMEOUT_SEC=${decision_timeout_sec}
 ZERO_YAW_ONLY_WHEN_SHIM_DISALLOWED=${zero_yaw_only_when_shim_disallowed}
+REQUIRE_MOTION_DECISION=${require_motion_decision}
+MOTION_ALLOWED_DECISIONS=${motion_allowed_decisions}
 MAX_CONTINUOUS_YAW_ARC_SEC=${max_continuous_yaw_arc_sec}
 SKIP_LIVE_TOPIC_CHECK=${skip_live_topic_check}
 EOF

@@ -25,10 +25,14 @@ Commands:
 Environment:
   DDDMR_IMAGE=dddmr_go2_xt16:x64
   DDDMR_BASE_IMAGE=dddmr:x64
-  DDDMR_BAGS_DIR=/home/lin/dddmr_bags
+  DDDMR_BAGS_DIR=<repo-parent>/bags
   ROS_DOMAIN_ID=0
   GO2_DDS_IP=192.168.123.18
   GO2_NET_IFACE=<auto>
+  ODOM_TIME_OFFSET_SEC=<explicit override; skips automatic measurement>
+  AUTO_MEASURE_ODOM_TIME_OFFSET=true
+  ODOM_SYNC_TOLERANCE_SEC=0.05
+  ODOM_SYNC_WAIT_TIMEOUT_SEC=0.1
   DDDMR_BUILD_BASE=.docker_go2_xt16_build
   DDDMR_INSTALL_BASE=.docker_go2_xt16_install
   DDDMR_LOG_BASE=.docker_go2_xt16_log
@@ -45,7 +49,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 IMAGE="${DDDMR_IMAGE:-dddmr_go2_xt16:x64}"
 BASE_IMAGE="${DDDMR_BASE_IMAGE:-dddmr:x64}"
-BAGS_DIR="${DDDMR_BAGS_DIR:-/home/lin/dddmr_bags}"
+BAGS_DIR="${DDDMR_BAGS_DIR:-${WS_ROOT}/../bags}"
 ROS_DOMAIN_ID_VALUE="${ROS_DOMAIN_ID:-0}"
 GO2_DDS_IP_VALUE="${GO2_DDS_IP:-192.168.123.18}"
 GO2_NET_IFACE_VALUE="${GO2_NET_IFACE:-}"
@@ -53,6 +57,9 @@ BUILD_BASE_VALUE="${DDDMR_BUILD_BASE:-.docker_go2_xt16_build}"
 INSTALL_BASE_VALUE="${DDDMR_INSTALL_BASE:-.docker_go2_xt16_install}"
 LOG_BASE_VALUE="${DDDMR_LOG_BASE:-.docker_go2_xt16_log}"
 DOCKER_NAME_VALUE="${DDDMR_DOCKER_NAME:-}"
+ODOM_OFFSET_RESOLVER="${GO2_ODOM_TIME_OFFSET_RESOLVER:-${SCRIPT_DIR}/resolve_go2_odom_time_offset.sh}"
+ODOM_SYNC_TOLERANCE_SEC_VALUE="${ODOM_SYNC_TOLERANCE_SEC:-0.05}"
+ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE="${ODOM_SYNC_WAIT_TIMEOUT_SEC:-0.1}"
 
 if [[ $# -lt 1 ]]; then
   usage >&2
@@ -72,6 +79,45 @@ ensure_image() {
     echo "Run: scripts/dddmr_docker_go2_xt16.sh build-go2-image" >&2
     exit 1
   fi
+}
+
+is_number() {
+  [[ "$1" =~ ^[+-]?(([0-9]+([.][0-9]*)?)|([.][0-9]+))([eE][+-]?[0-9]+)?$ ]]
+}
+
+is_nonnegative_number() {
+  is_number "$1" && awk -v value="$1" 'BEGIN { exit !(value >= 0) }'
+}
+
+resolve_live_odom_time_offset() {
+  local offset
+  [[ -x "${ODOM_OFFSET_RESOLVER}" ]] || {
+    echo "Odom time-offset resolver is not executable: ${ODOM_OFFSET_RESOLVER}" >&2
+    exit 1
+  }
+  is_nonnegative_number "${ODOM_SYNC_TOLERANCE_SEC_VALUE}" || {
+    echo "ODOM_SYNC_TOLERANCE_SEC must be a finite nonnegative number." >&2
+    exit 1
+  }
+  is_nonnegative_number "${ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE}" || {
+    echo "ODOM_SYNC_WAIT_TIMEOUT_SEC must be a finite nonnegative number." >&2
+    exit 1
+  }
+
+  echo "Running read-only odom/XT16 time-sync preflight..." >&2
+  offset="$(
+    DDDMR_IMAGE="${IMAGE}" \
+    ROS_DOMAIN_ID="${ROS_DOMAIN_ID_VALUE}" \
+    GO2_DDS_IP="${GO2_DDS_IP_VALUE}" \
+    GO2_NET_IFACE="${GO2_NET_IFACE_VALUE}" \
+      "${ODOM_OFFSET_RESOLVER}"
+  )"
+  is_number "${offset}" || {
+    echo "Resolved odom time offset is not finite: ${offset}" >&2
+    exit 1
+  }
+  echo "Injecting confirmed odom/XT16 time offset: ${offset}s" >&2
+  printf '%s\n' "${offset}"
 }
 
 docker_base_args() {
@@ -132,22 +178,23 @@ python3 scripts/go2_xt16_lidar_preflight.py \"\$@\"" bash "$@"
 
   build-lego)
     run_docker "${IMAGE}" bash -lc "${source_prefix}
-colcon --log-base \"\${DDDMR_LOG_BASE}\" build --symlink-install --packages-up-to lego_loam_bor --build-base \"\${DDDMR_BUILD_BASE}\" --install-base \"\${DDDMR_INSTALL_BASE}\" --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPython3_EXECUTABLE=/usr/bin/python3"
+colcon --log-base \"\${DDDMR_LOG_BASE}\" build --base-paths src --symlink-install --packages-up-to lego_loam_bor --build-base \"\${DDDMR_BUILD_BASE}\" --install-base \"\${DDDMR_INSTALL_BASE}\" --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPython3_EXECUTABLE=/usr/bin/python3"
     ;;
 
   build-navigation)
     run_docker "${IMAGE}" bash -lc "${source_prefix}
-colcon --log-base \"\${DDDMR_LOG_BASE}\" build --symlink-install --packages-up-to lego_loam_bor dddmr_pg_map_server mcl_3dl global_planner p2p_move_base dddmr_beginner_guide dddmr_rviz_default_plugins --build-base \"\${DDDMR_BUILD_BASE}\" --install-base \"\${DDDMR_INSTALL_BASE}\" --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPython3_EXECUTABLE=/usr/bin/python3"
+colcon --log-base \"\${DDDMR_LOG_BASE}\" build --base-paths src --symlink-install --packages-up-to lego_loam_bor dddmr_pg_map_server mcl_3dl global_planner p2p_move_base perception_3d dddmr_beginner_guide dddmr_rviz_default_plugins --build-base \"\${DDDMR_BUILD_BASE}\" --install-base \"\${DDDMR_INSTALL_BASE}\" --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPython3_EXECUTABLE=/usr/bin/python3"
     ;;
 
   mapping)
     rviz="${RVIZ:-false}"
     publish_static_tf="${PUBLISH_STATIC_TF:-true}"
     run_seconds="${RUN_SECONDS:-}"
+    odom_time_offset_sec="$(resolve_live_odom_time_offset)"
     launch_cmd="set +u
 source \"\${DDDMR_INSTALL_BASE}/setup.bash\"
 set -u
-ros2 launch lego_loam_bor lego_loam_go2_xt16_live.launch rviz:=${rviz} publish_static_tf:=${publish_static_tf} \"\$@\""
+ros2 launch lego_loam_bor lego_loam_go2_xt16_live.launch rviz:=${rviz} publish_static_tf:=${publish_static_tf} odom_sync_enabled:=true odom_sync_tolerance_sec:=${ODOM_SYNC_TOLERANCE_SEC_VALUE} odom_sync_wait_timeout_sec:=${ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE} odom_time_offset_sec:=${odom_time_offset_sec} \"\$@\""
     if [[ -n "${run_seconds}" ]]; then
       run_docker "${IMAGE}" bash -lc "${source_prefix}
 timeout -s TERM -k 5s ${run_seconds}s bash -lc '${launch_cmd}' bash \"\$@\"" bash "$@"
@@ -200,13 +247,14 @@ wait \${mapping_pid}"
     rviz="${RVIZ:-true}"
     publish_static_tf="${PUBLISH_STATIC_TF:-true}"
     run_seconds="${RUN_SECONDS:-}"
+    odom_time_offset_sec="$(resolve_live_odom_time_offset)"
     if [[ "${rviz}" == "true" && -n "${DISPLAY:-}" ]] && command -v xhost >/dev/null 2>&1; then
       xhost +local:docker >/dev/null || true
     fi
     launch_cmd="set +u
 source \"\${DDDMR_INSTALL_BASE}/setup.bash\"
 set -u
-ros2 launch dddmr_beginner_guide go2_xt16_navigation.launch rviz:=${rviz} publish_static_tf:=${publish_static_tf} \"\$@\""
+ros2 launch dddmr_beginner_guide go2_xt16_navigation.launch rviz:=${rviz} publish_static_tf:=${publish_static_tf} odom_sync_enabled:=true odom_sync_tolerance_sec:=${ODOM_SYNC_TOLERANCE_SEC_VALUE} odom_sync_wait_timeout_sec:=${ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE} odom_time_offset_sec:=${odom_time_offset_sec} \"\$@\""
     if [[ -n "${run_seconds}" ]]; then
       run_docker "${IMAGE}" bash -lc "${source_prefix}
 timeout -s TERM -k 5s ${run_seconds}s bash -lc '${launch_cmd}' bash \"\$@\"" bash "$@"
@@ -220,13 +268,14 @@ ${launch_cmd}" bash "$@"
     rviz="${RVIZ:-true}"
     publish_static_tf="${PUBLISH_STATIC_TF:-true}"
     run_seconds="${RUN_SECONDS:-}"
+    odom_time_offset_sec="$(resolve_live_odom_time_offset)"
     if [[ "${rviz}" == "true" && -n "${DISPLAY:-}" ]] && command -v xhost >/dev/null 2>&1; then
       xhost +local:docker >/dev/null || true
     fi
     launch_cmd="set +u
 source \"\${DDDMR_INSTALL_BASE}/setup.bash\"
 set -u
-ros2 launch dddmr_beginner_guide go2_xt16_navigation.launch rviz:=${rviz} publish_static_tf:=${publish_static_tf} start_sport_dry_run_adapter:=false start_go2_sport_adapter:=false \"\$@\""
+ros2 launch dddmr_beginner_guide go2_xt16_navigation.launch rviz:=${rviz} publish_static_tf:=${publish_static_tf} odom_sync_enabled:=true odom_sync_tolerance_sec:=${ODOM_SYNC_TOLERANCE_SEC_VALUE} odom_sync_wait_timeout_sec:=${ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE} odom_time_offset_sec:=${odom_time_offset_sec} start_sport_dry_run_adapter:=false start_go2_sport_adapter:=false \"\$@\""
     if [[ -n "${run_seconds}" ]]; then
       run_docker "${IMAGE}" bash -lc "${source_prefix}
 timeout -s TERM -k 5s ${run_seconds}s bash -lc '${launch_cmd}' bash \"\$@\"" bash "$@"

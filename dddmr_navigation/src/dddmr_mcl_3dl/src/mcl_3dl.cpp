@@ -37,12 +37,21 @@ using std::placeholders::_4;
 namespace mcl_3dl
 {
 
-MCL3dlNode::MCL3dlNode(std::string name) : Node(name) 
-  , global_localization_fix_cnt_(0)
+MCL3dlNode::MCL3dlNode(std::string name) : Node(name)
   , engine_(seed_gen_())
   , is_trans_b2s_initialized_(false)
   , tf_ready_(false)
   , first_tf_(false)
+  , global_localization_requested_(false)
+  , use_global_map_(false)
+  , last_feature_received_ns_(0)
+  , last_odom_received_ns_(0)
+  , last_measure_ns_(0)
+  , last_global_attempt_ns_(0)
+  , localizing_started_ns_(0)
+  , latest_match_ratio_(0.0f)
+  , feature_sequence_(0)
+  , last_measured_feature_sequence_(0)
 {
   //supress the no intensity found log
   pcl::console::setVerbosityLevel(pcl::console::L_ERROR);
@@ -60,6 +69,17 @@ bool MCL3dlNode::configure(const std::shared_ptr<mcl_3dl::SubMaps>& sub_maps)
   params_ = std::make_shared<Parameters>(this->get_node_logging_interface(), this->get_node_parameters_interface());
   lidar_measurements_ = std::make_shared<LidarMeasurementModelLikelihood>();
   lidar_measurements_->loadConfig(this->get_node_logging_interface(), this->get_node_parameters_interface());
+
+  LocalizationStateConfig state_config;
+  state_config.tracking_match_ratio = params_->localization_tracking_match_ratio_;
+  state_config.lost_match_ratio = params_->localization_lost_match_ratio_;
+  state_config.tracking_max_xy_std = params_->localization_tracking_max_xy_std_;
+  state_config.tracking_max_yaw_std = params_->localization_tracking_max_yaw_std_;
+  state_config.lost_max_xy_std = params_->localization_lost_max_xy_std_;
+  state_config.lost_max_yaw_std = params_->localization_lost_max_yaw_std_;
+  state_config.tracking_good_frames = params_->localization_tracking_good_frames_;
+  state_config.lost_bad_frames = params_->localization_lost_bad_frames_;
+  localization_state_machine_ = std::make_unique<LocalizationStateMachine>(state_config);
 
   pf_.reset(new pf::ParticleFilter<State6DOF,
                                     float,
@@ -84,6 +104,8 @@ bool MCL3dlNode::configure(const std::shared_ptr<mcl_3dl::SubMaps>& sub_maps)
   cbs_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   tf_pub_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   tf_listener_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  localization_status_group_ =
+      this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   
   //@Initialize transform listener and broadcaster
   tfbuf_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
@@ -116,17 +138,43 @@ bool MCL3dlNode::configure(const std::shared_ptr<mcl_3dl::SubMaps>& sub_maps)
   syncApproximate_->registerCallback(&MCL3dlNode::cbLeGoFeatureCloud, this);  
   
   tf_pub_timer_ = this->create_wall_timer(50ms, std::bind(&MCL3dlNode::publishTFThread, this), tf_pub_group_);
+  localization_status_timer_ = this->create_wall_timer(
+      200ms, std::bind(&MCL3dlNode::publishLocalizationStatusThread, this),
+      localization_status_group_);
 
   pub_ground_normal_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("ground_normal", 1);  
   pub_pc_ec_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("euclidean_cluster_extraction", 1);
   pub_pose_ = this->create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>("mcl_pose", 1);
   pub_particle_ = this->create_publisher<geometry_msgs::msg::PoseArray>("particles", 1);
+  pub_localization_status_ = this->create_publisher<std_msgs::msg::String>(
+      "localization_status",
+      rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable());
+  pub_localization_quality_ =
+      this->create_publisher<std_msgs::msg::Float32>("localization_quality", 1);
+
+  srv_global_localization_ = this->create_service<std_srvs::srv::Trigger>(
+      "global_localization",
+      std::bind(
+          &MCL3dlNode::cbGlobalLocalization, this,
+          std::placeholders::_1, std::placeholders::_2),
+      rmw_qos_profile_services_default, cbs_group_);
   
   has_odom_ = false;
 
   motion_prediction_model_ = MotionPredictionModelBase::Ptr(
       new MotionPredictionModelDifferentialDrive(params_->odom_err_integ_lin_tc_,
                                                   params_->odom_err_integ_ang_tc_));
+
+  if (params_->auto_global_localization_)
+  {
+    global_localization_requested_.store(true);
+    localization_state_reason_ = "waiting for global map and live sensor data";
+  }
+  else
+  {
+    startLocalizing("configured initial pose");
+  }
+  publishLocalizationStatus();
 
   return true;
   /*
@@ -141,6 +189,10 @@ bool MCL3dlNode::configure(const std::shared_ptr<mcl_3dl::SubMaps>& sub_maps)
 }
 
 void MCL3dlNode::cbOdom(const nav_msgs::msg::Odometry::SharedPtr msg){
+
+  const rclcpp::Time now = clock_->now();
+  const int64_t now_ns = now.nanoseconds();
+  last_odom_received_ns_.store(now_ns);
 
   odom_ =
       State6DOF(
@@ -171,7 +223,9 @@ void MCL3dlNode::cbOdom(const nav_msgs::msg::Odometry::SharedPtr msg){
   if (!has_odom_)
   {
     odom_prev_ = odom_;
-    odom_last_ = msg->header.stamp;
+    odom_last_ =
+        (msg->header.stamp.sec == 0 && msg->header.stamp.nanosec == 0) ?
+        now : rclcpp::Time(msg->header.stamp);
     has_odom_ = true;
     return;
   }
@@ -192,48 +246,124 @@ void MCL3dlNode::cbOdom(const nav_msgs::msg::Odometry::SharedPtr msg){
   double droll = roll_odom - roll_odom_prev;
   double dpitch = pitch_odom - pitch_odom_prev;
   double dyaw = yaw_odom - yaw_odom_prev;
-  rclcpp::Time msg_time(msg->header.stamp);
+  rclcpp::Time msg_time =
+      (msg->header.stamp.sec == 0 && msg->header.stamp.nanosec == 0) ?
+      now : rclcpp::Time(msg->header.stamp);
   const double dt = msg_time.seconds() - odom_last_.seconds();
-  //RCLCPP_WARN(this->get_logger(), "Verify me!! I am dt : %.2f",dt);
 
-  if(!first_tf_ || sqrt(dx*dx + dy*dy + dz*dz)>params_->update_min_d_ || sqrt(droll*droll + dpitch*dpitch + dyaw*dyaw)>params_->update_min_a_ ){
-    if(pcl_segmentations_.empty()){
+  const int64_t last_measure_ns = last_measure_ns_.load();
+  const bool periodic_measure =
+      last_measure_ns == 0 ||
+      static_cast<double>(now_ns - last_measure_ns) / 1e9 >=
+        params_->localization_measure_interval_sec_;
+  const bool moved =
+      std::sqrt(dx * dx + dy * dy + dz * dz) > params_->update_min_d_ ||
+      std::sqrt(droll * droll + dpitch * dpitch + dyaw * dyaw) > params_->update_min_a_;
+  const LocalizationState state = localizationState();
+  if (state == LocalizationState::TRACKING && first_tf_.load() &&
+      !moved && !periodic_measure)
+  {
+    return;
+  }
+
+  std::unique_lock<std::mutex> lock(protect_measure_in_odomcb_);
+  if (pcl_segmentations_.empty())
+  {
+    return;
+  }
+
+  const int64_t last_feature_ns = last_feature_received_ns_.load();
+  if (last_feature_ns == 0 ||
+      static_cast<double>(now_ns - last_feature_ns) / 1e9 >
+        params_->localization_sensor_timeout_sec_)
+  {
+    if (state == LocalizationState::TRACKING || state == LocalizationState::LOCALIZING)
+    {
+      markLocalizationLost("lidar feature stream timed out");
+    }
+    return;
+  }
+
+  bool just_seeded_globally = false;
+  const LocalizationState current_state = localizationState();
+  const bool should_global_localize =
+      global_localization_requested_.load() ||
+      (params_->auto_global_localization_ &&
+       (current_state == LocalizationState::UNINITIALIZED ||
+        current_state == LocalizationState::LOST));
+  const uint64_t feature_sequence = feature_sequence_.load();
+  if (!should_global_localize &&
+      feature_sequence == last_measured_feature_sequence_.load())
+  {
+    return;
+  }
+  if (should_global_localize)
+  {
+    const int64_t last_attempt_ns = last_global_attempt_ns_.load();
+    if (last_attempt_ns != 0 &&
+        static_cast<double>(now_ns - last_attempt_ns) / 1e9 <
+          params_->global_localization_retry_sec_)
+    {
       return;
     }
+    last_global_attempt_ns_.store(now_ns);
+    if (!attemptGlobalLocalization(pcl_segmentations_))
+    {
+      return;
+    }
+    global_localization_requested_.store(false);
+    just_seeded_globally = true;
+  }
+  else if (current_state == LocalizationState::UNINITIALIZED ||
+           current_state == LocalizationState::LOST)
+  {
+    return;
+  }
 
-    motion_prediction_model_->setOdoms(odom_prev_, odom_, dt);
+  if (!just_seeded_globally)
+  {
+    motion_prediction_model_->setOdoms(odom_prev_, odom_, std::max(0.0, dt));
     auto prediction_func = [this](State6DOF& s)
     {
       motion_prediction_model_->predict(s);
     };
     pf_->predict(prediction_func);
-    rclcpp::Time last_msg_time(msg->header.stamp);
-    odom_last_ = last_msg_time;
-    odom_prev_ = odom_;
-    
-    std::unique_lock<std::mutex> lock(protect_measure_in_odomcb_);
-    measure(pcl_segmentations_);
-
-    pf_->resample(State6DOF(
-    Vec3(params_->resample_var_x_,
-          params_->resample_var_y_,
-          params_->resample_var_z_),
-    Vec3(params_->resample_var_roll_,
-          params_->resample_var_pitch_,
-          params_->resample_var_yaw_)));
-
-    std::normal_distribution<float> noise(0.0, 1.0);
-    auto update_noise_func = [this, &noise](State6DOF& s)
-    {
-      s.noise_ll_ = noise(engine_) * params_->odom_err_lin_lin_;
-      s.noise_la_ = noise(engine_) * params_->odom_err_lin_ang_;
-      s.noise_aa_ = noise(engine_) * params_->odom_err_ang_ang_;
-      s.noise_al_ = noise(engine_) * params_->odom_err_ang_lin_;
-    };
-    pf_->predict(update_noise_func);
-
-    publishParticles();
   }
+
+  odom_last_ = msg_time;
+  odom_prev_ = odom_;
+
+  if (!measure(pcl_segmentations_))
+  {
+    return;
+  }
+  last_measured_feature_sequence_.store(feature_sequence);
+  last_measure_ns_.store(now_ns);
+
+  if (localizationState() == LocalizationState::LOST)
+  {
+    return;
+  }
+
+  pf_->resample(State6DOF(
+      Vec3(params_->resample_var_x_,
+            params_->resample_var_y_,
+            params_->resample_var_z_),
+      Vec3(params_->resample_var_roll_,
+            params_->resample_var_pitch_,
+            params_->resample_var_yaw_)));
+
+  std::normal_distribution<float> noise(0.0, 1.0);
+  auto update_noise_func = [this, &noise](State6DOF& s)
+  {
+    s.noise_ll_ = noise(engine_) * params_->odom_err_lin_lin_;
+    s.noise_la_ = noise(engine_) * params_->odom_err_lin_ang_;
+    s.noise_aa_ = noise(engine_) * params_->odom_err_ang_ang_;
+    s.noise_al_ = noise(engine_) * params_->odom_err_ang_lin_;
+  };
+  pf_->predict(update_noise_func);
+
+  publishParticles();
 }
 
 bool MCL3dlNode::getBaselink2SensorAF3(std_msgs::msg::Header sensor_header, Eigen::Affine3d& trans_b2s_af3){
@@ -273,7 +403,7 @@ void MCL3dlNode::cbLeGoFeatureCloud(const sensor_msgs::msg::PointCloud2::SharedP
   
   laser_header_ = pc_less_sharpMsg->header;
 
-  if(!sub_maps_->isCurrentReady())
+  if (!sub_maps_->isCurrentReady() && !sub_maps_->isGlobalReady())
     return;
 
   Eigen::Affine3d trans_b2s_af3;
@@ -468,37 +598,323 @@ void MCL3dlNode::cbLeGoFeatureCloud(const sensor_msgs::msg::PointCloud2::SharedP
   
   pcl_segmentations_[std::string("flat")] = pc_flat;
   pcl_segmentations_[std::string("less_sharp")] = pc_less_sharp_intensity;
+  if (!pc_flat->empty() || !pc_less_sharp_intensity->empty())
+  {
+    last_feature_received_ns_.store(clock_->now().nanoseconds());
+    feature_sequence_.fetch_add(1);
+  }
   
 }
 
-void MCL3dlNode::measure(std::map<std::string, pcl::PointCloud<mcl_3dl::pcl_t>::Ptr> pcl_segmentations)
+std::vector<State6DOF> MCL3dlNode::buildGlobalCandidates() const
 {
+  const auto key_poses = sub_maps_->getKeyPoses();
+  std::vector<geometry_msgs::msg::Pose> position_seeds;
+  position_seeds.reserve(key_poses.size());
 
-  if(!sub_maps_->isCurrentReady())
-    return;
+  for (const auto& pose : key_poses)
+  {
+    if (position_seeds.empty())
+    {
+      position_seeds.push_back(pose);
+      continue;
+    }
 
-  if(sub_maps_->isWarmUpReady()){
-    sub_maps_->swapKdTree();
+    const auto& previous = position_seeds.back().position;
+    const double dx = pose.position.x - previous.x;
+    const double dy = pose.position.y - previous.y;
+    const double dz = pose.position.z - previous.z;
+    if (std::sqrt(dx * dx + dy * dy + dz * dz) >=
+        params_->global_localization_grid_)
+    {
+      position_seeds.push_back(pose);
+    }
   }
+
+  if (!key_poses.empty() && !position_seeds.empty())
+  {
+    const auto& last_selected = position_seeds.back().position;
+    const auto& last_key_pose = key_poses.back();
+    const double dx = last_key_pose.position.x - last_selected.x;
+    const double dy = last_key_pose.position.y - last_selected.y;
+    const double dz = last_key_pose.position.z - last_selected.z;
+    if (std::sqrt(dx * dx + dy * dy + dz * dz) > 1e-3)
+    {
+      position_seeds.push_back(last_key_pose);
+    }
+  }
+
+  const std::size_t yaw_bins =
+      static_cast<std::size_t>(params_->global_localization_div_yaw_);
+  const std::size_t max_positions = std::max<std::size_t>(
+      1, static_cast<std::size_t>(params_->global_localization_max_candidates_) /
+        yaw_bins);
+  if (position_seeds.size() > max_positions)
+  {
+    std::vector<geometry_msgs::msg::Pose> uniformly_sampled;
+    uniformly_sampled.reserve(max_positions);
+    for (std::size_t i = 0; i < max_positions; ++i)
+    {
+      const std::size_t index = max_positions == 1 ? 0 :
+          i * (position_seeds.size() - 1) / (max_positions - 1);
+      uniformly_sampled.push_back(position_seeds[index]);
+    }
+    position_seeds.swap(uniformly_sampled);
+  }
+
+  constexpr double kPi = 3.14159265358979323846;
+  std::vector<State6DOF> candidates;
+  candidates.reserve(position_seeds.size() * yaw_bins);
+  for (const auto& pose : position_seeds)
+  {
+    tf2::Quaternion orientation(
+        pose.orientation.x, pose.orientation.y,
+        pose.orientation.z, pose.orientation.w);
+    double roll = 0.0;
+    double pitch = 0.0;
+    double unused_yaw = 0.0;
+    tf2::Matrix3x3(orientation).getRPY(roll, pitch, unused_yaw);
+
+    for (std::size_t yaw_index = 0; yaw_index < yaw_bins; ++yaw_index)
+    {
+      const double yaw = -kPi +
+          2.0 * kPi * static_cast<double>(yaw_index) /
+            static_cast<double>(yaw_bins);
+      candidates.emplace_back(
+          Vec3(pose.position.x, pose.position.y, pose.position.z),
+          Quat(Vec3(roll, pitch, yaw)));
+    }
+  }
+  return candidates;
+}
+
+std::map<std::string, pcl::PointCloud<mcl_3dl::pcl_t>::Ptr>
+MCL3dlNode::makeSparseObservation(
+    const std::map<std::string, pcl::PointCloud<pcl_t>::Ptr>& pcl_segmentations) const
+{
+  std::map<std::string, pcl::PointCloud<mcl_3dl::pcl_t>::Ptr> sparse;
+  const std::size_t per_cloud_limit = std::max<std::size_t>(
+      8, static_cast<std::size_t>(params_->global_localization_max_observation_points_) / 2);
+
+  for (const std::string& name : {std::string("flat"), std::string("less_sharp")})
+  {
+    auto output = std::make_shared<pcl::PointCloud<mcl_3dl::pcl_t>>();
+    const auto found = pcl_segmentations.find(name);
+    if (found != pcl_segmentations.end() && found->second)
+    {
+      const auto& input = *found->second;
+      const std::size_t step = std::max<std::size_t>(
+          1, static_cast<std::size_t>(std::ceil(
+            static_cast<double>(input.size()) /
+            static_cast<double>(per_cloud_limit))));
+      output->reserve(std::min(input.size(), per_cloud_limit));
+      for (std::size_t i = 0; i < input.size() && output->size() < per_cloud_limit; i += step)
+      {
+        output->push_back(input.points[i]);
+      }
+    }
+    sparse[name] = output;
+  }
+  return sparse;
+}
+
+void MCL3dlNode::initializeGlobalParticles(
+    const std::vector<GlobalCandidate>& candidates)
+{
+  pf_->resizeParticle(params_->global_localization_num_particles_);
+  std::size_t particle_index = 0;
+  const float probability = 1.0f / static_cast<float>(pf_->getParticleSize());
+  for (auto particle = pf_->begin(); particle != pf_->end(); ++particle, ++particle_index)
+  {
+    const auto& candidate = candidates[particle_index % candidates.size()];
+    const DiagonalNoiseGenerator<float> noise_generator(
+        candidate.state, params_->global_localization_seed_std_);
+    particle->state_ = State6DOF::generateNoise<State6DOF>(engine_, noise_generator);
+    particle->state_.normalize();
+    particle->probability_ = probability;
+    particle->probability_bias_ = 1.0f;
+    particle->accum_probability_ = 0.0f;
+  }
+}
+
+bool MCL3dlNode::attemptGlobalLocalization(
+    const std::map<std::string, pcl::PointCloud<pcl_t>::Ptr>& pcl_segmentations)
+{
+  if (!sub_maps_->isGlobalReady())
+  {
+    RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *clock_, 3000,
+        "Global localization is waiting for complete map, ground, and key poses");
+    return false;
+  }
+
+  const auto sparse_observation = makeSparseObservation(pcl_segmentations);
+  if (sparse_observation.at("flat")->empty() &&
+      sparse_observation.at("less_sharp")->empty())
+  {
+    RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *clock_, 3000,
+        "Global localization is waiting for non-empty lidar features");
+    return false;
+  }
+
+  const auto candidate_states = buildGlobalCandidates();
+  if (candidate_states.empty())
+  {
+    RCLCPP_ERROR(this->get_logger(), "Global localization has no pose-graph candidates");
+    return false;
+  }
+
+  std::vector<GlobalCandidate> scored(candidate_states.size());
+  #pragma omp parallel for
+  for (std::size_t i = 0; i < candidate_states.size(); ++i)
+  {
+    const auto result = lidar_measurements_->measure(
+        sub_maps_->kdtree_map_global_, sub_maps_->kdtree_ground_global_,
+        sub_maps_->normals_ground_global_, sparse_observation, candidate_states[i]);
+    scored[i].state = candidate_states[i];
+    scored[i].quality = std::isfinite(result.quality) ? result.quality : 0.0f;
+    scored[i].likelihood = std::isfinite(result.likelihood) ? result.likelihood : 0.0f;
+  }
+
+  std::sort(scored.begin(), scored.end(),
+      [](const GlobalCandidate& lhs, const GlobalCandidate& rhs)
+      {
+        if (lhs.quality != rhs.quality)
+        {
+          return lhs.quality > rhs.quality;
+        }
+        return lhs.likelihood > rhs.likelihood;
+      });
+
+  if (scored.front().quality < params_->global_localization_min_match_ratio_)
+  {
+    RCLCPP_WARN(
+        this->get_logger(),
+        "Global localization rejected %lu candidates: best match %.3f is below %.3f",
+        scored.size(), scored.front().quality,
+        params_->global_localization_min_match_ratio_);
+    return false;
+  }
+
+  scored.resize(std::min<std::size_t>(
+      scored.size(), static_cast<std::size_t>(params_->global_localization_top_candidates_)));
+  initializeGlobalParticles(scored);
+  state_prev_ = scored.front().state;
+  last_feature_received_ns_.store(clock_->now().nanoseconds());
+  use_global_map_.store(true);
+  tf_ready_.store(false);
+  first_tf_.store(false);
+
+  geometry_msgs::msg::PoseWithCovarianceStamped seed_pose;
+  seed_pose.header.frame_id = params_->frame_ids_["map"];
+  seed_pose.header.stamp = clock_->now();
+  seed_pose.pose.pose.position.x = scored.front().state.pos_.x_;
+  seed_pose.pose.pose.position.y = scored.front().state.pos_.y_;
+  seed_pose.pose.pose.position.z = scored.front().state.pos_.z_;
+  seed_pose.pose.pose.orientation.x = scored.front().state.rot_.x_;
+  seed_pose.pose.pose.orientation.y = scored.front().state.rot_.y_;
+  seed_pose.pose.pose.orientation.z = scored.front().state.rot_.z_;
+  seed_pose.pose.pose.orientation.w = scored.front().state.rot_.w_;
+  {
+    std::unique_lock<mcl_3dl::SubMaps::sub_maps_mutex_t> lock(*(sub_maps_->getMutex()));
+    sub_maps_->setInitialPose(seed_pose);
+  }
+
+  startLocalizing(
+      "global coarse match accepted with quality " +
+      std::to_string(scored.front().quality));
+  publishParticles();
+  RCLCPP_WARN(
+      this->get_logger(),
+      "Global localization seeded %d particles from %lu/%lu candidates; best pose "
+      "(%.2f, %.2f, %.2f) quality=%.3f",
+      params_->global_localization_num_particles_, scored.size(), candidate_states.size(),
+      scored.front().state.pos_.x_, scored.front().state.pos_.y_,
+      scored.front().state.pos_.z_, scored.front().quality);
+  return true;
+}
+
+std::pair<double, double> MCL3dlNode::particleSpread(const State6DOF& mean) const
+{
+  const double mean_yaw = mean.rot_.getRPY().z_;
+  double xy_variance = 0.0;
+  double yaw_variance = 0.0;
+  double probability_sum = 0.0;
+  for (std::size_t i = 0; i < pf_->getParticleSize(); ++i)
+  {
+    const State6DOF particle = pf_->getParticle(i);
+    const double probability = pf_->getParticleProbability(i);
+    const double dx = particle.pos_.x_ - mean.pos_.x_;
+    const double dy = particle.pos_.y_ - mean.pos_.y_;
+    const double yaw = particle.rot_.getRPY().z_;
+    const double yaw_error = std::atan2(
+        std::sin(yaw - mean_yaw), std::cos(yaw - mean_yaw));
+    xy_variance += probability * (dx * dx + dy * dy);
+    yaw_variance += probability * yaw_error * yaw_error;
+    probability_sum += probability;
+  }
+
+  if (probability_sum <= 0.0)
+  {
+    return {std::numeric_limits<double>::infinity(),
+            std::numeric_limits<double>::infinity()};
+  }
+  return {
+    std::sqrt(std::max(0.0, xy_variance / probability_sum)),
+    std::sqrt(std::max(0.0, yaw_variance / probability_sum))};
+}
+
+bool MCL3dlNode::measure(
+    const std::map<std::string, pcl::PointCloud<mcl_3dl::pcl_t>::Ptr>& pcl_segmentations)
+{
+  if (sub_maps_->isWarmUpReady())
+  {
+    sub_maps_->swapKdTree();
+    if (isTracking())
+    {
+      use_global_map_.store(false);
+    }
+  }
+
+  const bool use_global =
+      sub_maps_->isGlobalReady() &&
+      (use_global_map_.load() || localizationState() != LocalizationState::TRACKING);
+  if (!use_global && !sub_maps_->isCurrentReady())
+  {
+    return false;
+  }
+
+  auto& map_tree = use_global ?
+      sub_maps_->kdtree_map_global_ : sub_maps_->kdtree_map_current_;
+  auto& ground_tree = use_global ?
+      sub_maps_->kdtree_ground_global_ : sub_maps_->kdtree_ground_current_;
+  auto& ground_normals = use_global ?
+      sub_maps_->normals_ground_global_ : sub_maps_->normals_ground_current_;
 
   const auto ts = std::chrono::high_resolution_clock::now();
   lidar_measurements_->setGlobalLocalizationStatus(
       params_->num_particles_, pf_->getParticleSize());
 
-  float match_ratio_min = 1.0;
-  float match_ratio_max = 0.0;
-  auto measure_func = [this, &pcl_segmentations,
-                        &match_ratio_min, &match_ratio_max](const State6DOF& s) -> float
+  std::atomic<float> match_ratio_min(1.0f);
+  std::atomic<float> match_ratio_max(0.0f);
+  auto measure_func = [this, &pcl_segmentations, &map_tree, &ground_tree,
+                        &ground_normals, &match_ratio_min,
+                        &match_ratio_max](const State6DOF& s) -> float
   {
-    float qualities;
     const LidarMeasurementResult result = lidar_measurements_->measure(
-        sub_maps_->kdtree_map_current_, sub_maps_->kdtree_ground_current_, sub_maps_->normals_ground_current_, pcl_segmentations, s);
+        map_tree, ground_tree, ground_normals, pcl_segmentations, s);
 
-    qualities = result.quality;
-    if (match_ratio_min > qualities)
-      match_ratio_min = qualities;
-    if (match_ratio_max < qualities)
-      match_ratio_max = qualities;
+    float observed_min = match_ratio_min.load();
+    while (observed_min > result.quality &&
+           !match_ratio_min.compare_exchange_weak(observed_min, result.quality))
+    {
+    }
+    float observed_max = match_ratio_max.load();
+    while (observed_max < result.quality &&
+           !match_ratio_max.compare_exchange_weak(observed_max, result.quality))
+    {
+    }
     return result.likelihood;
   };
 
@@ -594,7 +1010,6 @@ void MCL3dlNode::measure(std::map<std::string, pcl::PointCloud<mcl_3dl::pcl_t>::
   map_pos = f_pos_->in(map_pos);
   map2odom_trans_.transform.translation = tf2::toMsg(tf2::Vector3(map_pos.x_, map_pos.y_, map_pos.z_));
   map2odom_trans_.transform.rotation = tf2::toMsg(tf2::Quaternion(map_rot.x_, map_rot.y_, map_rot.z_, map_rot.w_));
-  tf_ready_ = true;
 
   // Calculate covariance from sampled particles to reduce calculation cost on global localization.
   // Use the number of original particles or at least 10% of full particles.
@@ -602,6 +1017,60 @@ void MCL3dlNode::measure(std::map<std::string, pcl::PointCloud<mcl_3dl::pcl_t>::
       1.0,
       std::max(
           0.1f, static_cast<float>(params_->num_particles_) / pf_->getParticleSize()));
+
+  const auto spread = particleSpread(e);
+  const float best_match_ratio = match_ratio_max.load();
+  latest_match_ratio_.store(best_match_ratio);
+  std_msgs::msg::Float32 quality_msg;
+  quality_msg.data = best_match_ratio;
+  pub_localization_quality_->publish(quality_msg);
+
+  bool state_changed = false;
+  LocalizationState new_state;
+  {
+    std::lock_guard<std::mutex> state_lock(localization_state_mutex_);
+    state_changed = localization_state_machine_->observe(LocalizationObservation{
+        best_match_ratio,
+        spread.first,
+        spread.second,
+        static_cast<int>(pf_->getParticleSize()) <= params_->num_particles_});
+    new_state = localization_state_machine_->state();
+    if (state_changed && new_state == LocalizationState::TRACKING)
+    {
+      localization_state_reason_ = "particle filter converged on consecutive observations";
+    }
+    else if (state_changed && new_state == LocalizationState::LOST)
+    {
+      localization_state_reason_ = "match quality or particle spread exceeded lost thresholds";
+    }
+  }
+
+  if (new_state == LocalizationState::TRACKING)
+  {
+    tf_ready_.store(true);
+  }
+  else
+  {
+    tf_ready_.store(false);
+  }
+
+  if (state_changed)
+  {
+    RCLCPP_WARN(
+        this->get_logger(),
+        "Localization state changed to %s: match=%.3f xy_std=%.3f yaw_std=%.3f particles=%lu",
+        localizationStateName(new_state), best_match_ratio, spread.first,
+        spread.second, pf_->getParticleSize());
+    publishLocalizationStatus();
+    if (new_state == LocalizationState::LOST)
+    {
+      use_global_map_.store(true);
+      if (params_->auto_global_localization_)
+      {
+        global_localization_requested_.store(true);
+      }
+    }
+  }
 
   geometry_msgs::msg::PoseWithCovarianceStamped pose;
   pose.header.stamp = odom_last_;
@@ -613,15 +1082,28 @@ void MCL3dlNode::measure(std::map<std::string, pcl::PointCloud<mcl_3dl::pcl_t>::
   pose.pose.pose.orientation.y = e.rot_.y_;
   pose.pose.pose.orientation.z = e.rot_.z_;
   pose.pose.pose.orientation.w = e.rot_.w_;
-  for (size_t i = 0; i < 36; i++)
-  {
-    pose.pose.covariance[i] = cov[i / 6][i % 6];
-  }
+  pose.pose.covariance.fill(0.0);
+  pose.pose.covariance[0] = cov[0][0];
+  pose.pose.covariance[7] = cov[1][1];
+  pose.pose.covariance[14] = cov[2][2];
+  pose.pose.covariance[21] = cov[3][3];
+  pose.pose.covariance[28] = cov[4][4];
+  pose.pose.covariance[35] = spread.second * spread.second;
   pub_pose_->publish(pose);
-  
-  //--------------------------update pose to submap
-  std::unique_lock<mcl_3dl::SubMaps::sub_maps_mutex_t> lock(*(sub_maps_->getMutex()));
-  sub_maps_->setPose(pose);
+
+  if (new_state == LocalizationState::TRACKING)
+  {
+    std::unique_lock<mcl_3dl::SubMaps::sub_maps_mutex_t> lock(*(sub_maps_->getMutex()));
+    if (state_changed)
+    {
+      sub_maps_->setInitialPose(pose);
+      use_global_map_.store(true);
+    }
+    else
+    {
+      sub_maps_->setPose(pose);
+    }
+  }
 
   const auto tnow = std::chrono::high_resolution_clock::now();
   RCLCPP_DEBUG(this->get_logger(), "MCL (%0.3f sec.)",
@@ -644,13 +1126,14 @@ void MCL3dlNode::measure(std::map<std::string, pcl::PointCloud<mcl_3dl::pcl_t>::
             err_integ_map.y_,
             err_integ_map.z_);
   RCLCPP_DEBUG(this->get_logger(),"match ratio min: %0.3f, max: %0.3f, pos: %0.3f, %0.3f, %0.3f",
-            match_ratio_min,
-            match_ratio_max,
+            match_ratio_min.load(),
+            best_match_ratio,
             e.pos_.x_,
             e.pos_.y_,
             e.pos_.z_);
 
-  if (match_ratio_max < params_->match_ratio_thresh_)
+  if (new_state != LocalizationState::LOST &&
+      best_match_ratio < params_->match_ratio_thresh_)
   {
     RCLCPP_WARN_THROTTLE(this->get_logger(), *clock_, 3000, "Low match_ratio. Expansion resetting.");
     pf_->noise(State6DOF(
@@ -673,14 +1156,9 @@ void MCL3dlNode::measure(std::map<std::string, pcl::PointCloud<mcl_3dl::pcl_t>::
     {
       pf_->resizeParticle(params_->num_particles_);
     }
-    // wait 99.7% fix (three-sigma)
-    global_localization_fix_cnt_ = 1 + std::ceil(params_->lpf_step_) * 3.0;
-  }
-  if (global_localization_fix_cnt_)
-  {
-    global_localization_fix_cnt_--;
   }
 
+  return true;
 }
 
 void MCL3dlNode::publishParticles()
@@ -705,16 +1183,139 @@ void MCL3dlNode::publishParticles()
   pub_particle_->publish(pa);
 }
 
+LocalizationState MCL3dlNode::localizationState() const
+{
+  std::lock_guard<std::mutex> lock(localization_state_mutex_);
+  return localization_state_machine_->state();
+}
+
+bool MCL3dlNode::isTracking() const
+{
+  return localizationState() == LocalizationState::TRACKING;
+}
+
+void MCL3dlNode::startLocalizing(const std::string& reason)
+{
+  bool changed = false;
+  {
+    std::lock_guard<std::mutex> lock(localization_state_mutex_);
+    changed = localization_state_machine_->startLocalizing();
+    localization_state_reason_ = reason;
+  }
+  localizing_started_ns_.store(clock_->now().nanoseconds());
+  tf_ready_.store(false);
+  first_tf_.store(false);
+  if (changed)
+  {
+    RCLCPP_WARN(this->get_logger(), "Localization state changed to LOCALIZING: %s", reason.c_str());
+  }
+  publishLocalizationStatus();
+}
+
+void MCL3dlNode::markLocalizationLost(const std::string& reason)
+{
+  bool changed = false;
+  {
+    std::lock_guard<std::mutex> lock(localization_state_mutex_);
+    changed = localization_state_machine_->markLost();
+    localization_state_reason_ = reason;
+  }
+  tf_ready_.store(false);
+  first_tf_.store(false);
+  use_global_map_.store(true);
+  if (params_->auto_global_localization_)
+  {
+    global_localization_requested_.store(true);
+  }
+  if (changed)
+  {
+    RCLCPP_ERROR(this->get_logger(), "Localization state changed to LOST: %s", reason.c_str());
+  }
+  publishLocalizationStatus();
+}
+
+void MCL3dlNode::requestGlobalLocalization(const std::string& reason)
+{
+  global_localization_requested_.store(true);
+  last_global_attempt_ns_.store(0);
+  markLocalizationLost(reason);
+}
+
+void MCL3dlNode::cbGlobalLocalization(
+    const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+{
+  (void)request;
+  requestGlobalLocalization("global localization requested by service");
+  response->success = true;
+  response->message =
+      "Global localization scheduled; motion remains blocked until TRACKING";
+}
+
+void MCL3dlNode::publishLocalizationStatus()
+{
+  if (!pub_localization_status_)
+  {
+    return;
+  }
+  std_msgs::msg::String status;
+  {
+    std::lock_guard<std::mutex> lock(localization_state_mutex_);
+    status.data = localization_state_machine_->stateName();
+  }
+  pub_localization_status_->publish(status);
+}
+
+void MCL3dlNode::publishLocalizationStatusThread()
+{
+  const int64_t now_ns = clock_->now().nanoseconds();
+  const LocalizationState state = localizationState();
+  if (state == LocalizationState::TRACKING || state == LocalizationState::LOCALIZING)
+  {
+    const int64_t feature_ns = last_feature_received_ns_.load();
+    const int64_t odom_ns = last_odom_received_ns_.load();
+    const bool feature_stale = state == LocalizationState::TRACKING ?
+        (feature_ns == 0 || static_cast<double>(now_ns - feature_ns) / 1e9 >
+          params_->localization_sensor_timeout_sec_) :
+        (feature_ns != 0 && static_cast<double>(now_ns - feature_ns) / 1e9 >
+          params_->localization_sensor_timeout_sec_);
+    const bool odom_stale = state == LocalizationState::TRACKING ?
+        (odom_ns == 0 || static_cast<double>(now_ns - odom_ns) / 1e9 >
+          params_->localization_sensor_timeout_sec_) :
+        (odom_ns != 0 && static_cast<double>(now_ns - odom_ns) / 1e9 >
+          params_->localization_sensor_timeout_sec_);
+    if (feature_stale || odom_stale)
+    {
+      markLocalizationLost(feature_stale ?
+          "lidar feature stream timed out" : "odometry stream timed out");
+      return;
+    }
+
+    if (state == LocalizationState::LOCALIZING)
+    {
+      const int64_t started_ns = localizing_started_ns_.load();
+      if (started_ns != 0 &&
+          static_cast<double>(now_ns - started_ns) / 1e9 >
+            params_->localization_timeout_sec_)
+      {
+        markLocalizationLost("localization convergence timed out");
+        return;
+      }
+    }
+  }
+  publishLocalizationStatus();
+}
+
 void MCL3dlNode::publishTFThread()
 {
-  if (tf_ready_ && params_->publish_tf_){
+  if (tf_ready_.load() && isTracking() && params_->publish_tf_){
     if(laser_header_.stamp.sec==0 && laser_header_.stamp.nanosec == 0){
       laser_header_.stamp = odom_header_.stamp;
       RCLCPP_WARN_THROTTLE(this->get_logger(), *clock_, 3000, "Laser msg.header.timestamp = 0, use odom stamp as the timestamp");
     }
     map2odom_trans_.header.stamp = laser_header_.stamp;
     tfb_->sendTransform(map2odom_trans_);
-    first_tf_ = true;
+    first_tf_.store(true);
   }
 }
 
@@ -735,11 +1336,10 @@ void MCL3dlNode::cbPosition(const geometry_msgs::msg::PoseWithCovarianceStamped:
     return;
   }
 
-  sub_maps_->setInitialPose(*msg);
-  while(rclcpp::ok() && !sub_maps_->isWarmUpReady()){
-
+  {
+    std::unique_lock<mcl_3dl::SubMaps::sub_maps_mutex_t> lock(*(sub_maps_->getMutex()));
+    sub_maps_->setInitialPose(*msg);
   }
-  sub_maps_->swapKdTree();
   
   //@Try to find the ground
   geometry_msgs::msg::PoseStamped pose;
@@ -751,22 +1351,40 @@ void MCL3dlNode::cbPosition(const geometry_msgs::msg::PoseWithCovarianceStamped:
   initial_pose_pt.z = msg->pose.pose.position.z;
   pose.pose.position.x = initial_pose_pt.x;
   pose.pose.position.y = initial_pose_pt.y;
+  pose.pose.position.z = initial_pose_pt.z;
   pose.pose.orientation = msg->pose.pose.orientation;
-  
-  for(double z=0.0; z<5.0;z+=0.1){
-    initial_pose_pt.z = msg->pose.pose.position.z + z;
-    if(sub_maps_->kdtree_ground_current_.radiusSearch(initial_pose_pt, 0.3, pointIdxRadiusSearch, pointRadiusSquaredDistance, 1)>0)
+
+  pcl::KdTreeFLANN<mcl_3dl::pcl_t>* ground_tree = nullptr;
+  if (sub_maps_->isGlobalReady())
+  {
+    ground_tree = &sub_maps_->kdtree_ground_global_;
+  }
+  else if (sub_maps_->isCurrentReady())
+  {
+    ground_tree = &sub_maps_->kdtree_ground_current_;
+  }
+
+  if (ground_tree != nullptr)
+  {
+    const auto ground_cloud = ground_tree->getInputCloud();
+    bool ground_found = false;
+    for (double z = 0.0; z < 5.0 && !ground_found; z += 0.1)
     {
-      pose.pose.position.z = sub_maps_->ground_current_->points[pointIdxRadiusSearch[0]].z;
-      RCLCPP_INFO(this->get_logger(), "Found ground at z: %.2f", pose.pose.position.z);
-      break;
-    }
-    initial_pose_pt.z = msg->pose.pose.position.z - z;
-    if(sub_maps_->kdtree_ground_current_.radiusSearch(initial_pose_pt, 0.3, pointIdxRadiusSearch, pointRadiusSquaredDistance, 1)>0)
-    {
-      pose.pose.position.z = sub_maps_->ground_current_->points[pointIdxRadiusSearch[0]].z;
-      RCLCPP_INFO(this->get_logger(), "Found ground at z: %.2f", pose.pose.position.z);
-      break;
+      for (const double direction : {1.0, -1.0})
+      {
+        initial_pose_pt.z = msg->pose.pose.position.z + direction * z;
+        pointIdxRadiusSearch.clear();
+        pointRadiusSquaredDistance.clear();
+        if (ground_tree->radiusSearch(
+              initial_pose_pt, 0.3, pointIdxRadiusSearch,
+              pointRadiusSquaredDistance, 1) > 0)
+        {
+          pose.pose.position.z = ground_cloud->points[pointIdxRadiusSearch[0]].z;
+          RCLCPP_INFO(this->get_logger(), "Found ground at z: %.2f", pose.pose.position.z);
+          ground_found = true;
+          break;
+        }
+      }
     }
   }
   
@@ -777,6 +1395,10 @@ void MCL3dlNode::cbPosition(const geometry_msgs::msg::PoseWithCovarianceStamped:
                             pose.pose.orientation.z,
                             pose.pose.orientation.w));
   const MultivariateNoiseGenerator<float> noise_gen(mean, msg->pose.covariance);
+  if (static_cast<int>(pf_->getParticleSize()) != params_->num_particles_)
+  {
+    pf_->resizeParticle(params_->num_particles_);
+  }
   pf_->initUsingNoiseGenerator(noise_gen);
 
   auto integ_reset_func = [](State6DOF& s)
@@ -786,8 +1408,13 @@ void MCL3dlNode::cbPosition(const geometry_msgs::msg::PoseWithCovarianceStamped:
   };
   pf_->predict(integ_reset_func);
 
+  state_prev_ = mean;
+  global_localization_requested_.store(false);
+  use_global_map_.store(sub_maps_->isGlobalReady());
+  last_measure_ns_.store(0);
+  startLocalizing("manual initial pose received");
   publishParticles();
-  first_tf_ = false;
+  first_tf_.store(false);
 }
 
 /*

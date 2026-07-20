@@ -1,5 +1,6 @@
 <launch>
   <arg name="config_file" default="$(find-pkg-share dddmr_beginner_guide)/config/go2_xt16_navigation.yaml"/>
+  <arg name="relocalization_config_file" default="$(find-pkg-share dddmr_beginner_guide)/config/go2_xt16_relocalization.yaml"/>
   <arg name="rviz" default="true"/>
   <arg name="rviz_config" default="$(find-pkg-share dddmr_beginner_guide)/rviz/go2_xt16_navigation.rviz"/>
   <arg name="start_feature" default="true"/>
@@ -21,6 +22,11 @@
   <arg name="rotate_odom_parent_frame" default="false"/>
   <arg name="rotate_odom_twist" default="false"/>
   <arg name="lidar_topic" default="/lidar_points"/>
+  <arg name="odom_sync_enabled" default="true"/>
+  <arg name="odom_sync_tolerance_sec" default="0.05"/>
+  <arg name="odom_sync_wait_timeout_sec" default="0.1"/>
+  <arg name="odom_time_offset_sec" default="0.0"/>
+  <arg name="feature_odom_time_offset_sec" default="0.0"/>
   <arg name="start_go2_nav_cmd_gate" default="true"/>
   <arg name="go2_nav_cmd_gate_input_topic" default="/dddmr_go2/dry_run_cmd_vel"/>
   <arg name="go2_nav_cmd_gate_output_topic" default="/dddmr_go2/safe_cmd_vel"/>
@@ -85,6 +91,7 @@
     <param name="output_parent_frame" value="odom"/>
     <param name="output_child_frame" value="base_link"/>
     <param name="raw_to_standard_yaw" value="$(var raw_to_standard_yaw)" type="float"/>
+    <param name="stamp_time_offset_sec" value="$(var odom_time_offset_sec)"/>
     <param name="rotate_parent_frame" value="$(var rotate_odom_parent_frame)" type="bool"/>
     <param name="rotate_twist" value="$(var rotate_odom_twist)" type="bool"/>
     <param name="use_sim_time" value="false"/>
@@ -102,6 +109,10 @@
 
   <node pkg="lego_loam_bor" exec="mcl_feature" output="screen" respawn="false" if="$(var start_feature)">
     <param from="$(var config_file)" />
+    <param name="featureAssociation.odom_sync_enabled" value="$(var odom_sync_enabled)" type="bool"/>
+    <param name="featureAssociation.odom_sync_tolerance_sec" value="$(var odom_sync_tolerance_sec)"/>
+    <param name="featureAssociation.odom_sync_wait_timeout_sec" value="$(var odom_sync_wait_timeout_sec)"/>
+    <param name="featureAssociation.odom_time_offset_sec" value="$(var feature_odom_time_offset_sec)"/>
     <remap from="/lslidar_point_cloud" to="$(var lidar_topic)"/>
     <remap from="/odom" to="$(var odom_topic)"/>
     <param name="use_sim_time" value="false"/>
@@ -114,6 +125,7 @@
 
   <node pkg="mcl_3dl" exec="mcl_3dl" output="screen" respawn="false" if="$(var start_localization)">
     <param from="$(var config_file)" />
+    <param from="$(var relocalization_config_file)" />
     <remap from="/odom" to="$(var odom_topic)"/>
     <param name="use_sim_time" value="false"/>
   </node>
@@ -134,6 +146,7 @@
   <node pkg="dddmr_beginner_guide" exec="go2_nav_cmd_gate.py"
         name="go2_nav_cmd_gate" output="screen" respawn="false"
         if="$(var start_go2_nav_cmd_gate)">
+    <param from="$(var relocalization_config_file)" />
     <param name="input_topic" value="$(var go2_nav_cmd_gate_input_topic)" type="str"/>
     <param name="output_topic" value="$(var go2_nav_cmd_gate_output_topic)" type="str"/>
     <param name="enabled" value="$(var go2_nav_cmd_gate_enabled)" type="bool"/>

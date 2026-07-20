@@ -72,19 +72,38 @@ The live Go2 XT16 stream previously verified in this project is:
 - topic: `/lidar_points`
 - type: `sensor_msgs/msg/PointCloud2`
 - frame: `hesai_lidar`
-- width: `64000`
+- width: `32000`
 - height: `1`
 - point step: `26`
 - fields: `x`, `y`, `z`, `intensity`, `ring`, `timestamp`
 - `ring`: `UINT16`, range `0..15`
+- points per ring: `2000`
 - `timestamp`: `FLOAT64`, per-frame span around `0.1s`
 - expected rate: about `10 Hz`
+
+This is the active navigation contract verified on 2026-07-10. The prior
+`64000`-point (`4000` points/ring) mode delivered only about `5 Hz` on this
+deployment. Do not configure a 4000-column range image for the active
+2000-points/ring stream; the empty alternating columns reduce segmentation
+continuity and downstream update rate.
 
 Do not accept publisher presence alone as readiness. Require actual samples and field decoding.
 
 ## Clean Docker Path
 
 Use the upstream Docker environment rather than host-built mixed PCL/GTSAM binaries.
+
+Treat Docker as the authoritative build and runtime environment for the Go2 XT16
+navigation stack:
+
+- After changing navigation source or configuration, run
+  `./scripts/dddmr_docker_go2_xt16.sh build-navigation`.
+- Validate installed artifacts under `.docker_go2_xt16_install/`; the Docker
+  navigation entry points source this install base.
+- Do not use a host-side `colcon build`, `build/`, or `install/` result as the
+  navigation acceptance result. A host build failure does not prove that the
+  Docker image lacks dependencies; reproduce it through the Docker wrapper
+  before diagnosing a dependency problem.
 
 This clean workspace adds only a thin Go2 layer:
 
@@ -133,7 +152,7 @@ src/dddmr_lego_loam/lego_loam_bor/config/loam_go2_xt16_live.yaml
 It carries the issue 58/61 parameter lessons:
 
 - `num_vertical_scans: 16`
-- `num_horizontal_scans: 4000`
+- `num_horizontal_scans: 2000`
 - `vertical_angle_bottom: -15.0`
 - `vertical_angle_top: 15.0`
 - `scan_period: 0.1`

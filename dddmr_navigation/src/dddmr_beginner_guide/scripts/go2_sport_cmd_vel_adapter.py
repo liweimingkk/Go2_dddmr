@@ -12,6 +12,8 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import String
 
+from go2_nav_gate_policy import RECOVERY_ROTATION_DECISION, recovery_rotation_gate
+
 
 MOVE_API_ID = 1008
 STOP_MOVE_API_ID = 1003
@@ -99,6 +101,16 @@ class Go2SportCmdVelAdapter(Node):
         self.decision_timeout_sec = float(
             self.declare_parameter("decision_timeout_sec", 0.30).value
         )
+        self.require_motion_decision = bool(
+            self.declare_parameter("require_motion_decision", False).value
+        )
+        self.motion_allowed_decisions = self.parse_allowed_decisions(
+            self.declare_parameter(
+                "motion_allowed_decisions",
+                "d_controlling,d_align_heading,d_align_goal_heading,"
+                + RECOVERY_ROTATION_DECISION,
+            ).value
+        )
         self.zero_yaw_only_when_shim_disallowed = bool(
             self.declare_parameter("zero_yaw_only_when_shim_disallowed", True).value
         )
@@ -110,6 +122,7 @@ class Go2SportCmdVelAdapter(Node):
         self.last_cmd_time = None
         self.current_decision = ""
         self.last_decision_time = None
+        self.current_decision_transition_time = None
         self.last_log_time = self.get_clock().now()
         self.stop_sent_or_logged = True
         self.last_stop_time = None
@@ -192,6 +205,14 @@ class Go2SportCmdVelAdapter(Node):
             )
         )
         self.get_logger().info(
+            "motion_decision_gate: required=%s allowed_decisions=%s timeout=%.3f"
+            % (
+                self.require_motion_decision,
+                sorted(self.motion_allowed_decisions),
+                self.decision_timeout_sec,
+            )
+        )
+        self.get_logger().info(
             "yaw_arc_shim: enabled=%s mode=%s forward_x=%.3f min_abs_yaw=%.3f "
             "trigger_abs_yaw=%.3f allowed_decisions=%s decision_topic=%s "
             "decision_timeout=%.3f zero_disallowed=%s max_continuous=%.3f"
@@ -210,8 +231,11 @@ class Go2SportCmdVelAdapter(Node):
         )
 
     def decision_cb(self, msg: String) -> None:
+        now = self.get_clock().now()
+        if msg.data != self.current_decision:
+            self.current_decision_transition_time = now
         self.current_decision = msg.data
-        self.last_decision_time = self.get_clock().now()
+        self.last_decision_time = now
 
     def cmd_vel_cb(self, msg: Twist) -> None:
         if self.shutting_down:
@@ -232,8 +256,50 @@ class Go2SportCmdVelAdapter(Node):
             self.handle_stop("cmd_vel timeout %.3fs" % age, now)
             return
 
-        original = self.map_axis_and_clamp(self.latest_cmd)
-        x, y, yaw, shim_info = self.apply_yaw_arc_shim(*original, now=now)
+        if self.require_motion_decision:
+            allowed, decision_info = self.is_motion_decision_fresh_and_allowed(now)
+            if not allowed:
+                self.handle_stop("motion decision gate blocked %s" % decision_info, now)
+                return
+
+        mapped = self.map_axis(self.latest_cmd)
+        original = self.apply_deadbands_and_clamp(*mapped)
+        if self.current_decision.startswith("d_recovery"):
+            decision_age = None
+            if self.last_decision_time is not None:
+                decision_age = (now - self.last_decision_time).nanoseconds / 1e9
+            recovery_gate = recovery_rotation_gate(
+                self.current_decision,
+                decision_age,
+                self.decision_timeout_sec,
+                (
+                    self.last_cmd_time.nanoseconds
+                    if self.last_cmd_time is not None
+                    else None
+                ),
+                (
+                    self.current_decision_transition_time.nanoseconds
+                    if self.current_decision_transition_time is not None
+                    else None
+                ),
+                mapped[0],
+                mapped[1],
+                self.apply_deadband(mapped[2], self.angular_deadband),
+                self.zero_epsilon,
+                self.max_yaw,
+            )
+            if not recovery_gate.allowed:
+                self.handle_stop(
+                    "recovery motion gate blocked %s" % recovery_gate.reason,
+                    now,
+                )
+                return
+            self.yaw_arc_started_time = None
+            self.yaw_arc_fault_latched = False
+            x, y, yaw = 0.0, 0.0, recovery_gate.yaw
+            shim_info = "recovery_pure_yaw_no_arc"
+        else:
+            x, y, yaw, shim_info = self.apply_yaw_arc_shim(*original, now=now)
         if self.is_zero_command(x, y, yaw):
             self.handle_stop(
                 "zero cmd_vel decision=%s original_sport=%s transformed_sport=%s shim=%s"
@@ -371,6 +437,9 @@ class Go2SportCmdVelAdapter(Node):
         return x, y, yaw
 
     def map_axis_and_clamp(self, msg: Twist) -> Tuple[float, float, float]:
+        return self.apply_deadbands_and_clamp(*self.map_axis(msg))
+
+    def map_axis(self, msg: Twist) -> Tuple[float, float, float]:
         if self.axis_mode == "standard":
             x = msg.linear.x
             y = msg.linear.y
@@ -387,9 +456,14 @@ class Go2SportCmdVelAdapter(Node):
             y = msg.linear.y
             yaw = msg.angular.z
 
-        x = self.apply_deadband(x * self.x_sign, self.linear_deadband)
-        y = self.apply_deadband(y * self.y_sign, self.linear_deadband)
-        yaw = self.apply_deadband(yaw * self.yaw_sign, self.angular_deadband)
+        return x * self.x_sign, y * self.y_sign, yaw * self.yaw_sign
+
+    def apply_deadbands_and_clamp(
+        self, x: float, y: float, yaw: float
+    ) -> Tuple[float, float, float]:
+        x = self.apply_deadband(x, self.linear_deadband)
+        y = self.apply_deadband(y, self.linear_deadband)
+        yaw = self.apply_deadband(yaw, self.angular_deadband)
 
         return (
             self.clamp(x, -self.max_x, self.max_x),
@@ -480,6 +554,25 @@ class Go2SportCmdVelAdapter(Node):
                 % (self.current_decision or "<none>", age),
             )
         if self.current_decision not in self.yaw_arc_allowed_decisions:
+            return (
+                False,
+                "blocked_state=%s age=%.3f"
+                % (self.current_decision or "<none>", age),
+            )
+        return True, "decision=%s age=%.3f" % (self.current_decision, age)
+
+    def is_motion_decision_fresh_and_allowed(self, now) -> Tuple[bool, str]:
+        if self.last_decision_time is None:
+            return False, "no_decision"
+
+        age = (now - self.last_decision_time).nanoseconds / 1e9
+        if age > self.decision_timeout_sec:
+            return (
+                False,
+                "stale_decision=%s age=%.3f"
+                % (self.current_decision or "<none>", age),
+            )
+        if self.current_decision not in self.motion_allowed_decisions:
             return (
                 False,
                 "blocked_state=%s age=%.3f"

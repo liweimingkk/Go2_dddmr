@@ -33,7 +33,12 @@
 
 #include <perception_3d/sensor.h>
 
+#include <geometry_msgs/msg/pose_array.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+
+#include <cstdint>
+#include <string>
+#include <vector>
 /*Point cloud library*/
 #include <pcl/point_types.h>
 
@@ -90,10 +95,17 @@ class StaticLayer: public Sensor{
     void cbGround(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
     /*call back of the map*/
     void cbMap(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
+    /*callback of the recorded key-pose trajectory used for a narrow, verified
+      stair-corridor exemption in the static map vote only*/
+    void cbTraversedStairTrajectory(
+      const geometry_msgs::msg::PoseArray::SharedPtr msg);
+    bool buildTraversedStairGroundMask();
 
     /*Subscriber*/
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pcl_ground_sub_;
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pcl_map_sub_;
+    rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr
+      traversed_stair_trajectory_sub_;
     
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_dGraph_;
     
@@ -111,6 +123,20 @@ class StaticLayer: public Sensor{
     double intensity_search_radius_;
     double intensity_search_punish_weight_;
     double static_imposing_radius_;
+    double static_obstacle_xy_radius_;
+    int static_obstacle_min_points_;
+    bool traversed_stair_clearance_enabled_;
+    bool traversed_stair_trajectory_valid_;
+    bool new_traversed_stair_trajectory_;
+    int traversed_stair_minimum_pose_count_;
+    double traversed_stair_minimum_total_height_change_;
+    double traversed_stair_xy_radius_;
+    double traversed_stair_minimum_relative_z_;
+    double traversed_stair_maximum_relative_z_;
+    double traversed_stair_trajectory_height_change_;
+    std::string traversed_stair_trajectory_topic_;
+    std::vector<geometry_msgs::msg::Point> traversed_stair_trajectory_;
+    std::vector<std::uint8_t> traversed_stair_ground_mask_;
     bool mapping_mode_;
     std::string map_topic_;
     std::string ground_topic_;

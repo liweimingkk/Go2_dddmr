@@ -1,15 +1,22 @@
 p2p_move_base:
   ros__parameters:
-    controller_frequency: 20.0
+    # Match the 10 Hz local planner and XT16 obstacle stream so each decision
+    # uses a fresh planning horizon and the DWA acceleration window is honest.
+    controller_frequency: 10.0
     use_twist_stamped: false
     planner_patience: 10.0
     oscillation_distance: 0.05
     oscillation_angle: 0.3
     oscillation_patience: 15.0
     controller_patience: 10.0
+    # Confirm across three stopped decisions (about 0.20 s from first to third)
+    # before escalating. Every failed decision still publishes StopMove.
+    local_failure_confirmation_cycles: 3
     no_plan_retry_num: 10
     waiting_patience: 10.0
-    initial_heading_trajectory_generator: "differential_drive_go2_heading_arc"
+    # Pure yaw is responsive on this Go2; the previous 0.10 m/s heading arc
+    # operated in its observed low-speed dead zone and prolonged alignment.
+    initial_heading_trajectory_generator: "differential_drive_rotate_shortest_angle"
     goal_heading_trajectory_generator: "differential_drive_rotate_shortest_angle"
 global_plan_manager:
   ros__parameters:
@@ -22,7 +29,10 @@ mcl_ip:
         odom_type: "wheel_odometry"         # wheel_odometry/laser_odometry
         base_ground_frame: "base_link"
         num_vertical_scans: 16
-        num_horizontal_scans: 4000
+        # Current XT16 driver mode publishes 2000 samples/ring (32000 points)
+        # at 10 Hz. Match the range-image columns so adjacent samples remain
+        # adjacent during segmentation.
+        num_horizontal_scans: 2000
         vertical_angle_bottom: -15.0        # degrees
         vertical_angle_top: 15.0            # degrees
         scan_period: 0.1                    # seconds
@@ -63,8 +73,18 @@ dddmr_pg_map_server_manager:
 
 map1:
   ros__parameters:
-    pose_graph_dir: "/root/dddmr_bags/go2_xt16_mouth_mapping_20260709_130235_map_2026_07_09_05_02_34"
+    # Active flat-ground map captured and validated on 2026-07-20.
+    pose_graph_dir: "/root/dddmr_bags/go2_xt16_mouth_mapping_20260720_135842_map_2026_07_20_05_58_42"
     complete_map_voxel_size: 0.2
+    complete_ground_voxel_size: 0.1
+    merge_non_ground_surface_into_mapcloud: true
+    surface_ground_exclusion_radius: 0.10
+    # Keep synthetic completion isolated from SLAM products.  Empty means the
+    # published planning_ground is observed mapground only.
+    planning_ground_overlay_path: ""
+    planning_ground_overlay_max_distance: 0.32
+    planning_ground_overlay_max_fraction: 0.05
+    planning_ground_voxel_size: 0.10
 
 sub_maps:
   ros__parameters:
@@ -151,27 +171,52 @@ local_planner:
     heading_tracking_distance: 0.5
     heading_align_angle: 0.8
     prune_plane_timeout: 3.0
-    xy_goal_tolerance: 0.4
-    yaw_goal_tolerance: 0.8
+    # Coarse base alignment for arm grasping. Camera/arm control performs the
+    # final object-relative correction after navigation succeeds.
+    xy_goal_tolerance: 0.08
+    yaw_goal_tolerance: 0.10
     controller_frequency: 10.0
+    debug_rejection_report: true
+    # Hold a collision-accepted in-place turn direction across control cycles.
+    # This prevents nearly symmetric left/right candidates from alternating and
+    # making the robot shake in front of an obstacle.
+    in_place_direction_hysteresis_enabled: true
+    in_place_direction_hysteresis_generator: "differential_drive_simple"
+    # Ignore small critic noise; after a three-second hold, allow only a
+    # materially better side to win so the lock cannot force a long detour.
+    in_place_direction_min_hold_sec: 3.0
+    in_place_direction_switch_cost_margin: 0.20
+    in_place_direction_reset_gap_sec: 2.0
+    # Preserve the chosen side until it is genuinely unavailable. A transient
+    # one-frame loss stops safely instead of immediately reversing direction.
+    in_place_direction_allow_cost_switch: true
+    in_place_direction_unavailable_grace_sec: 0.10
     
+    # Swept Go2 stance envelope. base_footprint is 0.24 m below base_link;
+    # leave 0.04 m ground tolerance while protecting the legs and lower body.
     cuboid:
-      flb: [0.42, 0.18, 0.0] #front left buttom
-      frb: [0.42, -0.18, 0.0]
-      flt: [0.42, 0.18, 0.6] #front left top
-      frt: [0.42, -0.18, 0.6]
-      blb: [-0.35, 0.18, 0.0] #back left buttom
-      brb: [-0.35, -0.18, 0.0]
-      blt: [-0.35, 0.18, 0.6]
-      brt: [-0.35, -0.18, 0.6]
+      flb: [0.42, 0.30, -0.20] #front left bottom
+      frb: [0.42, -0.30, -0.20]
+      flt: [0.42, 0.30, 0.60] #front left top
+      frt: [0.42, -0.30, 0.60]
+      blb: [-0.35, 0.30, -0.20] #back left bottom
+      brb: [-0.35, -0.30, -0.20]
+      blt: [-0.35, 0.30, 0.60]
+      brt: [-0.35, -0.30, 0.60]
 
 recovery_behaviors:
   ros__parameters:
+    odom_topic: "/dddmr_go2/robot_odom_standard"
     plugins: ["rotate_inplace"]
     rotate_inplace:
       plugin: "recovery_behaviors::RotateInPlaceBehavior"
       frequency: 10.0
       tolerance: 0.3
+      transform_timeout: 2.0
+      odom_timeout: 0.5
+      future_tolerance: 0.1
+      progress_timeout: 3.0
+      progress_angle: 0.05
       trajectory_generator_name: "differential_drive_rotate_inplace"
 
 trajectory_generators:
@@ -182,30 +227,34 @@ trajectory_generators:
       controller_frequency: 10.0
       rotation_speed: 0.40
       rotation_forward_x: 0.0
+      sim_time: 2.0
+      # Heading alignment is re-evaluated every control cycle. Check the next
+      # 2 s / 0.8 rad, not an unnecessarily conservative full 360-degree sweep.
+      simulate_full_rotation_for_pure_yaw: false
       cuboid:
-        flb: [0.42, 0.18, 0.0] #front left buttom
-        frb: [0.42, -0.18, 0.0]
-        flt: [0.42, 0.18, 0.6] #front left top
-        frt: [0.42, -0.18, 0.6]
-        blb: [-0.35, 0.18, 0.0] #back left buttom
-        brb: [-0.35, -0.18, 0.0]
-        blt: [-0.35, 0.18, 0.6]
-        brt: [-0.35, -0.18, 0.6]
+        flb: [0.42, 0.30, -0.20] #front left bottom
+        frb: [0.42, -0.30, -0.20]
+        flt: [0.42, 0.30, 0.60] #front left top
+        frt: [0.42, -0.30, 0.60]
+        blb: [-0.35, 0.30, -0.20] #back left bottom
+        brb: [-0.35, -0.30, -0.20]
+        blt: [-0.35, 0.30, 0.60]
+        brt: [-0.35, -0.30, 0.60]
 
     differential_drive_rotate_inplace:
       plugin: "trajectory_generators::DDRotateInplaceTheory"
       controller_frequency: 10.0
-      rotation_speed: 0.40
+      rotation_speed: 0.50
       rotation_forward_x: 0.0
       cuboid:
-        flb: [0.42, 0.18, 0.0] #front left buttom
-        frb: [0.42, -0.18, 0.0]
-        flt: [0.42, 0.18, 0.6] #front left top
-        frt: [0.42, -0.18, 0.6]
-        blb: [-0.35, 0.18, 0.0] #back left buttom
-        brb: [-0.35, -0.18, 0.0]
-        blt: [-0.35, 0.18, 0.6]
-        brt: [-0.35, -0.18, 0.6]
+        flb: [0.42, 0.30, -0.20] #front left bottom
+        frb: [0.42, -0.30, -0.20]
+        flt: [0.42, 0.30, 0.60] #front left top
+        frt: [0.42, -0.30, 0.60]
+        blb: [-0.35, 0.30, -0.20] #back left bottom
+        brb: [-0.35, -0.30, -0.20]
+        blt: [-0.35, 0.30, 0.60]
+        brt: [-0.35, -0.30, 0.60]
 
     differential_drive_go2_heading_arc:
       plugin: "trajectory_generators::DDRotateInplaceTheory"
@@ -216,23 +265,33 @@ trajectory_generators:
       linear_x_sample: 1.0
       angular_z_sample: 2.0
       cuboid:
-        flb: [0.42, 0.18, 0.0] #front left buttom
-        frb: [0.42, -0.18, 0.0]
-        flt: [0.42, 0.18, 0.6] #front left top
-        frt: [0.42, -0.18, 0.6]
-        blb: [-0.35, 0.18, 0.0] #back left buttom
-        brb: [-0.35, -0.18, 0.0]
-        blt: [-0.35, 0.18, 0.6]
-        brt: [-0.35, -0.18, 0.6]
+        flb: [0.42, 0.30, -0.20] #front left bottom
+        frb: [0.42, -0.30, -0.20]
+        flt: [0.42, 0.30, 0.60] #front left top
+        frt: [0.42, -0.30, 0.60]
+        blb: [-0.35, 0.30, -0.20] #back left bottom
+        brb: [-0.35, -0.30, -0.20]
+        blt: [-0.35, 0.30, 0.60]
+        brt: [-0.35, -0.30, 0.60]
     
     differential_drive_simple:
       plugin: "trajectory_generators::DDSimpleTrajectoryGeneratorTheory"
-      max_vel_x: 0.50
-      min_vel_x: 0.30 # Go2 supervised axis/tilt verification threshold.
+      # Field replay showed that 0.10-0.15 m/s forward and about 0.05 rad/s
+      # in-place Move requests leave the Go2 effectively stationary. Sample
+      # only executable motion after odometry confirms a full stop.
+      max_vel_x: 0.40
+      min_vel_x: 0.30
       max_vel_theta: 0.50
-      min_vel_theta: 0.04
+      min_vel_theta: 0.40
+      enable_in_place_rotation: true
+      in_place_rotation_max_linear_speed: 0.05
+      # Treat only the measured near-zero yaw noise as stopped. Real rotation
+      # rates (0.108/0.212 rad/s in the trace) remain dynamically constrained.
+      in_place_rotation_stopped_angular_speed: 0.02
       acc_lim_x: 3.00
-      acc_lim_theta: 1.0
+      # At 10 Hz this makes +/-0.40 rad/s reachable from rest, matching
+      # min_vel_theta instead of silently filtering every rotation sample.
+      acc_lim_theta: 4.0
       deceleration_ratio: 2.0
       max_motor_shaft_rpm: 3000.0
       wheel_diameter: 0.16
@@ -240,21 +299,21 @@ trajectory_generators:
       robot_radius: 0.25
       
       controller_frequency: 10.0
-      sim_time: 0.6
-      linear_x_sample: 4.0
-      angular_z_sample: 6.0
+      sim_time: 1.5
+      linear_x_sample: 5.0
+      angular_z_sample: 10.0
       sim_granularity: 0.05
       angular_sim_granularity: 0.025
 
       cuboid:
-        flb: [0.42, 0.18, 0.0] #front left buttom
-        frb: [0.42, -0.18, 0.0]
-        flt: [0.42, 0.18, 0.6] #front left top
-        frt: [0.42, -0.18, 0.6]
-        blb: [-0.35, 0.18, 0.0] #back left buttom
-        brb: [-0.35, -0.18, 0.0]
-        blt: [-0.35, 0.18, 0.6]
-        brt: [-0.35, -0.18, 0.6]
+        flb: [0.42, 0.30, -0.20] #front left bottom
+        frb: [0.42, -0.30, -0.20]
+        flt: [0.42, 0.30, 0.60] #front left top
+        frt: [0.42, -0.30, 0.60]
+        blb: [-0.35, 0.30, -0.20] #back left bottom
+        brb: [-0.35, -0.30, -0.20]
+        blt: [-0.35, 0.30, 0.60]
+        brt: [-0.35, -0.30, 0.60]
 
 mpc_critics:
   ros__parameters:
@@ -302,9 +361,11 @@ perception_3d_local:
     global_frame: "map"
     robot_base_frame: "base_link"
     max_obstacle_distance: 9999.0
-    inscribed_radius: 0.1
+    # Centerline hard clearance. A 0.40 m radius requires roughly 0.8 m of
+    # usable passage width before localization and tracking tolerances.
+    inscribed_radius: 0.40
     inflation_descending_rate: 2.0
-    inflation_radius: 0.1
+    inflation_radius: 1.5
     sensors_collected_frequency: 10.0
     plugins: ["map", "path_blocked_strategy", "lidar"]
     map:
@@ -315,7 +376,7 @@ perception_3d_local:
       ground_topic: "map1/mapground"
     path_blocked_strategy:
       plugin: "perception_3d::PathBlockedStrategy"
-      check_radius: 0.1
+      check_radius: 0.40
     lidar:
       plugin: "perception_3d::MultiLayerSpinningLidar"
       is_local_planner: true
@@ -327,9 +388,12 @@ perception_3d_local:
       scan_effective_positive_end: 180.0
       scan_effective_negative_start: -30.0
       scan_effective_negative_end: -180.0
-      resolution: 0.05
+      xy_resolution: 0.05
       height_resolution: 0.05
-      marking_height: 2.0
+      # segmented_cloud_pure is already non-ground. Include the lower body and
+      # leg envelope instead of discarding everything below base_link + 5 cm.
+      marking_minimum_height: -0.20
+      marking_height: 0.60
       perception_window_size: 3.0 #the window for marking/clearing in meter, we dont casting to maximum range of the sensor even it is gbl map
       segmentation_ignore_ratio: 0.5 #f a segmentation match static pc with this ratio, we ignore it. ex: a wall
       expected_sensor_time: 0.2
@@ -339,9 +403,11 @@ perception_3d_global:
     global_frame: "map"
     robot_base_frame: "base_link"
     max_obstacle_distance: 9999.0
-    inscribed_radius: 0.1
+    # Match the local centerline clearance; static walls retain measured
+    # horizontal distance and the local planner checks the oriented cuboid.
+    inscribed_radius: 0.40
     inflation_descending_rate: 2.0
-    inflation_radius: 0.1
+    inflation_radius: 1.5
     sensors_collected_frequency: 10.0
     plugins: ["map", "lidar"]
     dgraph_publish_frequency: 1.0
@@ -354,8 +420,23 @@ perception_3d_global:
       intensity_search_radius: 3.0 #this value is suggested to be 1.0 meters, because if it is too large, the narrow passage will be miscalculated
       intensity_search_punish_weight: 0.1 #the weight for a node. Set this value higher means we dont like path planning cross a orphan node.
       static_imposing_radius: 1.5 #use map to add weight on each ground node
+      static_obstacle_min_points: 11
+      static_obstacle_xy_radius: 0.40
       map_topic: "map1/mapcloud"
-      ground_topic: "map1/mapground"
+      ground_topic: "map1/planning_ground"
+      traversed_stair_clearance:
+        # Keep disabled on the flat-ground mainline. Enable only on a dedicated
+        # branch after validating a map with a real traversed stair trajectory.
+        enabled: false
+        trajectory_topic: "map1/key_poses"
+        minimum_pose_count: 6
+        minimum_total_height_change: 0.50
+        xy_radius: 0.10
+        # The saved Go2 base_link trajectory is 0.2-0.5 m above observed
+        # mapground on the stair flight. Trust only that narrow recorded
+        # centerline; live lidar layers still retain authority to stop.
+        minimum_relative_z: -0.50
+        maximum_relative_z: 0.05
       support:
         mapping_mode: false
           #if mapping mode is true, edge detection is automatically disabled
@@ -388,6 +469,16 @@ global_planner:
   ros__parameters:
     turning_weight: 0.1 #Punish the zig-zag path
     enable_detail_log: false
+    a_star_expanding_radius: 0.50
+    maximum_ground_connection_z: 0.26
+    find_start_tolerance: 0.50
+    find_goal_tolerance: 0.20
+    project_start_goal_to_traversable_ground: true
+    # Fail planning instead of silently shifting a grasp pose too far away.
+    max_endpoint_projection_xy: 0.10
+    # Allow the normal vertical base_link-to-ground offset while keeping XY
+    # endpoint projection tightly bounded.
+    max_endpoint_projection_z: 0.55
 
 #if we use get_dwa_plan in global_plan_manager, we setup parameters for dwa_global_planner
 dynamic_window_aware_global_planner:
