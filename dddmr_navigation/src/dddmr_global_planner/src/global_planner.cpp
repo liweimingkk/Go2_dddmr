@@ -446,18 +446,6 @@ bool GlobalPlanner::selectTraversableGround(
   const pcl::PointXYZI & requested, double search_radius,
   const char * endpoint_name, unsigned int & selected_id)
 {
-  std::vector<int> candidate_ids;
-  std::vector<float> candidate_squared_distances;
-  if (
-    kdtree_ground_->radiusSearch(
-      requested, search_radius, candidate_ids, candidate_squared_distances) < 1)
-  {
-    RCLCPP_WARN(
-      this->get_logger(), "%s is not within %.2f m of mapground.",
-      endpoint_name, search_radius);
-    return false;
-  }
-
   const double inscribed_radius =
     perception_3d_ros_->getGlobalUtils()->getInscribedRadius();
   double best_squared_distance = std::numeric_limits<double>::infinity();
@@ -466,39 +454,67 @@ bool GlobalPlanner::selectTraversableGround(
   double nearest_squared_distance = std::numeric_limits<double>::infinity();
   double nearest_clearance = 0.0;
 
-  for (std::size_t index = 0; index < candidate_ids.size(); ++index) {
-    const int candidate_id = candidate_ids[index];
-    const auto & candidate = pcl_ground_->points[candidate_id];
-    const double dx = static_cast<double>(candidate.x - requested.x);
-    const double dy = static_cast<double>(candidate.y - requested.y);
-    const double dz = static_cast<double>(candidate.z - requested.z);
-    const double xy_distance = std::hypot(dx, dy);
-    const double squared_distance = dx * dx + dy * dy + dz * dz;
-    const double clearance =
-      perception_3d_ros_->get_min_dGraphValue(candidate_id);
+  const auto select_candidate = [&](const std::vector<int> & candidate_ids) {
+    for (const int candidate_id : candidate_ids) {
+      const auto & candidate = pcl_ground_->points[candidate_id];
+      const double dx = static_cast<double>(candidate.x - requested.x);
+      const double dy = static_cast<double>(candidate.y - requested.y);
+      const double dz = static_cast<double>(candidate.z - requested.z);
+      const double xy_distance = std::hypot(dx, dy);
+      const double squared_distance = dx * dx + dy * dy + dz * dz;
+      const double clearance =
+        perception_3d_ros_->get_min_dGraphValue(candidate_id);
 
-    if (squared_distance < nearest_squared_distance) {
-      nearest_squared_distance = squared_distance;
-      nearest_id = candidate_id;
-      nearest_clearance = clearance;
-    }
+      if (squared_distance < nearest_squared_distance) {
+        nearest_squared_distance = squared_distance;
+        nearest_id = candidate_id;
+        nearest_clearance = clearance;
+      }
 
-    if (
-      xy_distance > max_endpoint_projection_xy_ ||
-      std::abs(dz) > max_endpoint_projection_z_)
-    {
-      continue;
+      if (
+        xy_distance > max_endpoint_projection_xy_ ||
+        std::abs(dz) > max_endpoint_projection_z_)
+      {
+        continue;
+      }
+      if (
+        project_start_goal_to_traversable_ground_ &&
+        clearance < inscribed_radius)
+      {
+        continue;
+      }
+      if (squared_distance < best_squared_distance) {
+        best_squared_distance = squared_distance;
+        best_id = candidate_id;
+      }
     }
-    if (
-      project_start_goal_to_traversable_ground_ &&
-      clearance < inscribed_radius)
-    {
-      continue;
-    }
-    if (squared_distance < best_squared_distance) {
-      best_squared_distance = squared_distance;
-      best_id = candidate_id;
-    }
+  };
+
+  std::vector<int> candidate_ids;
+  std::vector<float> candidate_squared_distances;
+  kdtree_ground_->radiusSearch(
+    requested, search_radius, candidate_ids, candidate_squared_distances);
+  select_candidate(candidate_ids);
+
+  bool used_projection_search = false;
+  const double projection_search_radius = std::hypot(
+    max_endpoint_projection_xy_, max_endpoint_projection_z_);
+  if (best_id < 0 && projection_search_radius > search_radius) {
+    candidate_ids.clear();
+    candidate_squared_distances.clear();
+    kdtree_ground_->radiusSearch(
+      requested, projection_search_radius, candidate_ids,
+      candidate_squared_distances);
+    select_candidate(candidate_ids);
+    used_projection_search = true;
+  }
+
+  if (nearest_id < 0) {
+    RCLCPP_WARN(
+      this->get_logger(),
+      "%s has no mapground candidate within XY %.2f m / Z %.2f m.",
+      endpoint_name, max_endpoint_projection_xy_, max_endpoint_projection_z_);
+    return false;
   }
 
   if (best_id < 0) {
@@ -527,6 +543,12 @@ bool GlobalPlanner::selectTraversableGround(
       "projected to id=%u by XY %.3f m / Z %.3f m (clearance %.3f m).",
       endpoint_name, nearest_id, nearest_clearance, selected_id,
       projection_xy, projection_z, selected_clearance);
+  } else if (used_projection_search) {
+    RCLCPP_INFO_THROTTLE(
+      this->get_logger(), *clock_, 5000,
+      "%s projected to traversable mapground by XY %.3f m / Z %.3f m "
+      "(clearance %.3f m).",
+      endpoint_name, projection_xy, projection_z, selected_clearance);
   } else if (enable_detail_log_) {
     RCLCPP_INFO(
       this->get_logger(),

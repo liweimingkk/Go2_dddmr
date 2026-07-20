@@ -101,12 +101,14 @@ def request_plan(
     goal_x: float,
     goal_y: float,
     timeout: float,
+    goal_z: float = 0.0,
 ) -> tuple[int, int]:
     request = GetPlan.Goal()
     request.goal.header.frame_id = "map"
     request.goal.header.stamp = node.get_clock().now().to_msg()
     request.goal.pose.position.x = goal_x
     request.goal.pose.position.y = goal_y
+    request.goal.pose.position.z = goal_z
     request.goal.pose.orientation.w = 1.0
     request.activate_threading = True
 
@@ -237,7 +239,20 @@ def main() -> int:
                 f"same-side control plan failed: status={same_status} poses={same_poses}"
             )
 
+        # RViz 2D Goal publishes z=0 even when the map ground is vertically
+        # offset.  An equivalent synthetic offset must use the bounded
+        # projection fallback and still produce a path on clear ground.
+        projected_status, projected_poses = request_plan(
+            node, client, -1.2, 0.8, args.timeout, goal_z=0.45
+        )
+        if projected_status != GoalStatus.STATUS_SUCCEEDED or projected_poses == 0:
+            raise RuntimeError(
+                "vertically projected control plan failed: "
+                f"status={projected_status} poses={projected_poses}"
+            )
+
         cross_status, cross_poses = request_plan(node, client, 1.2, 0.0, args.timeout)
+        blocked_endpoint: tuple[int, int] | None = None
         if args.wall_gap_half_width > 0.0:
             if cross_status != GoalStatus.STATUS_SUCCEEDED or cross_poses == 0:
                 raise RuntimeError(
@@ -248,9 +263,32 @@ def main() -> int:
             raise RuntimeError(
                 f"cross-wall plan was admitted: status={cross_status} poses={cross_poses}"
             )
+        else:
+            # The projection fallback must not bypass endpoint clearance.  A
+            # vertically offset goal centered inside the solid wall must stay
+            # rejected even though a mapground point exists directly below it.
+            blocked_endpoint = request_plan(
+                node, client, 0.0, 0.0, args.timeout, goal_z=0.45
+            )
+            blocked_status, blocked_poses = blocked_endpoint
+            if blocked_poses != 0 or blocked_status == GoalStatus.STATUS_SUCCEEDED:
+                raise RuntimeError(
+                    "projected wall endpoint was admitted: "
+                    f"status={blocked_status} poses={blocked_poses}"
+                )
 
         print(f"same_side_status={same_status} same_side_poses={same_poses}")
+        print(
+            f"projected_status={projected_status} "
+            f"projected_poses={projected_poses}"
+        )
         print(f"cross_wall_status={cross_status} cross_wall_poses={cross_poses}")
+        if blocked_endpoint is not None:
+            blocked_status, blocked_poses = blocked_endpoint
+            print(
+                f"blocked_endpoint_status={blocked_status} "
+                f"blocked_endpoint_poses={blocked_poses}"
+            )
         if args.wall_gap_half_width > 0.0:
             print(
                 "SYNTHETIC_DOORWAY_PASSAGE_STATUS=PASS "
