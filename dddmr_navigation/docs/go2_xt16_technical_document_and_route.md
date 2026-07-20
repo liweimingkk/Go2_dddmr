@@ -66,7 +66,7 @@ src/dddmr_lego_loam/lego_loam_bor/config/loam_go2_xt16_live.yaml
 
 ```yaml
 num_vertical_scans: 16
-num_horizontal_scans: 4000
+num_horizontal_scans: 2000
 vertical_angle_bottom: -15.0
 vertical_angle_top: 15.0
 scan_period: 0.1
@@ -80,11 +80,14 @@ enable_loop_closure: false
 topic: /lidar_points
 frame: hesai_lidar
 type: sensor_msgs/msg/PointCloud2
-width: 64000
+width: 32000
 fields: x, y, z, intensity, ring, timestamp
 ring: 0..15
 scan period: about 0.1s
 ```
+
+该合同对应当前导航使用的 `32000` 点、约 `10 Hz` 模式。`64000` 点模式在
+本机实测约 `5 Hz`，切换时必须同时把 `num_horizontal_scans` 改为 `4000`。
 
 ### 3.2 口部地面补充链路
 

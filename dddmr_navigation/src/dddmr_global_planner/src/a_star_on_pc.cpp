@@ -201,6 +201,9 @@ void A_Star_on_Graph::getPath(
   unsigned int start, unsigned int goal,
   std::vector<unsigned int>& path){
 
+  std::unique_lock<std::recursive_mutex> perception_lock(
+    perception_ros_->getSharedDataPtr()->ground_kdtree_cb_mutex_);
+
   //RCLCPP_INFO(rclcpp::get_logger("astar"),"Start: %u, Goal: %u", start, goal);
 
   /*
@@ -245,7 +248,16 @@ void A_Star_on_Graph::getPath(
       std::vector<float> pointRadiusSquaredDistanceX2;
       //ASLS_->kdtree_ground_->nearestKSearch(pcl_now, 8, pointIdxRadiusX2Search, pointRadiusSquaredDistanceX2);
       ASLS_->kdtree_ground_->radiusSearch(pcl_now, 2*a_star_expanding_radius_, pointIdxRadiusX2Search, pointRadiusSquaredDistanceX2);
-      pointIdxRadiusSearch = pointIdxRadiusX2Search;
+      pointIdxRadiusSearch.swap(pointIdxRadiusX2Search);
+      pointRadiusSquaredDistance.swap(pointRadiusSquaredDistanceX2);
+    }
+
+    if(pointIdxRadiusSearch.empty() || pointIdxRadiusSearch.size() != pointRadiusSquaredDistance.size()){
+      RCLCPP_ERROR(rclcpp::get_logger("astar"),
+        "Invalid radius-search result at node %u: indices=%zu distances=%zu",
+        current_node.self_index, pointIdxRadiusSearch.size(), pointRadiusSquaredDistance.size());
+      ASLS_->closeNode(current_node);
+      continue;
     }
 
     //@ calculated average intensity, because we have sparse low cost orphan, and it is unlikely to have a low cost node surrounded by high cost nodes
@@ -257,7 +269,7 @@ void A_Star_on_Graph::getPath(
 
     for(unsigned int it = 0; it!=pointIdxRadiusSearch.size(); it++){
       
-      int current_expanding_index = pointIdxRadiusSearch[it];
+      unsigned int current_expanding_index = static_cast<unsigned int>(pointIdxRadiusSearch[it]);
       float current_expanding_g = sqrt(pointRadiusSquaredDistance[it]);
 
       //@ dGraphValue is the distance to lethal
@@ -272,6 +284,20 @@ void A_Star_on_Graph::getPath(
       pcl::PointXYZI pcl_current = pc_original_z_up_->points[current_node.self_index];
       pcl::PointXYZI pcl_current_parent = pc_original_z_up_->points[current_node.parent_index];
       pcl::PointXYZI pcl_expanding = pc_original_z_up_->points[current_expanding_index];
+
+      // Never bridge multiple stair levels or a cliff through a sparse-ground
+      // orphan expansion.  The bound is independent of the 3-D neighbor
+      // radius so increasing search density cannot silently change step
+      // capability.
+      if (std::abs(pcl_expanding.z - pcl_current.z) >
+        maximum_ground_connection_z_)
+      {
+        continue;
+      }
+
+      if (current_expanding_g > a_star_expanding_radius_) {
+        continue;
+      }
 
       //@ check line-of-sight when distance is 2 times larger than inscribed_radius
       if(current_expanding_g>=2*inscribed_radius){

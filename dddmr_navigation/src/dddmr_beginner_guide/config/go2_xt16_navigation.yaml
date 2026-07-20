@@ -29,7 +29,10 @@ mcl_ip:
         odom_type: "wheel_odometry"         # wheel_odometry/laser_odometry
         base_ground_frame: "base_link"
         num_vertical_scans: 16
-        num_horizontal_scans: 4000
+        # Current XT16 driver mode publishes 2000 samples/ring (32000 points)
+        # at 10 Hz. Match the range-image columns so adjacent samples remain
+        # adjacent during segmentation.
+        num_horizontal_scans: 2000
         vertical_angle_bottom: -15.0        # degrees
         vertical_angle_top: 15.0            # degrees
         scan_period: 0.1                    # seconds
@@ -72,8 +75,17 @@ map1:
   ros__parameters:
     # The reverse/downstairs traversal has the denser tread observation and is
     # used as the single bidirectional navigation map.
-    pose_graph_dir: "/root/dddmr_bags/go2_xt16_mouth_downstairs_tri_state_map_2026_07_13_13_15_42"
+    pose_graph_dir: "/root/dddmr_bags/go2_xt16_mouth_mapping_20260714_153136_map_2026_07_14_07_31_36"
     complete_map_voxel_size: 0.2
+    complete_ground_voxel_size: 0.1
+    merge_non_ground_surface_into_mapcloud: true
+    surface_ground_exclusion_radius: 0.10
+    # Keep synthetic completion isolated from SLAM products.  Empty means the
+    # published planning_ground is observed mapground only.
+    planning_ground_overlay_path: ""
+    planning_ground_overlay_max_distance: 0.32
+    planning_ground_overlay_max_fraction: 0.05
+    planning_ground_voxel_size: 0.10
 
 sub_maps:
   ros__parameters:
@@ -160,8 +172,10 @@ local_planner:
     heading_tracking_distance: 0.5
     heading_align_angle: 0.8
     prune_plane_timeout: 3.0
-    xy_goal_tolerance: 0.4
-    yaw_goal_tolerance: 0.8
+    # Coarse base alignment for arm grasping. Camera/arm control performs the
+    # final object-relative correction after navigation succeeds.
+    xy_goal_tolerance: 0.08
+    yaw_goal_tolerance: 0.10
     controller_frequency: 10.0
     debug_rejection_report: true
     # Hold a collision-accepted in-place turn direction across control cycles.
@@ -193,6 +207,7 @@ local_planner:
 
 recovery_behaviors:
   ros__parameters:
+    odom_topic: "/dddmr_go2/robot_odom_standard"
     plugins: ["rotate_inplace"]
     rotate_inplace:
       plugin: "recovery_behaviors::RotateInPlaceBehavior"
@@ -406,8 +421,21 @@ perception_3d_global:
       intensity_search_radius: 3.0 #this value is suggested to be 1.0 meters, because if it is too large, the narrow passage will be miscalculated
       intensity_search_punish_weight: 0.1 #the weight for a node. Set this value higher means we dont like path planning cross a orphan node.
       static_imposing_radius: 1.5 #use map to add weight on each ground node
+      static_obstacle_min_points: 11
+      static_obstacle_xy_radius: 0.40
       map_topic: "map1/mapcloud"
-      ground_topic: "map1/mapground"
+      ground_topic: "map1/planning_ground"
+      traversed_stair_clearance:
+        enabled: true
+        trajectory_topic: "map1/key_poses"
+        minimum_pose_count: 6
+        minimum_total_height_change: 0.50
+        xy_radius: 0.10
+        # The saved Go2 base_link trajectory is 0.2-0.5 m above observed
+        # mapground on the stair flight. Trust only that narrow recorded
+        # centerline; live lidar layers still retain authority to stop.
+        minimum_relative_z: -0.50
+        maximum_relative_z: 0.05
       support:
         mapping_mode: false
           #if mapping mode is true, edge detection is automatically disabled
@@ -440,6 +468,15 @@ global_planner:
   ros__parameters:
     turning_weight: 0.1 #Punish the zig-zag path
     enable_detail_log: false
+    a_star_expanding_radius: 0.50
+    maximum_ground_connection_z: 0.26
+    find_start_tolerance: 0.50
+    find_goal_tolerance: 0.20
+    project_start_goal_to_traversable_ground: true
+    # Fail planning instead of silently shifting a grasp pose too far away.
+    max_endpoint_projection_xy: 0.10
+    # mapground is as much as 0.5 m below the saved base_link trajectory.
+    max_endpoint_projection_z: 0.55
 
 #if we use get_dwa_plan in global_plan_manager, we setup parameters for dwa_global_planner
 dynamic_window_aware_global_planner:

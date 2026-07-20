@@ -69,6 +69,7 @@ struct ProjectionOut
   pcl::PointCloud<PointType>::Ptr outlier_cloud;
   pcl::PointCloud<PointType>::Ptr patched_ground;
   pcl::PointCloud<PointType>::Ptr patched_ground_edge;
+  pcl::PointCloud<PointType>::Ptr mapping_obstacle;
   std::string odom_type;
   geometry_msgs::msg::TransformStamped trans_c2s;
   geometry_msgs::msg::TransformStamped trans_b2s;
@@ -87,6 +88,7 @@ struct AssociationOut
   pcl::PointCloud<PointType>::Ptr cloud_surf_last;
   pcl::PointCloud<PointType>::Ptr cloud_patched_ground_last;
   pcl::PointCloud<PointType>::Ptr cloud_patched_ground_edge_last;
+  pcl::PointCloud<PointType>::Ptr cloud_mapping_obstacle_last;
   geometry_msgs::msg::TransformStamped trans_c2s;
   geometry_msgs::msg::TransformStamped trans_b2s;
   geometry_msgs::msg::TransformStamped trans_m2ci;
