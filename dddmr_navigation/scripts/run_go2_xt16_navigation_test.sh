@@ -13,7 +13,8 @@ Modes:
   --dry-run  Start navigation and RViz only. No real /api/sport/request output.
              This is the default.
   --live     Start navigation, RViz, and the live Sport adapter. This can move
-             the Go2 after an RViz goal is sent.
+             the Go2 after an RViz goal is sent. Requires onsite supervision
+             and GO2_NAV_LIVE_CONFIRM=I_AM_SUPERVISING_GO2_NAV.
   --stop     Stop running go2_xt16 navigation containers. If a live adapter is
              running, it is stopped first so it can publish StopMove.
 
@@ -24,7 +25,7 @@ Common environment overrides:
   RVIZ=true
   PUBLISH_STATIC_TF=true
   STOP_EXISTING=false      Set true to stop old nav containers before starting.
-  RUN_SECONDS=             If set, stop automatically after N seconds.
+  RUN_SECONDS=             Live defaults to 300; maximum is 1800 seconds.
   GO2_NET_IFACE=enp46s0
   GO2_DDS_IP=192.168.123.18
   DDDMR_BAGS_DIR=../bags
@@ -32,8 +33,10 @@ Common environment overrides:
 
 Examples:
   scripts/run_go2_xt16_navigation_test.sh --dry-run
-  scripts/run_go2_xt16_navigation_test.sh --live
-  STOP_EXISTING=true scripts/run_go2_xt16_navigation_test.sh --live
+  GO2_NAV_LIVE_CONFIRM=I_AM_SUPERVISING_GO2_NAV \
+    scripts/run_go2_xt16_navigation_test.sh --live
+  GO2_NAV_LIVE_CONFIRM=I_AM_SUPERVISING_GO2_NAV STOP_EXISTING=true \
+    scripts/run_go2_xt16_navigation_test.sh --live
   scripts/run_go2_xt16_navigation_test.sh --stop
 EOF
 }
@@ -84,10 +87,16 @@ MAX_YAW_VALUE="${MAX_YAW:-0.50}"
 MAX_Y_VALUE="${MAX_Y:-0.0}"
 RUN_SECONDS_VALUE="${RUN_SECONDS:-}"
 STOP_EXISTING_VALUE="${STOP_EXISTING:-false}"
+LIVE_CONFIRM_PHRASE="I_AM_SUPERVISING_GO2_NAV"
 CONTAINER_NAME="${NAV_CONTAINER_NAME:-go2_xt16_nav_${mode//-/_}_x${MAX_X_VALUE//./}_yaw${MAX_YAW_VALUE//./}_$(date +%Y%m%d_%H%M%S)}"
 RUN_LOG_DIR="${RUN_LOG_DIR:-${WS_ROOT}/run_logs}"
 ADAPTER_LOG_CONTAINER="/root/dddmr_navigation/run_logs/${CONTAINER_NAME}_adapter.log"
 ADAPTER_LOG_HOST="${RUN_LOG_DIR}/${CONTAINER_NAME}_adapter.log"
+runtime_started="false"
+
+if [[ "${mode}" == "live" && -z "${RUN_SECONDS_VALUE}" ]]; then
+  RUN_SECONDS_VALUE="300"
+fi
 
 log() {
   printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"
@@ -98,12 +107,42 @@ die() {
   exit 1
 }
 
+validate_live_request() {
+  [[ "${GO2_NAV_LIVE_CONFIRM:-}" == "${LIVE_CONFIRM_PHRASE}" ]] || \
+    die "Live mode requires GO2_NAV_LIVE_CONFIRM=${LIVE_CONFIRM_PHRASE}."
+  [[ "${RUN_SECONDS_VALUE}" =~ ^[1-9][0-9]*$ ]] || \
+    die "Live RUN_SECONDS must be a positive integer."
+  (( RUN_SECONDS_VALUE <= 1800 )) || \
+    die "Live RUN_SECONDS must not exceed 1800 seconds."
+}
+
+cleanup_live_runtime() {
+  local status=$?
+  if [[ "${mode}" == "live" && "${runtime_started}" == "true" ]]; then
+    log "Stopping supervised live runtime during exit cleanup..."
+    stop_nav_containers || true
+    runtime_started="false"
+  fi
+  return "${status}"
+}
+
 require_docker_image() {
   docker image inspect "${IMAGE}" >/dev/null 2>&1 || die "Docker image ${IMAGE} not found."
 }
 
 nav_container_names() {
-  docker ps --format '{{.Names}}' | grep -E '^go2_xt16_nav|^go2_xt16_navigation' || true
+  local current_name=""
+  if [[ -f /tmp/go2_xt16_nav_current_name.txt ]]; then
+    current_name="$(< /tmp/go2_xt16_nav_current_name.txt)"
+  fi
+  {
+    docker ps -a --filter 'label=dddmr.go2_xt16_navigation=true' --format '{{.Names}}'
+    docker ps --format '{{.Names}}' | grep -E '^go2_xt16_nav|^go2_xt16_navigation' || true
+    if [[ -n "${current_name}" ]] && \
+       docker ps -a --format '{{.Names}}' | grep -Fxq "${current_name}"; then
+      printf '%s\n' "${current_name}"
+    fi
+  } | sort -u
 }
 
 host_nav_processes() {
@@ -147,6 +186,7 @@ stop_nav_containers() {
     fi
     docker rm "${name}" >/dev/null 2>&1 || true
   done <<< "${names}"
+  rm -f /tmp/go2_xt16_nav_current_name.txt
 }
 
 assert_clean_runtime() {
@@ -182,10 +222,23 @@ $*"
 wait_for_node() {
   local node="$1"
   local timeout_sec="${2:-60}"
-  local i
-  for i in $(seq 1 "${timeout_sec}"); do
-    if docker_ros "ros2 node list | grep -Fxq '${node}'" >/dev/null 2>&1; then
+  local deadline=$((SECONDS + timeout_sec))
+  local next_progress=$((SECONDS + 15))
+
+  log "Waiting for node ${node} (timeout ${timeout_sec}s)..."
+  while (( SECONDS < deadline )); do
+    if ! docker inspect -f '{{.State.Running}}' "${CONTAINER_NAME}" 2>/dev/null | grep -Fxq true; then
+      log "Container ${CONTAINER_NAME} exited while waiting for node ${node}."
+      docker logs --tail 80 "${CONTAINER_NAME}" 2>&1 || true
+      return 1
+    fi
+    if docker_ros "timeout 5 ros2 node list | grep -Fx '${node}'" >/dev/null 2>&1; then
+      log "Ready node: ${node}"
       return 0
+    fi
+    if (( SECONDS >= next_progress )); then
+      log "Still waiting for node ${node}..."
+      next_progress=$((SECONDS + 15))
     fi
     sleep 1
   done
@@ -195,14 +248,56 @@ wait_for_node() {
 wait_for_topic() {
   local topic="$1"
   local timeout_sec="${2:-60}"
-  local i
-  for i in $(seq 1 "${timeout_sec}"); do
-    if docker_ros "ros2 topic list | grep -Fxq '${topic}'" >/dev/null 2>&1; then
+  local deadline=$((SECONDS + timeout_sec))
+  local next_progress=$((SECONDS + 15))
+
+  log "Waiting for topic ${topic} (timeout ${timeout_sec}s)..."
+  while (( SECONDS < deadline )); do
+    if ! docker inspect -f '{{.State.Running}}' "${CONTAINER_NAME}" 2>/dev/null | grep -Fxq true; then
+      log "Container ${CONTAINER_NAME} exited while waiting for topic ${topic}."
+      docker logs --tail 80 "${CONTAINER_NAME}" 2>&1 || true
+      return 1
+    fi
+    if docker_ros "timeout 5 ros2 topic list | grep -Fx '${topic}'" >/dev/null 2>&1; then
+      log "Ready topic: ${topic}"
       return 0
+    fi
+    if (( SECONDS >= next_progress )); then
+      log "Still waiting for topic ${topic}..."
+      next_progress=$((SECONDS + 15))
     fi
     sleep 1
   done
   return 1
+}
+
+check_topic_contract() {
+  local topic="$1"
+  local expected="$2"
+  local minimum_publishers="${3:-0}"
+  local minimum_subscriptions="${4:-0}"
+  local info
+  local publisher_count
+  local subscription_count
+
+  info="$(docker_ros "timeout 10 ros2 topic info '${topic}'" 2>&1)" || {
+    echo "${info}" >&2
+    die "Topic ${topic} is not readable."
+  }
+  printf '%s\n' "${info}"
+  [[ "${info}" == *"Type: ${expected}"* ]] || \
+    die "Topic ${topic} is not ${expected}."
+
+  publisher_count="$(awk '/^Publisher count:/ {print $3; exit}' <<< "${info}")"
+  subscription_count="$(awk '/^Subscription count:/ {print $3; exit}' <<< "${info}")"
+  [[ "${publisher_count}" =~ ^[0-9]+$ ]] || \
+    die "Topic ${topic} did not report a valid publisher count."
+  [[ "${subscription_count}" =~ ^[0-9]+$ ]] || \
+    die "Topic ${topic} did not report a valid subscription count."
+  (( publisher_count >= minimum_publishers )) || \
+    die "Topic ${topic} requires at least ${minimum_publishers} publisher(s); found ${publisher_count}."
+  (( subscription_count >= minimum_subscriptions )) || \
+    die "Topic ${topic} requires at least ${minimum_subscriptions} subscriber(s); found ${subscription_count}."
 }
 
 start_container() {
@@ -215,6 +310,7 @@ start_container() {
   log "Starting navigation container: ${CONTAINER_NAME}"
   docker run -d \
     --name "${CONTAINER_NAME}" \
+    --label "dddmr.go2_xt16_navigation=true" \
     --network=host \
     --privileged \
     -e "DISPLAY=${DISPLAY:-:0}" \
@@ -316,17 +412,35 @@ main() {
     return 0
   fi
 
+  if [[ "${mode}" == "live" ]]; then
+    validate_live_request
+    trap cleanup_live_runtime EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+  fi
+
   require_docker_image
   assert_clean_runtime
   start_container
+  runtime_started="true"
 
-  log "Waiting for navigation nodes and map topics..."
+  log "Starting navigation and Go2 DDS readiness checks..."
   wait_for_node /go2_nav_cmd_gate 90 || die "Timed out waiting for /go2_nav_cmd_gate"
   wait_for_topic /map1/mapcloud 90 || die "Timed out waiting for /map1/mapcloud"
   wait_for_topic /map1/mapground 90 || die "Timed out waiting for /map1/mapground"
   wait_for_topic /dddmr_go2/safe_cmd_vel 90 || die "Timed out waiting for /dddmr_go2/safe_cmd_vel"
 
   if [[ "${mode}" == "live" ]]; then
+    # The bare-DDS Go2 endpoints can take longer than the navigation graph to
+    # appear in a newly started container's ROS CLI discovery cache. Require
+    # the continuously published state topics before enabling Sport output.
+    # Do not gate startup on the subscriber-only /api/sport/request topic: the
+    # live adapter creates its publisher, while the state topics prove that the
+    # Go2 DDS participant is online.
+    wait_for_topic /lowstate 60 || die "Timed out waiting for /lowstate"
+    check_topic_contract /lowstate unitree_go/msg/LowState 1 0
+    wait_for_topic /sportmodestate 60 || die "Timed out waiting for /sportmodestate"
+    check_topic_contract /sportmodestate unitree_go/msg/SportModeState 1 0
     start_live_adapter
     sleep 2
   fi
@@ -337,6 +451,7 @@ main() {
     log "RUN_SECONDS=${RUN_SECONDS_VALUE}; stopping after timeout..."
     sleep "${RUN_SECONDS_VALUE}"
     stop_nav_containers
+    runtime_started="false"
   else
     log "Started. Stop with: ${SCRIPT_DIR}/run_go2_xt16_navigation_test.sh --stop"
   fi
