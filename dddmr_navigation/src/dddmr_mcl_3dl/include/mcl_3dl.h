@@ -49,6 +49,7 @@
 
 #include <mcl_3dl/parameters.h>
 #include <mcl_3dl/localization_state_machine.h>
+#include <mcl_3dl/flat_ground.h>
 
 
 #include <sensor_msgs/msg/point_cloud2.hpp>
@@ -163,7 +164,9 @@ class MCL3dlNode : public rclcpp::Node
     rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr pub_pose_;
     rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr pub_particle_;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr pub_localization_status_;
+    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr pub_localization_health_;
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr pub_localization_quality_;
+    rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr pub_localization_residual_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_global_localization_;
 
     void cbOdom(const nav_msgs::msg::Odometry::SharedPtr msg);
@@ -181,6 +184,24 @@ class MCL3dlNode : public rclcpp::Node
       State6DOF state;
       float quality{0.0f};
       float likelihood{0.0f};
+      float residual{std::numeric_limits<float>::infinity()};
+    };
+
+    struct ParticleSpread
+    {
+      double xy{std::numeric_limits<double>::infinity()};
+      double z{std::numeric_limits<double>::infinity()};
+      double roll{std::numeric_limits<double>::infinity()};
+      double pitch{std::numeric_limits<double>::infinity()};
+      double yaw{std::numeric_limits<double>::infinity()};
+    };
+
+    struct ObservationGround
+    {
+      bool valid{false};
+      Vec3 normal{0.0, 0.0, 1.0};
+      double base_height{std::numeric_limits<double>::quiet_NaN()};
+      double roughness{std::numeric_limits<double>::infinity()};
     };
 
     bool attemptGlobalLocalization(
@@ -189,7 +210,18 @@ class MCL3dlNode : public rclcpp::Node
     std::map<std::string, pcl::PointCloud<pcl_t>::Ptr> makeSparseObservation(
       const std::map<std::string, pcl::PointCloud<pcl_t>::Ptr>& pcl_segmentations) const;
     void initializeGlobalParticles(const std::vector<GlobalCandidate>& candidates);
-    std::pair<double, double> particleSpread(const State6DOF& mean) const;
+    ParticleSpread particleSpread(const State6DOF& mean) const;
+    bool constrainState2p5D(
+      State6DOF& state,
+      pcl::KdTreeFLANN<mcl_3dl::pcl_t>& ground_tree,
+      const pcl::PointCloud<pcl::Normal>& ground_normals) const;
+    void constrainParticles2p5D(
+      pcl::KdTreeFLANN<mcl_3dl::pcl_t>& ground_tree,
+      const pcl::PointCloud<pcl::Normal>& ground_normals);
+    ObservationGround estimateObservationGround(
+      const pcl::PointCloud<mcl_3dl::pcl_t>& flat_cloud) const;
+    std::string localizationHealthReason(
+      const LocalizationObservation& observation) const;
     
     void publishParticles();
 
@@ -234,6 +266,7 @@ class MCL3dlNode : public rclcpp::Node
     mutable std::mutex localization_state_mutex_;
     std::unique_ptr<LocalizationStateMachine> localization_state_machine_;
     std::string localization_state_reason_;
+    std::string localization_health_{"NOT_EVALUATED"};
     std::atomic_bool global_localization_requested_;
     std::atomic_bool use_global_map_;
     std::atomic<int64_t> last_feature_received_ns_;
@@ -242,8 +275,10 @@ class MCL3dlNode : public rclcpp::Node
     std::atomic<int64_t> last_global_attempt_ns_;
     std::atomic<int64_t> localizing_started_ns_;
     std::atomic<float> latest_match_ratio_;
+    std::atomic<float> latest_residual_;
     std::atomic<uint64_t> feature_sequence_;
     std::atomic<uint64_t> last_measured_feature_sequence_;
+    ObservationGround observation_ground_;
     
     /*
     

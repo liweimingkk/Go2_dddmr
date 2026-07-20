@@ -5,6 +5,7 @@ from typing import NamedTuple, Optional
 
 
 TRACKING_STATE = "TRACKING"
+HEALTHY_STATE = "HEALTHY"
 RECOVERY_ROTATION_DECISION = "d_recovery_waitdone"
 
 
@@ -88,4 +89,28 @@ def localization_block_reason(
     normalized = status.strip().upper()
     if normalized != TRACKING_STATE:
         return "localization_%s" % (normalized.lower() or "unknown")
+    return None
+
+
+def localization_health_block_reason(
+    required: bool,
+    health: Optional[str],
+    health_age_sec: Optional[float],
+    timeout_sec: float,
+) -> Optional[str]:
+    """Block motion unless the full localization geometry health is fresh."""
+    if not required:
+        return None
+    if health is None or health_age_sec is None:
+        return "localization_no_health"
+    if (
+        not math.isfinite(health_age_sec)
+        or not math.isfinite(timeout_sec)
+        or timeout_sec <= 0.0
+        or health_age_sec > timeout_sec
+    ):
+        return "localization_health_stale"
+    normalized = health.strip().upper()
+    if normalized != HEALTHY_STATE:
+        return "localization_health_%s" % (normalized.lower() or "unknown")
     return None

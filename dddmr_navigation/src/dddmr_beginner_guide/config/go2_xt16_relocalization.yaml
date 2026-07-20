@@ -9,24 +9,61 @@ mcl_3dl:
     global_localization_num_particles: 240
     global_localization_max_observation_points: 256
     global_localization_min_match_ratio: 0.08
+    global_localization_max_residual: 0.22
     global_localization_retry_sec: 2.0
+
+    # Flat-floor Go2 localization is 2.5D: MCL estimates x/y/yaw only.
+    # roll/pitch comes from odometry/IMU gravity and z is local map ground plus
+    # the measured base_link clearance (live flat features are about 0.33 m).
+    flat_ground.enabled: true
+    flat_ground.base_link_height: 0.32
+    flat_ground.ground_search_radius: 0.80
+    flat_ground.min_points: 4
+    flat_ground.observation_height_tolerance: 0.25
+    flat_ground.observation_plane_distance: 0.06
+    flat_ground.observation_max_tilt: 0.35
 
     # Gaussian refinement around each accepted coarse candidate.
     global_localization_seed_std_x: 0.35
     global_localization_seed_std_y: 0.35
-    global_localization_seed_std_z: 0.15
-    global_localization_seed_std_roll: 0.03
-    global_localization_seed_std_pitch: 0.03
+    global_localization_seed_std_z: 0.0
+    global_localization_seed_std_roll: 0.0
+    global_localization_seed_std_pitch: 0.0
     global_localization_seed_std_yaw: 0.12
+
+    # Do not re-introduce the dimensions removed by the 2.5D constraint.
+    resample_var_z: 0.0
+    resample_var_roll: 0.0
+    resample_var_pitch: 0.0
+    expansion_var_z: 0.0
+    expansion_var_roll: 0.0
+    expansion_var_pitch: 0.0
 
     # TRACKING requires several consecutive, converged observations. LOST uses
     # lower quality thresholds to provide hysteresis and avoid state flapping.
     localization_tracking_match_ratio: 0.15
     localization_lost_match_ratio: 0.08
     localization_tracking_max_xy_std: 0.75
+    localization_tracking_max_z_std: 0.08
+    localization_tracking_max_roll_std: 0.035
+    localization_tracking_max_pitch_std: 0.035
     localization_tracking_max_yaw_std: 0.35
+    localization_tracking_max_residual: 0.18
+    localization_tracking_max_map_odom_tilt: 0.035
+    localization_tracking_max_ground_normal_error: 0.105
+    localization_tracking_max_base_height_error: 0.06
+    localization_tracking_max_pose_height_error: 0.04
     localization_lost_max_xy_std: 1.50
+    localization_lost_max_z_std: 0.15
+    localization_lost_max_roll_std: 0.08
+    localization_lost_max_pitch_std: 0.08
     localization_lost_max_yaw_std: 0.80
+    localization_lost_max_residual: 0.25
+    localization_lost_max_map_odom_tilt: 0.087
+    localization_lost_max_ground_normal_error: 0.175
+    localization_lost_max_base_height_error: 0.12
+    localization_lost_max_pose_height_error: 0.10
+    localization_require_ground_health: true
     localization_tracking_good_frames: 5
     localization_lost_bad_frames: 3
     localization_measure_interval_sec: 0.50
@@ -38,3 +75,6 @@ go2_nav_cmd_gate:
     require_localization_tracking: true
     localization_status_topic: "/localization_status"
     localization_status_timeout_sec: 0.75
+    require_localization_health: true
+    localization_health_topic: "/localization_health"
+    localization_health_timeout_sec: 0.75
