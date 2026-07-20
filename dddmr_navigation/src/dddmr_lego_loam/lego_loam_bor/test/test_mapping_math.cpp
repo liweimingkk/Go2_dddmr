@@ -139,6 +139,31 @@ TEST(OdomInterpolation, RejectsMismatchedFrames)
   EXPECT_FALSE(lego_loam_bor::interpolateOdometry(before, after, target, output));
 }
 
+TEST(OdomStampOffset, AppliesMeasuredOffsetAcrossSecondBoundary)
+{
+  builtin_interfaces::msg::Time raw_stamp;
+  raw_stamp.sec = 100;
+  raw_stamp.nanosec = 900000000;
+  builtin_interfaces::msg::Time corrected_stamp;
+
+  ASSERT_TRUE(lego_loam_bor::applyTimeOffset(
+      raw_stamp, 23.824604, corrected_stamp));
+  EXPECT_EQ(corrected_stamp.sec, 124);
+  EXPECT_EQ(corrected_stamp.nanosec, 724604000U);
+}
+
+TEST(OdomStampOffset, RejectsInvalidOrNegativeResult)
+{
+  builtin_interfaces::msg::Time raw_stamp;
+  raw_stamp.sec = 1;
+  builtin_interfaces::msg::Time corrected_stamp;
+
+  EXPECT_FALSE(lego_loam_bor::applyTimeOffset(
+      raw_stamp, -2.0, corrected_stamp));
+  EXPECT_FALSE(lego_loam_bor::applyTimeOffset(
+      raw_stamp, std::numeric_limits<double>::quiet_NaN(), corrected_stamp));
+}
+
 nav_msgs::msg::Odometry makeOdom(const double stamp_sec, const double x)
 {
   nav_msgs::msg::Odometry odom;

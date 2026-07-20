@@ -13,6 +13,8 @@
 #include "tf2/LinearMath/Vector3.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
+#include "odom_sync_utils.h"
+
 namespace
 {
 
@@ -37,6 +39,7 @@ public:
     output_parent_frame_ = declare_parameter<std::string>("output_parent_frame", "odom");
     output_child_frame_ = declare_parameter<std::string>("output_child_frame", "base_link");
     raw_to_standard_yaw_ = declare_parameter<double>("raw_to_standard_yaw", 0.0);
+    stamp_time_offset_sec_ = declare_parameter<double>("stamp_time_offset_sec", 0.0);
     rotate_parent_frame_ = declare_parameter<bool>("rotate_parent_frame", false);
     rotate_twist_ = declare_parameter<bool>("rotate_twist", false);
 
@@ -46,6 +49,10 @@ public:
         "go2_odom_standardizer refuses to run with identical input_topic and output_topic: %s",
         input_topic_.c_str());
       throw std::runtime_error("go2_odom_standardizer input_topic equals output_topic");
+    }
+    if (!std::isfinite(stamp_time_offset_sec_)) {
+      RCLCPP_FATAL(get_logger(), "stamp_time_offset_sec must be finite");
+      throw std::runtime_error("go2_odom_standardizer stamp_time_offset_sec is not finite");
     }
 
     raw_to_standard_ = makeYaw(raw_to_standard_yaw_);
@@ -65,8 +72,10 @@ public:
 
     RCLCPP_INFO(
       get_logger(),
-      "standardizing odom %s -> %s, raw_to_standard_yaw=%.6f rad, output %s -> %s",
+      "standardizing odom %s -> %s, raw_to_standard_yaw=%.6f rad, "
+      "stamp_time_offset_sec=%.9f, output %s -> %s",
       input_topic_.c_str(), output_topic_.c_str(), raw_to_standard_yaw_,
+      stamp_time_offset_sec_,
       output_parent_frame_.c_str(), output_child_frame_.c_str());
   }
 
@@ -74,6 +83,14 @@ private:
   void odomCallback(const nav_msgs::msg::Odometry::SharedPtr in)
   {
     nav_msgs::msg::Odometry out = *in;
+    if (!lego_loam_bor::applyTimeOffset(
+        in->header.stamp, stamp_time_offset_sec_, out.header.stamp)) {
+      RCLCPP_ERROR_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "Reject odometry: applying stamp_time_offset_sec=%.9f produced an invalid stamp",
+        stamp_time_offset_sec_);
+      return;
+    }
     // Covariance is copied from the raw odometry and is not rotated here.
     // Validate or implement covariance rotation before using it downstream.
     out.header.frame_id = output_parent_frame_.empty() ? in->header.frame_id : output_parent_frame_;
@@ -157,6 +174,7 @@ private:
   std::string output_parent_frame_;
   std::string output_child_frame_;
   double raw_to_standard_yaw_;
+  double stamp_time_offset_sec_;
   bool rotate_parent_frame_;
   bool rotate_twist_;
   bool logged_first_{false};

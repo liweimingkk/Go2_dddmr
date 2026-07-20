@@ -28,6 +28,10 @@ Common environment overrides:
   RUN_SECONDS=             Live defaults to 300; maximum is 1800 seconds.
   GO2_NET_IFACE=enp46s0
   GO2_DDS_IP=192.168.123.18
+  ODOM_TIME_OFFSET_SEC=...  Explicit override; skips automatic measurement.
+  AUTO_MEASURE_ODOM_TIME_OFFSET=true
+  ODOM_SYNC_TOLERANCE_SEC=0.05
+  ODOM_SYNC_WAIT_TIMEOUT_SEC=0.1
   DDDMR_BAGS_DIR=../bags
   NAV_CONTAINER_NAME=...
 
@@ -77,6 +81,11 @@ BAGS_DIR="${DDDMR_BAGS_DIR:-${REPO_ROOT}/bags}"
 ROS_DOMAIN_ID_VALUE="${ROS_DOMAIN_ID:-0}"
 GO2_DDS_IP_VALUE="${GO2_DDS_IP:-192.168.123.18}"
 GO2_NET_IFACE_VALUE="${GO2_NET_IFACE:-enp46s0}"
+ODOM_TIME_OFFSET_SEC_VALUE="${ODOM_TIME_OFFSET_SEC:-}"
+ODOM_SYNC_TOLERANCE_SEC_VALUE="${ODOM_SYNC_TOLERANCE_SEC:-0.05}"
+ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE="${ODOM_SYNC_WAIT_TIMEOUT_SEC:-0.1}"
+ODOM_OFFSET_RESOLVER="${GO2_ODOM_TIME_OFFSET_RESOLVER:-${SCRIPT_DIR}/resolve_go2_odom_time_offset.sh}"
+ODOM_SYNC_CHECKER="${GO2_ODOM_SYNC_CHECKER:-${SCRIPT_DIR}/check_go2_odom_sync.py}"
 BUILD_BASE_VALUE="${DDDMR_BUILD_BASE:-.docker_go2_xt16_build}"
 INSTALL_BASE_VALUE="${DDDMR_INSTALL_BASE:-.docker_go2_xt16_install}"
 LOG_BASE_VALUE="${DDDMR_LOG_BASE:-.docker_go2_xt16_log}"
@@ -105,6 +114,38 @@ log() {
 die() {
   printf 'ERROR: %s\n' "$*" >&2
   exit 1
+}
+
+is_number() {
+  [[ "$1" =~ ^[+-]?(([0-9]+([.][0-9]*)?)|([.][0-9]+))([eE][+-]?[0-9]+)?$ ]]
+}
+
+is_nonnegative_number() {
+  is_number "$1" && awk -v value="$1" 'BEGIN { exit !(value >= 0) }'
+}
+
+resolve_odom_time_offset() {
+  [[ -x "${ODOM_OFFSET_RESOLVER}" ]] || \
+    die "Odom time-offset resolver is not executable: ${ODOM_OFFSET_RESOLVER}"
+  [[ -f "${ODOM_SYNC_CHECKER}" ]] || \
+    die "Odom synchronization checker is missing: ${ODOM_SYNC_CHECKER}"
+  is_nonnegative_number "${ODOM_SYNC_TOLERANCE_SEC_VALUE}" || \
+    die "ODOM_SYNC_TOLERANCE_SEC must be a finite nonnegative number."
+  is_nonnegative_number "${ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE}" || \
+    die "ODOM_SYNC_WAIT_TIMEOUT_SEC must be a finite nonnegative number."
+
+  log "Running read-only odom/XT16 time-sync preflight..."
+  ODOM_TIME_OFFSET_SEC_VALUE="$(
+    DDDMR_IMAGE="${IMAGE}" \
+    ROS_DOMAIN_ID="${ROS_DOMAIN_ID_VALUE}" \
+    GO2_DDS_IP="${GO2_DDS_IP_VALUE}" \
+    GO2_NET_IFACE="${GO2_NET_IFACE_VALUE}" \
+      "${ODOM_OFFSET_RESOLVER}"
+  )" || die "Odom/XT16 time-sync preflight failed."
+  is_number "${ODOM_TIME_OFFSET_SEC_VALUE}" || \
+    die "Resolved odom time offset is not finite: ${ODOM_TIME_OFFSET_SEC_VALUE}"
+  export ODOM_TIME_OFFSET_SEC="${ODOM_TIME_OFFSET_SEC_VALUE}"
+  log "Confirmed odom/XT16 time offset: ${ODOM_TIME_OFFSET_SEC_VALUE}s"
 }
 
 validate_live_request() {
@@ -271,6 +312,60 @@ wait_for_topic() {
   return 1
 }
 
+wait_for_pointcloud_sample() {
+  local topic="$1"
+  local timeout_sec="${2:-60}"
+  local durability="${3:-volatile}"
+  local deadline=$((SECONDS + timeout_sec))
+  local report width rc
+
+  log "Waiting for a non-empty ${topic} point-cloud sample (timeout ${timeout_sec}s)..."
+  while (( SECONDS < deadline )); do
+    set +e
+    report="$(docker_ros "timeout 6 ros2 topic echo --once --field width --qos-reliability reliable --qos-durability '${durability}' '${topic}' sensor_msgs/msg/PointCloud2" 2>&1)"
+    rc=$?
+    set -e
+    if (( rc == 0 )); then
+      width="$(awk '/^[[:space:]]*[0-9]+[[:space:]]*$/ {print $1; exit}' <<<"${report}")"
+      if [[ "${width}" =~ ^[0-9]+$ ]] && (( 10#${width} > 0 )); then
+        log "Received ${topic} with width=${width}."
+        return 0
+      fi
+    fi
+    sleep 1
+  done
+  printf '%s\n' "${report:-no sample output}" >&2
+  return 1
+}
+
+check_odom_sync_runtime() {
+  local report rc standardizer_report standardizer_offset
+  standardizer_report="$(docker_ros "timeout 10 ros2 param get /go2_odom_standardizer stamp_time_offset_sec" 2>&1)" || {
+    printf '%s\n' "${standardizer_report}" >&2
+    die "Could not read the standardized odometry time offset."
+  }
+  standardizer_offset="$(awk -F': ' '/Double value is:/ {print $2; exit}' <<<"${standardizer_report}")"
+  is_number "${standardizer_offset}" || \
+    die "Invalid stamp_time_offset_sec parameter response: ${standardizer_report}"
+  awk -v actual="${standardizer_offset}" -v expected="${ODOM_TIME_OFFSET_SEC_VALUE}" \
+    'BEGIN {delta=actual-expected; if (delta<0) delta=-delta; exit !(delta <= 1e-6)}' || \
+    die "Standardized odometry offset ${standardizer_offset}s does not match measured ${ODOM_TIME_OFFSET_SEC_VALUE}s."
+  log "Standardized odometry is applying ${standardizer_offset}s before all navigation consumers."
+
+  log "Requiring a valid live /odom_sync_diagnostics sample..."
+  set +e
+  report="$(docker_ros "timeout 40 python3 /root/dddmr_navigation/scripts/check_go2_odom_sync.py --timeout 30 --max-error '${ODOM_SYNC_TOLERANCE_SEC_VALUE}' --expected-offset 0.0" 2>&1)"
+  rc=$?
+  set -e
+  printf '%s\n' "${report}"
+  if (( rc != 0 )); then
+    docker logs --tail 100 "${CONTAINER_NAME}" 2>&1 || true
+    stop_nav_containers || true
+    runtime_started="false"
+    die "Live odom/XT16 synchronization did not pass runtime validation."
+  fi
+}
+
 check_topic_contract() {
   local topic="$1"
   local expected="$2"
@@ -338,6 +433,10 @@ cd /root/dddmr_navigation
 exec ros2 launch dddmr_beginner_guide go2_xt16_navigation.launch \
   rviz:=${RVIZ_VALUE} \
   publish_static_tf:=${PUBLISH_STATIC_TF_VALUE} \
+  odom_sync_enabled:=true \
+  odom_sync_tolerance_sec:=${ODOM_SYNC_TOLERANCE_SEC_VALUE} \
+  odom_sync_wait_timeout_sec:=${ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE} \
+  odom_time_offset_sec:=${ODOM_TIME_OFFSET_SEC_VALUE} \
   go2_nav_cmd_gate_max_x:=${MAX_X_VALUE} \
   go2_nav_cmd_gate_max_y:=${MAX_Y_VALUE} \
   sport_dry_run_max_x:=${MAX_X_VALUE} \
@@ -421,13 +520,24 @@ main() {
 
   require_docker_image
   assert_clean_runtime
+  resolve_odom_time_offset
   start_container
   runtime_started="true"
 
   log "Starting navigation and Go2 DDS readiness checks..."
   wait_for_node /go2_nav_cmd_gate 90 || die "Timed out waiting for /go2_nav_cmd_gate"
+  wait_for_topic /odom_sync_diagnostics 90 || die "Timed out waiting for /odom_sync_diagnostics"
+  check_odom_sync_runtime
   wait_for_topic /map1/mapcloud 90 || die "Timed out waiting for /map1/mapcloud"
   wait_for_topic /map1/mapground 90 || die "Timed out waiting for /map1/mapground"
+  wait_for_pointcloud_sample /map1/mapground 90 transient_local || \
+    die "Timed out waiting for a non-empty /map1/mapground sample"
+  wait_for_topic /map1/planning_ground 90 || die "Timed out waiting for /map1/planning_ground"
+  wait_for_pointcloud_sample /map1/planning_ground 90 transient_local || \
+    die "Timed out waiting for a non-empty /map1/planning_ground sample"
+  wait_for_topic /weighted_ground 90 || die "Timed out waiting for /weighted_ground"
+  wait_for_pointcloud_sample /weighted_ground 90 transient_local || \
+    die "Timed out waiting for a non-empty /weighted_ground sample"
   wait_for_topic /dddmr_go2/safe_cmd_vel 90 || die "Timed out waiting for /dddmr_go2/safe_cmd_vel"
 
   if [[ "${mode}" == "live" ]]; then

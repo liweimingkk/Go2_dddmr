@@ -29,6 +29,28 @@ inline builtin_interfaces::msg::Time nanosecondsToStamp(const int64_t nanosecond
   return stamp;
 }
 
+inline bool applyTimeOffset(
+  const builtin_interfaces::msg::Time & stamp,
+  const double time_offset_sec,
+  builtin_interfaces::msg::Time & corrected_stamp)
+{
+  if (!std::isfinite(time_offset_sec)) {
+    return false;
+  }
+  const long double corrected_ns =
+    static_cast<long double>(stampNanoseconds(stamp)) +
+    static_cast<long double>(time_offset_sec) * 1000000000.0L;
+  const long double max_stamp_ns =
+    static_cast<long double>(std::numeric_limits<int32_t>::max()) * 1000000000.0L +
+    999999999.0L;
+  if (corrected_ns < 0.0L || corrected_ns > max_stamp_ns) {
+    return false;
+  }
+  corrected_stamp = nanosecondsToStamp(
+    static_cast<int64_t>(std::llround(corrected_ns)));
+  return true;
+}
+
 inline bool interpolateOdometry(
   const nav_msgs::msg::Odometry & before,
   const nav_msgs::msg::Odometry & after,
