@@ -40,31 +40,33 @@ remains ground-only under the expected body pitch, roll, and height changes.
 
 ## Time Synchronization
 
-Strict fusion uses corrected mouth timestamps:
+The reusable YAML defaults to `header_offset` mode for deterministic bag or
+direct-handler replay. In that mode fusion uses corrected mouth timestamps:
 
 ```text
 corrected_mouth_stamp = raw_mouth_stamp + mouth_time_offset_sec
 ```
 
 The corrected stamp is used both for nearest-frame matching and stamped TF
-lookup. Default:
+lookup. The live launch explicitly overrides this with:
 
 ```yaml
+mouth_sync_mode: receipt_time
 mouth_time_offset_sec: 0.0
-mouth_max_time_diff: 0.08
+mouth_max_time_diff: 0.03
 ```
 
-In live testing after old containers were stopped, `/utlidar/cloud_base` header
-timestamps lagged `/lidar_points` by about 2.5 seconds. With
-`mouth_time_offset_sec:=0.0` and `mouth_max_time_diff:=0.08`, mouth points were
-skipped.
+`receipt_time` pairs the two clouds by their local steady-clock arrival times.
+It avoids depending on the sensor header-clock epoch after a link reconnect,
+and ignores `mouth_time_offset_sec`. The `0.03` second value is both the pairing
+tolerance and the maximum wait for a newer mouth sample.
 
-Only use an offset such as the current measured `mouth_time_offset_sec:=2.397`
-after confirming the offset is stable in the current live graph. Final
-deployment should keep
-`mouth_max_time_diff` around `0.08-0.15` after timestamps are fixed.
+This path does not compensate robot motion between the two cloud times. Keep
+the robot stationary while validating the fixed-z mouth filter, and do not
+increase the live tolerance for walking mapping.
 
-Before every live deployment, remeasure the current offset:
+When explicitly using `header_offset` mode for replay or diagnosis, measure the
+current header relationship first:
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -77,7 +79,8 @@ python3 scripts/measure_go2_mouth_xt16_time_offset.py \
 
 Use the reported `recommended_mouth_time_offset_sec` only when
 `OFFSET_STABLE_FOR_SMOKE=True`. Recheck again if any driver, container, clock,
-network, or robot runtime state changes.
+network, or robot runtime state changes. Do not inject this value into live
+`receipt_time` mode.
 
 Timestamp offset alone is not enough for deployment. With the robot stationary,
 move a box or card quickly in front of the mouth LiDAR and verify in RViz that
@@ -85,14 +88,9 @@ the mouth point cloud response is visually real-time. Do not use
 `mouth_time_offset_sec` as deployment calibration until this content-latency
 check shows negligible lag.
 
-For geometry-only perception tests on the current live graph, use:
-
-```bash
-mouth_max_time_diff:=3.0
-```
-
-Do not use `mouth_max_time_diff:=3.0` for motion or walking mapping. It is only
-a stationary smoke-test override for checking ROI geometry and frame transforms.
+The separate validation smoke script may use a larger stationary-only window
+for geometry diagnosis. That override is not a deployment or walking-mapping
+setting.
 
 ## Launch Integration
 

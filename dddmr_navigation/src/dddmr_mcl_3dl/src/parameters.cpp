@@ -82,9 +82,93 @@ Parameters::Parameters(const rclcpp::node_interfaces::NodeLoggingInterface::Shar
           std::max(map_downsample_x_, map_downsample_y_),
           map_downsample_z_);
 
+  parameter_->declare_parameter("auto_global_localization", rclcpp::ParameterValue(false));
+  auto_global_localization_ = parameter_->get_parameter("auto_global_localization").as_bool();
+  RCLCPP_INFO(logger_->get_logger(), "auto_global_localization: %d", auto_global_localization_);
+
+  parameter_->declare_parameter("global_localization_grid", rclcpp::ParameterValue(0.25));
+  global_localization_grid_ =
+      std::max(0.01, parameter_->get_parameter("global_localization_grid").as_double());
+  RCLCPP_INFO(logger_->get_logger(), "global_localization_grid: %.2f", global_localization_grid_);
+
+  parameter_->declare_parameter("global_localization_div_yaw", rclcpp::ParameterValue(36));
+  global_localization_div_yaw_ =
+      std::max(4, static_cast<int>(
+          parameter_->get_parameter("global_localization_div_yaw").as_int()));
+  RCLCPP_INFO(logger_->get_logger(), "global_localization_div_yaw: %d", global_localization_div_yaw_);
+
+  parameter_->declare_parameter("global_localization_max_candidates", rclcpp::ParameterValue(4096));
+  global_localization_max_candidates_ =
+      std::max(1, static_cast<int>(
+          parameter_->get_parameter("global_localization_max_candidates").as_int()));
+  global_localization_max_candidates_ = std::max(
+      global_localization_div_yaw_, global_localization_max_candidates_);
+  RCLCPP_INFO(
+      logger_->get_logger(), "global_localization_max_candidates: %d",
+      global_localization_max_candidates_);
+
+  parameter_->declare_parameter("global_localization_top_candidates", rclcpp::ParameterValue(8));
+  global_localization_top_candidates_ =
+      std::max(1, static_cast<int>(
+          parameter_->get_parameter("global_localization_top_candidates").as_int()));
+  RCLCPP_INFO(
+      logger_->get_logger(), "global_localization_top_candidates: %d",
+      global_localization_top_candidates_);
+
+  parameter_->declare_parameter("global_localization_num_particles", rclcpp::ParameterValue(240));
+  global_localization_num_particles_ =
+      std::max(1, static_cast<int>(
+          parameter_->get_parameter("global_localization_num_particles").as_int()));
+  RCLCPP_INFO(
+      logger_->get_logger(), "global_localization_num_particles: %d",
+      global_localization_num_particles_);
+
+  parameter_->declare_parameter(
+      "global_localization_max_observation_points", rclcpp::ParameterValue(256));
+  global_localization_max_observation_points_ = std::max(
+      16, static_cast<int>(
+          parameter_->get_parameter("global_localization_max_observation_points").as_int()));
+  RCLCPP_INFO(
+      logger_->get_logger(), "global_localization_max_observation_points: %d",
+      global_localization_max_observation_points_);
+
+  parameter_->declare_parameter("global_localization_min_match_ratio", rclcpp::ParameterValue(0.08));
+  global_localization_min_match_ratio_ = std::clamp(
+      parameter_->get_parameter("global_localization_min_match_ratio").as_double(), 0.0, 1.0);
+  RCLCPP_INFO(
+      logger_->get_logger(), "global_localization_min_match_ratio: %.3f",
+      global_localization_min_match_ratio_);
+
+  parameter_->declare_parameter("global_localization_retry_sec", rclcpp::ParameterValue(2.0));
+  global_localization_retry_sec_ =
+      std::max(0.1, parameter_->get_parameter("global_localization_retry_sec").as_double());
+  RCLCPP_INFO(
+      logger_->get_logger(), "global_localization_retry_sec: %.2f",
+      global_localization_retry_sec_);
+
+  parameter_->declare_parameter("global_localization_seed_std_x", rclcpp::ParameterValue(0.35));
+  parameter_->declare_parameter("global_localization_seed_std_y", rclcpp::ParameterValue(0.35));
+  parameter_->declare_parameter("global_localization_seed_std_z", rclcpp::ParameterValue(0.15));
+  parameter_->declare_parameter("global_localization_seed_std_roll", rclcpp::ParameterValue(0.03));
+  parameter_->declare_parameter("global_localization_seed_std_pitch", rclcpp::ParameterValue(0.03));
+  parameter_->declare_parameter("global_localization_seed_std_yaw", rclcpp::ParameterValue(0.12));
+  global_localization_seed_std_ = State6DOF(
+      Vec3(
+          std::max(0.0, parameter_->get_parameter("global_localization_seed_std_x").as_double()),
+          std::max(0.0, parameter_->get_parameter("global_localization_seed_std_y").as_double()),
+          std::max(0.0, parameter_->get_parameter("global_localization_seed_std_z").as_double())),
+      Vec3(
+          std::max(0.0, parameter_->get_parameter("global_localization_seed_std_roll").as_double()),
+          std::max(0.0, parameter_->get_parameter("global_localization_seed_std_pitch").as_double()),
+          std::max(0.0, parameter_->get_parameter("global_localization_seed_std_yaw").as_double())));
+
   parameter_->declare_parameter("num_particles", rclcpp::ParameterValue(0));
   rclcpp::Parameter num_particles = parameter_->get_parameter("num_particles");
-  num_particles_ = num_particles.as_int();
+  num_particles_ = std::max(1, static_cast<int>(num_particles.as_int()));
+  global_localization_num_particles_ =
+      std::max(num_particles_, global_localization_num_particles_);
+  global_localization_top_candidates_ = std::min(
+      global_localization_top_candidates_, global_localization_num_particles_);
   RCLCPP_INFO(logger_->get_logger(), "num_particles: %d", num_particles_);
 
   parameter_->declare_parameter("resample_var_x", rclcpp::ParameterValue(0.0));
@@ -251,6 +335,174 @@ Parameters::Parameters(const rclcpp::node_interfaces::NodeLoggingInterface::Shar
   rclcpp::Parameter publish_tf = parameter_->get_parameter("publish_tf");
   publish_tf_ = publish_tf.as_bool();
   RCLCPP_INFO(logger_->get_logger(), "publish_tf: %d", publish_tf_);
+
+  parameter_->declare_parameter("localization_tracking_match_ratio", rclcpp::ParameterValue(0.15));
+  localization_tracking_match_ratio_ = std::clamp(
+      parameter_->get_parameter("localization_tracking_match_ratio").as_double(), 0.0, 1.0);
+  parameter_->declare_parameter("localization_lost_match_ratio", rclcpp::ParameterValue(0.08));
+  localization_lost_match_ratio_ = std::clamp(
+      parameter_->get_parameter("localization_lost_match_ratio").as_double(), 0.0, 1.0);
+  parameter_->declare_parameter("localization_tracking_max_xy_std", rclcpp::ParameterValue(0.75));
+  localization_tracking_max_xy_std_ = std::max(
+      0.01, parameter_->get_parameter("localization_tracking_max_xy_std").as_double());
+  parameter_->declare_parameter("localization_tracking_max_yaw_std", rclcpp::ParameterValue(0.35));
+  localization_tracking_max_yaw_std_ = std::max(
+      0.01, parameter_->get_parameter("localization_tracking_max_yaw_std").as_double());
+  parameter_->declare_parameter(
+      "localization_tracking_min_dominant_mass", rclcpp::ParameterValue(0.0));
+  localization_tracking_min_dominant_mass_ = std::clamp(
+      parameter_->get_parameter(
+          "localization_tracking_min_dominant_mass").as_double(), 0.0, 1.0);
+  parameter_->declare_parameter("localization_lost_max_xy_std", rclcpp::ParameterValue(1.50));
+  localization_lost_max_xy_std_ = std::max(
+      localization_tracking_max_xy_std_,
+      parameter_->get_parameter("localization_lost_max_xy_std").as_double());
+  parameter_->declare_parameter("localization_lost_max_yaw_std", rclcpp::ParameterValue(0.80));
+  localization_lost_max_yaw_std_ = std::max(
+      localization_tracking_max_yaw_std_,
+      parameter_->get_parameter("localization_lost_max_yaw_std").as_double());
+  parameter_->declare_parameter("localization_tracking_good_frames", rclcpp::ParameterValue(4));
+  localization_tracking_good_frames_ =
+      std::max(1, static_cast<int>(
+          parameter_->get_parameter("localization_tracking_good_frames").as_int()));
+  parameter_->declare_parameter("localization_lost_bad_frames", rclcpp::ParameterValue(3));
+  localization_lost_bad_frames_ =
+      std::max(1, static_cast<int>(
+          parameter_->get_parameter("localization_lost_bad_frames").as_int()));
+  parameter_->declare_parameter("localization_measure_interval_sec", rclcpp::ParameterValue(0.50));
+  localization_measure_interval_sec_ = std::max(
+      0.05, parameter_->get_parameter("localization_measure_interval_sec").as_double());
+  parameter_->declare_parameter("localization_sensor_timeout_sec", rclcpp::ParameterValue(1.0));
+  localization_sensor_timeout_sec_ = std::max(
+      0.10, parameter_->get_parameter("localization_sensor_timeout_sec").as_double());
+  parameter_->declare_parameter("localization_timeout_sec", rclcpp::ParameterValue(20.0));
+  localization_timeout_sec_ =
+      std::max(1.0, parameter_->get_parameter("localization_timeout_sec").as_double());
+
+  parameter_->declare_parameter(
+      "localization_adaptive_particle_reduction", rclcpp::ParameterValue(false));
+  localization_adaptive_particle_reduction_ = parameter_->get_parameter(
+      "localization_adaptive_particle_reduction").as_bool();
+  parameter_->declare_parameter(
+      "localization_adaptive_confidence_frames", rclcpp::ParameterValue(2));
+  localization_adaptive_confidence_frames_ = std::max(
+      1, static_cast<int>(parameter_->get_parameter(
+          "localization_adaptive_confidence_frames").as_int()));
+  parameter_->declare_parameter(
+      "localization_adaptive_failure_frames_before_reseed", rclcpp::ParameterValue(3));
+  localization_adaptive_failure_frames_before_reseed_ = std::max(
+      1, static_cast<int>(parameter_->get_parameter(
+          "localization_adaptive_failure_frames_before_reseed").as_int()));
+  parameter_->declare_parameter(
+      "localization_adaptive_min_weighted_match_ratio", rclcpp::ParameterValue(0.40));
+  localization_adaptive_min_weighted_match_ratio_ = std::max(
+      localization_tracking_match_ratio_,
+      std::clamp(parameter_->get_parameter(
+          "localization_adaptive_min_weighted_match_ratio").as_double(), 0.0, 1.0));
+  parameter_->declare_parameter(
+      "localization_adaptive_max_xy_std", rclcpp::ParameterValue(0.40));
+  localization_adaptive_max_xy_std_ = std::min(
+      localization_tracking_max_xy_std_,
+      std::max(0.01, parameter_->get_parameter(
+          "localization_adaptive_max_xy_std").as_double()));
+  parameter_->declare_parameter(
+      "localization_adaptive_max_yaw_std", rclcpp::ParameterValue(0.15));
+  localization_adaptive_max_yaw_std_ = std::min(
+      localization_tracking_max_yaw_std_,
+      std::max(0.01, parameter_->get_parameter(
+          "localization_adaptive_max_yaw_std").as_double()));
+  parameter_->declare_parameter(
+      "localization_adaptive_resample_ess_ratio", rclcpp::ParameterValue(0.50));
+  localization_adaptive_resample_ess_ratio_ = std::clamp(
+      parameter_->get_parameter(
+          "localization_adaptive_resample_ess_ratio").as_double(), 0.0, 1.0);
+  parameter_->declare_parameter(
+      "localization_adaptive_min_dominant_mass", rclcpp::ParameterValue(0.80));
+  localization_adaptive_min_dominant_mass_ = std::clamp(
+      parameter_->get_parameter(
+          "localization_adaptive_min_dominant_mass").as_double(), 0.0, 1.0);
+  parameter_->declare_parameter(
+      "localization_adaptive_mode_xy_radius", rclcpp::ParameterValue(0.75));
+  localization_adaptive_mode_xy_radius_ = std::max(
+      0.01, parameter_->get_parameter(
+          "localization_adaptive_mode_xy_radius").as_double());
+  parameter_->declare_parameter(
+      "localization_adaptive_mode_yaw_radius", rclcpp::ParameterValue(0.35));
+  localization_adaptive_mode_yaw_radius_ = std::max(
+      0.01, parameter_->get_parameter(
+          "localization_adaptive_mode_yaw_radius").as_double());
+  parameter_->declare_parameter(
+      "localization_adaptive_max_pose_delta_xy", rclcpp::ParameterValue(0.30));
+  localization_adaptive_max_pose_delta_xy_ = std::max(
+      0.0, parameter_->get_parameter(
+          "localization_adaptive_max_pose_delta_xy").as_double());
+  parameter_->declare_parameter(
+      "localization_adaptive_max_pose_delta_yaw", rclcpp::ParameterValue(0.15));
+  localization_adaptive_max_pose_delta_yaw_ = std::max(
+      0.0, parameter_->get_parameter(
+          "localization_adaptive_max_pose_delta_yaw").as_double());
+  parameter_->declare_parameter(
+      "localization_adaptive_kld_mass", rclcpp::ParameterValue(0.99));
+  localization_adaptive_kld_mass_ = std::clamp(
+      parameter_->get_parameter("localization_adaptive_kld_mass").as_double(),
+      0.50, 1.0);
+  parameter_->declare_parameter(
+      "localization_adaptive_kld_error", rclcpp::ParameterValue(0.10));
+  localization_adaptive_kld_error_ = std::max(
+      1e-6, parameter_->get_parameter(
+          "localization_adaptive_kld_error").as_double());
+  parameter_->declare_parameter(
+      "localization_adaptive_kld_z", rclcpp::ParameterValue(2.326));
+  localization_adaptive_kld_z_ = std::max(
+      0.0, parameter_->get_parameter("localization_adaptive_kld_z").as_double());
+  parameter_->declare_parameter(
+      "localization_adaptive_kld_bin_xy", rclcpp::ParameterValue(0.50));
+  localization_adaptive_kld_bin_xy_ = std::max(
+      0.01, parameter_->get_parameter(
+          "localization_adaptive_kld_bin_xy").as_double());
+  parameter_->declare_parameter(
+      "localization_adaptive_kld_bin_yaw", rclcpp::ParameterValue(0.261799));
+  localization_adaptive_kld_bin_yaw_ = std::max(
+      0.01, parameter_->get_parameter(
+          "localization_adaptive_kld_bin_yaw").as_double());
+  parameter_->declare_parameter(
+      "localization_adaptive_kld_regression_tolerance_fraction",
+      rclcpp::ParameterValue(0.25));
+  localization_adaptive_kld_regression_tolerance_fraction_ = std::clamp(
+      parameter_->get_parameter(
+          "localization_adaptive_kld_regression_tolerance_fraction").as_double(),
+      0.0, 1.0);
+  parameter_->declare_parameter(
+      "localization_adaptive_max_reduction_fraction", rclcpp::ParameterValue(0.25));
+  localization_adaptive_max_reduction_fraction_ = std::clamp(
+      parameter_->get_parameter(
+          "localization_adaptive_max_reduction_fraction").as_double(), 0.0, 0.95);
+
+  RCLCPP_INFO(
+      logger_->get_logger(),
+      "localization thresholds: tracking ratio %.3f xy_std %.2f yaw_std %.2f "
+      "configured_mode_mass %.2f for %d frames; "
+      "lost ratio %.3f xy_std %.2f yaw_std %.2f for %d frames",
+      localization_tracking_match_ratio_, localization_tracking_max_xy_std_,
+      localization_tracking_max_yaw_std_, localization_tracking_min_dominant_mass_,
+      localization_tracking_good_frames_,
+      localization_lost_match_ratio_, localization_lost_max_xy_std_,
+      localization_lost_max_yaw_std_, localization_lost_bad_frames_);
+  RCLCPP_INFO(
+      logger_->get_logger(),
+      "adaptive particles: enabled=%d confidence=%d q=%.2f xy=%.2f yaw=%.2f "
+      "ess=%.2f mode=%.2f pose_delta=(%.2f, %.2f) "
+      "kld=(mass %.2f error %.2f z %.3f regression %.2f)",
+      localization_adaptive_particle_reduction_,
+      localization_adaptive_confidence_frames_,
+      localization_adaptive_min_weighted_match_ratio_,
+      localization_adaptive_max_xy_std_, localization_adaptive_max_yaw_std_,
+      localization_adaptive_resample_ess_ratio_,
+      localization_adaptive_min_dominant_mass_,
+      localization_adaptive_max_pose_delta_xy_,
+      localization_adaptive_max_pose_delta_yaw_, localization_adaptive_kld_mass_,
+      localization_adaptive_kld_error_, localization_adaptive_kld_z_,
+      localization_adaptive_kld_regression_tolerance_fraction_);
   
 
   double x, y, z;

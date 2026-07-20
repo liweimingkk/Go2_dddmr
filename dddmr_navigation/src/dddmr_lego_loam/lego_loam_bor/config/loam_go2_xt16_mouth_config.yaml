@@ -1,13 +1,13 @@
 lego_loam_ip:
   ros__parameters:
     use_sim_time: false
-    # Derived from loam_go2_xt16_live.yaml. The XT16 scan parameters are kept
-    # unchanged so this launch can be compared against the single-XT16 path.
+    # Derived from loam_go2_xt16_live.yaml. Keep the XT16 scan parameters
+    # matched to the active 32000-point, 10 Hz driver mode.
     laser:
         odom_type: "wheel_odometry"
         base_ground_frame: "base_link"
         num_vertical_scans: 16
-        num_horizontal_scans: 4000
+        num_horizontal_scans: 2000
         vertical_angle_bottom: -15.0
         vertical_angle_top: 15.0
         scan_period: 0.1
@@ -49,10 +49,14 @@ lego_loam_ip:
         # trusted base_footprint or roll/pitch-compensated ground frame and
         # retune mouth_ground_z_min/max around that frame's ground height.
         mouth_filter_frame: "base_link"
-        mouth_max_time_diff: 0.08
-        # Add a positive offset only after confirming the live mouth cloud
-        # header lag is stable. Keep mouth_max_time_diff near 0.08-0.15 for
-        # deployment; larger values are stationary geometry smoke-test only.
+        # Keep this reusable YAML deterministic for bag/direct-handler replay.
+        # The live mouth launch explicitly overrides it to receipt_time because
+        # the sensor clock epoch can change after a link reconnect.
+        mouth_sync_mode: "header_offset"
+        # Clouds are not motion-compensated across timestamps. This is the
+        # maximum pairing error and, in live receipt mode, the future wait cap.
+        mouth_max_time_diff: 0.03
+        # The live launch overrides the mode and ignores this header offset.
         mouth_time_offset_sec: 0.0
         # base_link-frame ground window for stationary Go2 standing height.
         # Tune in RViz before any motion; do not use as a final walking setup
@@ -75,6 +79,15 @@ lego_loam_fa:
         edge_threshold: 0.1
         surf_threshold: 0.1
         nearest_feature_search_distance: 5.0
+        # Require an odometry pose aligned to each XT16 frame. If the two
+        # drivers use different clock epochs, measure the stable offset and
+        # set odom_time_offset_sec explicitly; an unmatched frame is rejected.
+        odom_sync_enabled: true
+        odom_sync_tolerance_sec: 0.05
+        odom_buffer_duration_sec: 5.0
+        odom_interpolation_max_gap_sec: 0.05
+        odom_sync_wait_timeout_sec: 0.1
+        odom_time_offset_sec: 0.0
 
     mapping:
         to_map_optimization: true
@@ -84,7 +97,7 @@ lego_loam_mo:
     use_sim_time: false
 
     mapping:
-        distance_between_key_frame: 0.15
+        distance_between_key_frame: 0.5
         angle_between_key_frame: 0.5
         enable_loop_closure: false
         surrounding_keyframe_search_num: 50
@@ -93,6 +106,19 @@ lego_loam_mo:
         history_keyframe_fitness_score: 0.5
         ground_voxel_size: 0.3
         broadcast_external_odom_tf: true
+        # Eigen returns ascending eigenvalues with eigenvectors in columns.
+        # Weak scan-to-map eigendirections are projected out with V D V^T.
+        degeneracy_eigenvalue_thresholds: [100.0, 100.0, 100.0, 100.0, 100.0, 100.0]
+        # Anchor corridor-weak directions with the synchronized external odom.
+        external_odom_factor_enabled: true
+        external_odom_rotation_variance: 0.0025
+        external_odom_translation_variance: 0.01
+        # On the flat indoor route, use the odom/IMU estimate for roll, pitch
+        # and z while leaving x, y and yaw effectively unconstrained here.
+        planar_constraint_enabled: true
+        planar_roll_pitch_variance: 0.0025
+        planar_z_variance: 0.01
+        planar_unconstrained_variance: 1000000.0
 
 lego_loam_map_visualization:
   ros__parameters:

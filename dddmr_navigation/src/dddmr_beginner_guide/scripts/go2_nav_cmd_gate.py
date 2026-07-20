@@ -6,6 +6,9 @@ from typing import Optional
 import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
+from std_msgs.msg import String
+
+from go2_nav_gate_policy import localization_block_reason
 
 
 class Go2NavCmdGate(Node):
@@ -32,19 +35,37 @@ class Go2NavCmdGate(Node):
         self.log_period_sec = float(
             self.declare_parameter("log_period_sec", 0.50).value
         )
+        self.require_localization_tracking = bool(
+            self.declare_parameter("require_localization_tracking", False).value
+        )
+        self.localization_status_topic = self.declare_parameter(
+            "localization_status_topic", "/localization_status"
+        ).get_parameter_value().string_value
+        self.localization_status_timeout_sec = float(
+            self.declare_parameter("localization_status_timeout_sec", 0.75).value
+        )
 
         self.latest_cmd: Optional[Twist] = None
         self.last_cmd_time = None
+        self.localization_status: Optional[str] = None
+        self.last_localization_status_time = None
         self.last_log_time = self.get_clock().now()
         self.last_output_key = None
 
         self.pub = self.create_publisher(Twist, self.output_topic, 10)
         self.create_subscription(Twist, self.input_topic, self.cmd_cb, 10)
+        self.create_subscription(
+            String,
+            self.localization_status_topic,
+            self.localization_status_cb,
+            10,
+        )
         self.create_timer(self.timer_period_sec(), self.timer_cb)
 
         self.get_logger().warn(
             "Go2 nav cmd gate: %s -> %s enabled=%s max_x=%.3f max_y=%.3f "
-            "max_yaw=%.3f publish_rate_hz=%.3f timeout=%.3f"
+            "max_yaw=%.3f publish_rate_hz=%.3f timeout=%.3f "
+            "require_localization_tracking=%s localization_timeout=%.3f"
             % (
                 self.input_topic,
                 self.output_topic,
@@ -54,6 +75,8 @@ class Go2NavCmdGate(Node):
                 self.max_yaw,
                 self.publish_rate_hz,
                 self.cmd_timeout_sec,
+                self.require_localization_tracking,
+                self.localization_status_timeout_sec,
             )
         )
 
@@ -61,12 +84,20 @@ class Go2NavCmdGate(Node):
         self.latest_cmd = msg
         self.last_cmd_time = self.get_clock().now()
 
+    def localization_status_cb(self, msg: String) -> None:
+        self.localization_status = msg.data
+        self.last_localization_status_time = self.get_clock().now()
+
     def timer_cb(self) -> None:
         now = self.get_clock().now()
         reason = "pass"
+        localization_reason = self.localization_block_reason(now)
         if not self.enabled:
             output = Twist()
             reason = "disabled"
+        elif localization_reason is not None:
+            output = Twist()
+            reason = localization_reason
         elif self.latest_cmd is None or self.last_cmd_time is None:
             output = Twist()
             reason = "no_input"
@@ -80,6 +111,19 @@ class Go2NavCmdGate(Node):
 
         self.pub.publish(output)
         self.log_if_needed(now, output, reason)
+
+    def localization_block_reason(self, now) -> Optional[str]:
+        status_age_sec = None
+        if self.last_localization_status_time is not None:
+            status_age_sec = (
+                now - self.last_localization_status_time
+            ).nanoseconds / 1e9
+        return localization_block_reason(
+            self.require_localization_tracking,
+            self.localization_status,
+            status_age_sec,
+            self.localization_status_timeout_sec,
+        )
 
     def clamp_twist(self, msg: Twist) -> Twist:
         output = Twist()

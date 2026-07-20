@@ -69,6 +69,50 @@ RESULT: GO2_XT16_SPORT_LIVE_READINESS_PASS
 This check does not publish `/cmd_vel`, `/dddmr_go2/dry_run_cmd_vel`, or
 `/api/sport/request`.
 
+## WASD Terminal Teleop
+
+The standalone keyboard teleop defaults to preview mode and does not create a
+ROS publisher:
+
+```bash
+cd /home/lin/new2/dddmr_navigation
+./scripts/go2_wasd_teleop.py
+```
+
+Controls:
+
+```text
+W / S       forward / backward
+A / D       turn left / right
+Space or X  StopMove immediately
+Q or Esc    StopMove and quit
+Ctrl-C      StopMove and quit
+```
+
+A direction key remains active for only `0.35 s` without keyboard repeat. The
+watchdog then publishes `StopMove`; normal exit and handled terminal signals
+also publish three final `StopMove` requests. Default live limits are
+`0.10 m/s` linear and `0.25 rad/s` yaw.
+
+Live mode requires the host Unitree ROS messages, CycloneDDS, the exact
+confirmation phrase, onsite supervision, clear floor space, and a ready App or
+physical stop path:
+
+```bash
+cd /home/lin/new2/dddmr_navigation
+source /opt/ros/humble/setup.bash
+source .unitree_msg_ws/install/setup.bash
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+GO2_WASD_LIVE_CONFIRM=I_AM_SUPERVISING_GO2_WASD \
+  ./scripts/go2_wasd_teleop.py --live
+```
+
+The live script refuses to start until `/api/sport/request` has a subscriber.
+It publishes only `1008 Move` and `1003 StopMove`. Do not run it alongside
+autonomous navigation or another Sport velocity controller. On this Go2,
+pure-yaw Sport commands have previously produced weak turning; do not add an
+implicit forward arc to `A/D` without a separate supervised validation.
+
 ## Live Probe
 
 Only after readiness passes and onsite supervision is active, run the short

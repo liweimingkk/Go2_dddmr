@@ -33,6 +33,8 @@
 #include <cassert>
 #include <cmath>
 #include <functional>
+#include <iterator>
+#include <numeric>
 #include <random>
 #include <vector>
 
@@ -177,24 +179,44 @@ public:
       p.probability_ = 1.0 / particles_.size();
     }
   }
-  void resample(T sigma)
+  bool resample(T sigma)
   {
-    resampleUsingNoiseGenerator(DiagonalNoiseGenerator<FLT_TYPE>(T(), sigma));
+    return resampleUsingNoiseGenerator(
+        DiagonalNoiseGenerator<FLT_TYPE>(T(), sigma));
+  }
+  bool resampleToSize(T sigma, const size_t num_particles)
+  {
+    return resampleToSizeUsingNoiseGenerator(
+        DiagonalNoiseGenerator<FLT_TYPE>(T(), sigma), num_particles);
   }
   template <typename GEN>
-  void resampleUsingNoiseGenerator(const GEN& generator)
+  bool resampleUsingNoiseGenerator(const GEN& generator)
   {
+    if (particles_.empty())
+    {
+      return false;
+    }
+
     FLT_TYPE accum = 0;
     for (auto& p : particles_)
     {
+      if (!std::isfinite(p.probability_) || p.probability_ < 0.0)
+      {
+        return false;
+      }
       accum += p.probability_;
       p.accum_probability_ = accum;
+    }
+    if (!std::isfinite(accum) || accum <= 0.0)
+    {
+      return false;
     }
 
     particles_dup_ = particles_;
     std::sort(particles_dup_.begin(), particles_dup_.end());
     const FLT_TYPE pstep = accum / particles_.size();
-    const FLT_TYPE initial_p = std::uniform_real_distribution<FLT_TYPE>(0.0, pstep)(engine_);
+    const FLT_TYPE initial_p =
+        std::uniform_real_distribution<FLT_TYPE>(0.0, pstep)(engine_);
     auto it = particles_dup_.begin();
     auto it_prev = particles_dup_.begin();
     const FLT_TYPE prob = 1.0 / particles_.size();
@@ -202,14 +224,15 @@ public:
     {
       auto& p = particles_[i];
       const FLT_TYPE pscan = pstep * i + initial_p;
-      it = std::lower_bound(it, particles_dup_.end(), Particle<T, FLT_TYPE>(pscan));
+      it = std::lower_bound(
+          it, particles_dup_.end(), Particle<T, FLT_TYPE>(pscan));
       p.probability_ = prob;
       if (it == particles_dup_.end())
       {
         p.state_ = it_prev->state_;
         continue;
       }
-      else if (it == it_prev)
+      if (it == it_prev)
       {
         p.state_ = it->state_ + T::template generateNoise<T>(engine_, generator);
         p.state_.normalize();
@@ -220,6 +243,77 @@ public:
       }
       it_prev = it;
     }
+    return true;
+  }
+  template <typename GEN>
+  bool resampleToSizeUsingNoiseGenerator(
+      const GEN& generator, const size_t num_particles)
+  {
+    if (particles_.empty() || num_particles == 0)
+    {
+      return false;
+    }
+
+    FLT_TYPE accum = 0;
+    for (auto& p : particles_)
+    {
+      if (!std::isfinite(p.probability_) || p.probability_ < 0.0)
+      {
+        return false;
+      }
+      accum += p.probability_;
+      p.accum_probability_ = accum;
+    }
+
+    if (!std::isfinite(accum) || accum <= 0.0)
+    {
+      return false;
+    }
+
+    particles_dup_ = particles_;
+    const FLT_TYPE pstep = accum / num_particles;
+    const FLT_TYPE initial_p = std::uniform_real_distribution<FLT_TYPE>(0.0, pstep)(engine_);
+    auto it = particles_dup_.begin();
+    auto last_positive = particles_dup_.end();
+    for (auto candidate = particles_dup_.begin();
+         candidate != particles_dup_.end(); ++candidate)
+    {
+      if (candidate->probability_ > 0.0)
+      {
+        last_positive = candidate;
+      }
+    }
+    if (last_positive == particles_dup_.end())
+    {
+      return false;
+    }
+    std::vector<size_t> parent_use_count(particles_dup_.size(), 0);
+    std::vector<Particle<T, FLT_TYPE>> resampled(num_particles);
+    const FLT_TYPE prob = 1.0 / num_particles;
+    for (size_t i = 0; i < num_particles; ++i)
+    {
+      auto& p = resampled[i];
+      const FLT_TYPE pscan = pstep * i + initial_p;
+      it = std::upper_bound(it, particles_dup_.end(), Particle<T, FLT_TYPE>(pscan));
+      if (it == particles_dup_.end())
+      {
+        it = last_positive;
+      }
+
+      const size_t parent_index = static_cast<size_t>(
+          std::distance(particles_dup_.begin(), it));
+      p.state_ = it->state_;
+      if (parent_use_count[parent_index]++ > 0)
+      {
+        p.state_ = p.state_ + T::template generateNoise<T>(engine_, generator);
+        p.state_.normalize();
+      }
+      p.probability_ = prob;
+      p.probability_bias_ = 1.0;
+      p.accum_probability_ = 0.0;
+    }
+    particles_.swap(resampled);
+    return true;
   }
   void noise(T sigma)
   {
@@ -247,9 +341,48 @@ public:
       prob(p.state_, p.probability_bias_);
     }
   }
-  void measure(std::function<FLT_TYPE(const T&)> likelihood)
+  template <typename PREDICATE>
+  bool conditionOn(const PREDICATE& keep)
   {
-    auto particles_prev = particles_;  // backup old
+    FLT_TYPE kept_probability = 0.0;
+    for (const auto& particle : particles_)
+    {
+      if (!std::isfinite(particle.probability_) || particle.probability_ < 0.0)
+      {
+        return false;
+      }
+      if (keep(particle.state_))
+      {
+        kept_probability += particle.probability_;
+      }
+    }
+    if (!std::isfinite(kept_probability) || kept_probability <= 0.0)
+    {
+      return false;
+    }
+
+    for (auto& particle : particles_)
+    {
+      particle.probability_ = keep(particle.state_) ?
+          particle.probability_ / kept_probability : 0.0;
+    }
+    return true;
+  }
+  bool measure(std::function<FLT_TYPE(const T&)> likelihood)
+  {
+    return measureWithIndex(
+        [&likelihood](const size_t, const T& state)
+        {
+          return likelihood(state);
+        });
+  }
+  bool measureWithIndex(std::function<FLT_TYPE(const size_t, const T&)> likelihood)
+  {
+    if (particles_.empty())
+    {
+      return false;
+    }
+
     FLT_TYPE sum = 0;
     std::vector<FLT_TYPE> prob(particles_.size());
     
@@ -258,27 +391,27 @@ public:
     #pragma omp parallel for
     for (size_t i=0; i<particles_.size(); i++)
     {
-      particles_[i].probability_ *= likelihood(particles_[i].state_);
-      prob[i] = particles_[i].probability_;
+      prob[i] = particles_[i].probability_ * likelihood(i, particles_[i].state_);
     }
 
     for (size_t i=0; i<particles_.size(); i++)
     {
+      if (!std::isfinite(prob[i]) || prob[i] < 0.0)
+      {
+        return false;
+      }
       sum+=prob[i];
     }
 
-    if (sum > 0.0)
+    if (std::isfinite(sum) && sum > 0.0)
     {
-      for (auto& p : particles_)
+      for (size_t i = 0; i < particles_.size(); ++i)
       {
-        p.probability_ /= sum;
+        particles_[i].probability_ = prob[i] / sum;
       }
+      return true;
     }
-    else
-    {
-      particles_ = particles_prev;
-      // std::cerr << "No Particle alive, restoring." << std::endl;
-    }
+    return false;
   }
   T expectation(const FLT_TYPE pass_ratio = 1.0)
   {
@@ -393,6 +526,38 @@ public:
   T getParticle(const size_t i) const
   {
     return particles_[i].state_;
+  }
+  FLT_TYPE getParticleProbability(const size_t i) const
+  {
+    return particles_[i].probability_;
+  }
+  FLT_TYPE effectiveSampleSize() const
+  {
+    FLT_TYPE probability_sum = 0.0;
+    FLT_TYPE squared_probability_sum = 0.0;
+    for (const auto& particle : particles_)
+    {
+      if (!std::isfinite(particle.probability_) || particle.probability_ < 0.0)
+      {
+        return 0.0;
+      }
+      probability_sum += particle.probability_;
+      squared_probability_sum += particle.probability_ * particle.probability_;
+    }
+    if (!std::isfinite(probability_sum) || !std::isfinite(squared_probability_sum) ||
+        probability_sum <= 0.0 || squared_probability_sum <= 0.0)
+    {
+      return 0.0;
+    }
+    return probability_sum * probability_sum / squared_probability_sum;
+  }
+  FLT_TYPE normalizedEffectiveSampleSize() const
+  {
+    if (particles_.empty())
+    {
+      return 0.0;
+    }
+    return effectiveSampleSize() / static_cast<FLT_TYPE>(particles_.size());
   }
   size_t getParticleSize() const
   {

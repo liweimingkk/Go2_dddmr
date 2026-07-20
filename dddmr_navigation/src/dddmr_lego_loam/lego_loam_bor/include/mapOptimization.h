@@ -2,6 +2,7 @@
 #define MAPOPTIMIZATION_H
 
 #include "channel.h"
+#include "degeneracy_utils.h"
 #include "utility.h"
 
 #include <gtsam/geometry/Pose3.h>
@@ -22,10 +23,12 @@
 #include <pcl/io/pcd_io.h>
 
 #include <geometry_msgs/msg/pose_array.hpp>
+#include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <visualization_msgs/msg/marker.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
 
 //@ for mkdir
+#include <array>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -150,6 +153,8 @@ private:
 
   gtsam::noiseModel::Diagonal::shared_ptr priorNoise;
   gtsam::noiseModel::Diagonal::shared_ptr odometryNoise;
+  gtsam::noiseModel::Diagonal::shared_ptr externalOdometryNoise;
+  gtsam::noiseModel::Diagonal::shared_ptr planarConstraintNoise;
   gtsam::noiseModel::Diagonal::shared_ptr constraintNoise;
 
   bool _loop_closure_enabled;
@@ -180,6 +185,8 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr
       pubLaserCloudSurround;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubOdomAftMapped;
+  rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr
+      pubMappingDiagnostics;
 
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr
       pubIcpTargetKeyFrames;
@@ -328,6 +335,15 @@ private:
   Eigen::Matrix3f matV1;
 
   Eigen::Matrix<float, 6, 6> matP;
+  Eigen::Matrix<float, 6, 1> degeneracy_eigenvalue_thresholds_;
+  Eigen::Matrix<float, 6, 1> last_degeneracy_eigenvalues_;
+  Eigen::Matrix<float, 6, 6> last_degeneracy_eigenvectors_;
+  Eigen::Matrix<float, 6, 1> last_lm_delta_;
+  Eigen::Matrix<float, 6, 1> accumulated_lm_delta_;
+  std::array<bool, 6> last_degenerate_eigendirections_;
+  bool last_lm_had_constraints_;
+  bool last_scan_to_map_attempted_;
+  int last_lm_selected_point_count_;
 
   bool isDegenerate;
 
@@ -368,6 +384,12 @@ private:
 
   void saveKeyFramesAndFactor();
 
+  gtsam::Pose3 transformArrayToGtsamPose(const float * transform) const;
+  void publishMappingDiagnostic(
+      const AssociationOut & association,
+      const std::array<float, 6> & pose_before_optimization,
+      const std::array<float, 6> & pose_after_optimization);
+
   void clearCloud();
 
   double ground_voxel_size_;
@@ -378,6 +400,20 @@ private:
   bool has_m2ci_af3_;
   size_t current_ground_size_;
   bool generate_testing_pg_;
+  bool external_odom_factor_enabled_;
+  bool planar_constraint_enabled_;
+  double external_odom_rotation_variance_;
+  double external_odom_translation_variance_;
+  double planar_roll_pitch_variance_;
+  double planar_z_variance_;
+  double planar_unconstrained_variance_;
+  bool current_external_odom_valid_;
+  bool previous_keyframe_external_odom_valid_;
+  bool last_keyframe_inserted_;
+  bool last_external_odom_factor_added_;
+  bool last_planar_constraint_added_;
+  gtsam::Pose3 current_external_odom_pose_;
+  gtsam::Pose3 previous_keyframe_external_odom_pose_;
 };
 
 #endif // MAPOPTIMIZATION_H

@@ -30,6 +30,11 @@
 */
 #include <trajectory_generators/dd_simple_trajectory_generator_theory.h>
 
+#include <algorithm>
+#include <cmath>
+#include <sstream>
+#include <stdexcept>
+
 PLUGINLIB_EXPORT_CLASS(trajectory_generators::DDSimpleTrajectoryGeneratorTheory, trajectory_generators::TrajectoryGeneratorTheory)
 
 namespace trajectory_generators
@@ -55,6 +60,44 @@ void DDSimpleTrajectoryGeneratorTheory::onInitialize(){
   node_->declare_parameter(name_ + ".min_vel_theta", rclcpp::ParameterValue(0.1));
   node_->get_parameter(name_ + ".min_vel_theta", limits_->min_vel_theta);
   RCLCPP_INFO(node_->get_logger().get_child(name_), "min_vel_theta: %.2f", limits_->min_vel_theta);
+
+  node_->declare_parameter(name_ + ".enable_in_place_rotation", rclcpp::ParameterValue(false));
+  node_->get_parameter(name_ + ".enable_in_place_rotation", enable_in_place_rotation_);
+  RCLCPP_INFO(node_->get_logger().get_child(name_), "enable_in_place_rotation: %d", enable_in_place_rotation_);
+
+  node_->declare_parameter(
+    name_ + ".in_place_rotation_max_linear_speed", rclcpp::ParameterValue(0.05));
+  node_->get_parameter(
+    name_ + ".in_place_rotation_max_linear_speed", in_place_rotation_max_linear_speed_);
+  RCLCPP_INFO(
+    node_->get_logger().get_child(name_), "in_place_rotation_max_linear_speed: %.2f",
+    in_place_rotation_max_linear_speed_);
+
+  if(
+    !std::isfinite(in_place_rotation_max_linear_speed_) ||
+    in_place_rotation_max_linear_speed_ < 0.0)
+  {
+    throw std::invalid_argument(
+      "in_place_rotation_max_linear_speed must be finite and non-negative");
+  }
+
+  node_->declare_parameter(
+    name_ + ".in_place_rotation_stopped_angular_speed", rclcpp::ParameterValue(0.0));
+  node_->get_parameter(
+    name_ + ".in_place_rotation_stopped_angular_speed",
+    in_place_rotation_stopped_angular_speed_);
+  RCLCPP_INFO(
+    node_->get_logger().get_child(name_),
+    "in_place_rotation_stopped_angular_speed: %.3f",
+    in_place_rotation_stopped_angular_speed_);
+
+  if(
+    !std::isfinite(in_place_rotation_stopped_angular_speed_) ||
+    in_place_rotation_stopped_angular_speed_ < 0.0)
+  {
+    throw std::invalid_argument(
+      "in_place_rotation_stopped_angular_speed must be finite and non-negative");
+  }
 
   node_->declare_parameter(name_ + ".max_vel_theta", rclcpp::ParameterValue(0.1));
   node_->get_parameter(name_ + ".max_vel_theta", limits_->max_vel_theta);
@@ -124,6 +167,44 @@ void DDSimpleTrajectoryGeneratorTheory::onInitialize(){
   node_->declare_parameter(name_ + ".angular_z_sample", rclcpp::ParameterValue(10.0));
   node_->get_parameter(name_ + ".angular_z_sample", params_->angular_z_sample);
   RCLCPP_INFO(node_->get_logger().get_child(name_), "angular_z_sample: %.2f", params_->angular_z_sample);
+
+  if(
+    !std::isfinite(limits_->max_vel_theta) || limits_->max_vel_theta <= 0.0 ||
+    !std::isfinite(limits_->min_vel_theta) || limits_->min_vel_theta <= 0.0 ||
+    !std::isfinite(limits_->acc_lim_theta) || limits_->acc_lim_theta <= 0.0 ||
+    !std::isfinite(params_->controller_frequency) || params_->controller_frequency <= 0.0)
+  {
+    throw std::invalid_argument(
+      "angular velocity limits, angular acceleration, and controller frequency "
+      "must be finite and positive");
+  }
+  if(limits_->min_vel_theta > limits_->max_vel_theta)
+  {
+    throw std::invalid_argument("min_vel_theta must not exceed max_vel_theta");
+  }
+  if(in_place_rotation_stopped_angular_speed_ >= limits_->min_vel_theta)
+  {
+    throw std::invalid_argument(
+      "in_place_rotation_stopped_angular_speed must be less than min_vel_theta");
+  }
+  if(enable_in_place_rotation_){
+    const double rest_reachable_angular_speed = std::min(
+      limits_->max_vel_theta,
+      limits_->acc_lim_theta / params_->controller_frequency);
+    if(limits_->min_vel_theta > rest_reachable_angular_speed + 1e-4){
+      std::ostringstream error;
+      error
+        << "in-place rotation cannot start from rest: min_vel_theta="
+        << limits_->min_vel_theta
+        << " exceeds the one-cycle reachable angular speed="
+        << rest_reachable_angular_speed
+        << "; set acc_lim_theta >= "
+        << limits_->min_vel_theta * params_->controller_frequency
+        << " or lower min_vel_theta";
+      RCLCPP_ERROR(node_->get_logger().get_child(name_), "%s", error.str().c_str());
+      throw std::invalid_argument(error.str());
+    }
+  }
 
   node_->declare_parameter(name_ + ".sim_granularity", rclcpp::ParameterValue(0.1));
   node_->get_parameter(name_ + ".sim_granularity", params_->sim_granularity);
@@ -276,19 +357,78 @@ void DDSimpleTrajectoryGeneratorTheory::initialise(){
     }
 
     Eigen::Vector3f vel_samp = Eigen::Vector3f::Zero();
-    trajectory_generators::VelocityIterator x_it(min_vel[0], max_vel[0], params_->linear_x_sample);
-    trajectory_generators::VelocityIterator th_it(min_vel[2], max_vel[2], params_->angular_z_sample);
-    for(; !x_it.isFinished(); x_it++) {
-      vel_samp[0] = x_it.getVelocity();
+    const double current_linear_speed = std::hypot(
+      shared_data_->robot_state_.twist.twist.linear.x,
+      shared_data_->robot_state_.twist.twist.linear.y);
 
-      for(; !th_it.isFinished(); th_it++) {
-        vel_samp[2] = th_it.getVelocity();
-        //ROS_DEBUG("Sample %f, %f, %f", vel_samp[0], vel_samp[1], vel_samp[2]);
-        if(isMotorConstraintSatisfied(vel_samp))
+    // A pure rotation is offered only after the robot has physically stopped.
+    // Explicitly offer each fixed-speed turn direction only when it is inside
+    // this control cycle's angular dynamic window.  For pure rotation only,
+    // configured near-zero odometry noise is treated as rest so both directions
+    // can bootstrap without intermittent single-sided samples.  Forward samples
+    // below continue to use the unmodified raw-odometry window.  The complete
+    // swept cuboid is still evaluated by the collision critic before either
+    // sample is accepted.
+    if(enable_in_place_rotation_ &&
+       current_linear_speed <= in_place_rotation_max_linear_speed_){
+      const std::size_t in_place_sample_begin = sample_params_.size();
+      const double raw_yaw_rate =
+        shared_data_->robot_state_.twist.twist.angular.z;
+      const double effective_yaw_rate =
+        std::fabs(raw_yaw_rate) <= in_place_rotation_stopped_angular_speed_ ?
+        0.0 : raw_yaw_rate;
+      const double current_angular_speed = std::isfinite(effective_yaw_rate) ?
+        std::fabs(effective_yaw_rate) : 0.0;
+      const double in_place_angular_speed = std::min(
+        max_vel_th,
+        std::max(limits_->min_vel_theta, current_angular_speed));
+      const double in_place_min_vel_theta = std::max(
+        min_vel_th, effective_yaw_rate - acc_lim[2] * sim_period);
+      const double in_place_max_vel_theta = std::min(
+        max_vel_th, effective_yaw_rate + acc_lim[2] * sim_period);
+      constexpr double velocity_epsilon = 1e-6;
+      for(const double direction : {-1.0, 1.0}){
+        vel_samp[0] = 0.0;
+        vel_samp[2] = direction * in_place_angular_speed;
+        if(vel_samp[2] < in_place_min_vel_theta - velocity_epsilon ||
+           vel_samp[2] > in_place_max_vel_theta + velocity_epsilon){
+          continue;
+        }
+        if(isMotorConstraintSatisfied(vel_samp)){
           sample_params_.push_back(vel_samp);
+        }
       }
-      th_it.reset();
+      if(sample_params_.size() == in_place_sample_begin){
+        RCLCPP_ERROR_THROTTLE(
+          node_->get_logger().get_child(name_), *(node_->get_clock()), 1000,
+          "No executable in-place sample: requested_speed=%.3f "
+          "dynamic_window=[%.3f, %.3f] "
+          "min_vel_theta=%.3f max_vel_theta=%.3f "
+          "raw_yaw_rate=%.3f effective_yaw_rate=%.3f",
+          in_place_angular_speed, in_place_min_vel_theta, in_place_max_vel_theta,
+          limits_->min_vel_theta, max_vel_th, raw_yaw_rate, effective_yaw_rate);
+      }
+    }
 
+    // Never generate a non-zero forward command below min_vel_x.  Such slow
+    // arcs can score well in simulation but fall inside a real platform's
+    // command dead zone, leaving the closed loop permanently stuck.
+    const double forward_sample_min = std::max(
+      static_cast<double>(min_vel[0]), limits_->min_vel_x);
+    if(max_vel[0] + 1e-4 >= forward_sample_min){
+      trajectory_generators::VelocityIterator x_it(
+        forward_sample_min, max_vel[0], params_->linear_x_sample);
+      for(; !x_it.isFinished(); x_it++){
+        vel_samp[0] = x_it.getVelocity();
+        trajectory_generators::VelocityIterator th_it(
+          min_vel[2], max_vel[2], params_->angular_z_sample);
+        for(; !th_it.isFinished(); th_it++){
+          vel_samp[2] = th_it.getVelocity();
+          if(isMotorConstraintSatisfied(vel_samp)){
+            sample_params_.push_back(vel_samp);
+          }
+        }
+      }
     }
     //ROS_WARN("%f,%f, %lu",vel.twist.twist.linear.x, vel.twist.twist.angular.z, sample_params_.size());
   }    
@@ -359,10 +499,18 @@ bool DDSimpleTrajectoryGeneratorTheory::generateTrajectory(
   //trajectory might be reused so we'll make sure to reset it
   traj.resetPoints();
 
-  // make sure that the robot would at least be moving with one of
-  // the required minimum velocities for translation and rotation (if set)
-  if ((limits_->min_vel_x >= 0 && vmag + eps < limits_->min_vel_x) &&
-      (limits_->min_vel_theta >= 0 && fabs(sample_target_vel[2]) + eps < limits_->min_vel_theta)) {
+  const bool rotation_meets_minimum = limits_->min_vel_theta < 0.0 ||
+    std::fabs(sample_target_vel[2]) + eps >= limits_->min_vel_theta;
+  const bool is_in_place_rotation = enable_in_place_rotation_ &&
+    vmag <= eps && rotation_meets_minimum;
+
+  // Below-minimum non-zero forward arcs are not executable candidates.  Zero
+  // linear speed is reserved for an explicitly enabled in-place rotation.
+  if(vmag <= eps && !is_in_place_rotation){
+    return false;
+  }
+  if(vmag > eps && limits_->min_vel_x >= 0.0 &&
+     vmag + eps < limits_->min_vel_x){
     return false;
   }
   // make sure we do not exceed max diagonal (x+y) translational velocity (if set)

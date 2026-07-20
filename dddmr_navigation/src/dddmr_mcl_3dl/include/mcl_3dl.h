@@ -31,11 +31,14 @@
 #define MCL_3DL_CLASS_H
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <cassert>
 #include <cmath>
 #include <limits>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -43,8 +46,12 @@
 #include <Eigen/Core>
 
 #include <chrono>
+#include <cstdint>
 
 #include <mcl_3dl/parameters.h>
+#include <mcl_3dl/adaptive_particle_policy.h>
+#include <mcl_3dl/localization_state_machine.h>
+#include <mcl_3dl/posterior_mode.h>
 
 
 #include <sensor_msgs/msg/point_cloud2.hpp>
@@ -54,6 +61,9 @@
 #include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
+#include <std_msgs/msg/float32.hpp>
+#include <std_msgs/msg/string.hpp>
+#include <std_srvs/srv/trigger.hpp>
 
 #include "tf2_ros/transform_broadcaster.h"
 #include "tf2_ros/transform_listener.h"
@@ -143,8 +153,8 @@ class MCL3dlNode : public rclcpp::Node
   private:
 
     bool is_trans_b2s_initialized_;
-    bool tf_ready_;
-    bool first_tf_;
+    std::atomic_bool tf_ready_;
+    std::atomic_bool first_tf_;
     
     rclcpp::Clock::SharedPtr clock_;
 
@@ -155,6 +165,9 @@ class MCL3dlNode : public rclcpp::Node
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_pc_ec_;
     rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr pub_pose_;
     rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr pub_particle_;
+    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr pub_localization_status_;
+    rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr pub_localization_quality_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_global_localization_;
 
     void cbOdom(const nav_msgs::msg::Odometry::SharedPtr msg);
     bool getBaselink2SensorAF3(std_msgs::msg::Header sensor_header, Eigen::Affine3d& trans_b2s_af3);
@@ -164,11 +177,64 @@ class MCL3dlNode : public rclcpp::Node
                     const sensor_msgs::msg::PointCloud2::SharedPtr pc_flatMsg,
                     const sensor_msgs::msg::PointCloud2::SharedPtr pc_less_flatMsg);
     
-    void measure(std::map<std::string, pcl::PointCloud<pcl_t>::Ptr> pcl_segmentations);
+    bool measure(
+      const std::map<std::string, pcl::PointCloud<pcl_t>::Ptr>& pcl_segmentations,
+      std::size_t& resample_particle_count,
+      bool& resample_required);
+
+    struct GlobalCandidate
+    {
+      State6DOF state;
+      float quality{0.0f};
+      float likelihood{0.0f};
+    };
+
+    bool attemptGlobalLocalization(
+      const std::map<std::string, pcl::PointCloud<pcl_t>::Ptr>& pcl_segmentations);
+    std::vector<State6DOF> buildGlobalCandidates() const;
+    std::map<std::string, pcl::PointCloud<pcl_t>::Ptr> makeSparseObservation(
+      const std::map<std::string, pcl::PointCloud<pcl_t>::Ptr>& pcl_segmentations) const;
+    void initializeGlobalParticles(const std::vector<GlobalCandidate>& candidates);
+    std::pair<double, double> particleSpread(const State6DOF& mean) const;
+
+    struct PosteriorDiagnostics
+    {
+      double weighted_match_ratio{0.0};
+      double effective_sample_ratio{0.0};
+      double max_weight{0.0};
+      double dominant_mode_mass{0.0};
+      double dominant_mode_weighted_match_ratio{0.0};
+      double dominant_mode_xy_std{std::numeric_limits<double>::infinity()};
+      double dominant_mode_yaw_std{std::numeric_limits<double>::infinity()};
+      std::array<double, 6> dominant_mode_variances{
+        {std::numeric_limits<double>::infinity(),
+         std::numeric_limits<double>::infinity(),
+         std::numeric_limits<double>::infinity(),
+         std::numeric_limits<double>::infinity(),
+         std::numeric_limits<double>::infinity(),
+         std::numeric_limits<double>::infinity()}};
+      State6DOF dominant_mode_mean;
+      State6DOF dominant_mode_anchor;
+      bool dominant_mode_valid{false};
+      std::size_t occupied_bins{0};
+    };
+
+    PosteriorDiagnostics posteriorDiagnostics(
+      const std::vector<float>& particle_match_ratios) const;
     
     void publishParticles();
 
     void publishTFThread();
+    void publishLocalizationStatusThread();
+    void publishLocalizationStatus();
+    LocalizationState localizationState() const;
+    bool isTracking() const;
+    void startLocalizing(const std::string& reason);
+    void markLocalizationLost(const std::string& reason);
+    void requestGlobalLocalization(const std::string& reason);
+    void cbGlobalLocalization(
+      const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+      std::shared_ptr<std_srvs::srv::Trigger::Response> response);
     
     void cbPosition(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg);
     /*
@@ -186,13 +252,32 @@ class MCL3dlNode : public rclcpp::Node
     rclcpp::CallbackGroup::SharedPtr cbs_group_;
     rclcpp::CallbackGroup::SharedPtr tf_pub_group_;   
     rclcpp::CallbackGroup::SharedPtr tf_listener_group_;
+    rclcpp::CallbackGroup::SharedPtr localization_status_group_;
     rclcpp::TimerBase::SharedPtr tf_pub_timer_;
+    rclcpp::TimerBase::SharedPtr localization_status_timer_;
     
     geometry_msgs::msg::TransformStamped odom_trans_;
     geometry_msgs::msg::TransformStamped map2odom_trans_;
     //std::mutex tf_pub_mutex_;
     
     std::map<std::string, pcl::PointCloud<mcl_3dl::pcl_t>::Ptr> pcl_segmentations_;
+
+    mutable std::mutex localization_state_mutex_;
+    std::unique_ptr<LocalizationStateMachine> localization_state_machine_;
+    std::unique_ptr<AdaptiveParticlePolicy> adaptive_particle_policy_;
+    bool has_previous_map_to_odom_;
+    State6DOF previous_map_to_odom_;
+    std::string localization_state_reason_;
+    std::atomic_bool global_localization_requested_;
+    std::atomic_bool use_global_map_;
+    std::atomic<int64_t> last_feature_received_ns_;
+    std::atomic<int64_t> last_odom_received_ns_;
+    std::atomic<int64_t> last_measure_ns_;
+    std::atomic<int64_t> last_global_attempt_ns_;
+    std::atomic<int64_t> localizing_started_ns_;
+    std::atomic<float> latest_match_ratio_;
+    std::atomic<uint64_t> feature_sequence_;
+    std::atomic<uint64_t> last_measured_feature_sequence_;
     
     /*
     
@@ -205,7 +290,6 @@ class MCL3dlNode : public rclcpp::Node
     */
   protected:
 
-    size_t global_localization_fix_cnt_;
     std::random_device seed_gen_;
     std::default_random_engine engine_;
     

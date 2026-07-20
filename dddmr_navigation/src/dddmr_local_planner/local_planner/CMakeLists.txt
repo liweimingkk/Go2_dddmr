@@ -127,6 +127,26 @@ install(PROGRAMS
   DESTINATION lib/${PROJECT_NAME}
 )
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_planner_state_arbitration
+    test/test_planner_state_arbitration.cpp
+  )
+  target_include_directories(test_planner_state_arbitration PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  ament_target_dependencies(test_planner_state_arbitration
+    ${dependencies}
+  )
+
+  ament_add_gtest(test_in_place_rotation_hysteresis
+    test/test_in_place_rotation_hysteresis.cpp
+  )
+  target_include_directories(test_in_place_rotation_hysteresis PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+endif()
+
 
 ament_export_include_directories(include)
 ament_export_libraries(local_planner)

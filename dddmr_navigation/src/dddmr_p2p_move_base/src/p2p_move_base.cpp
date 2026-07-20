@@ -78,6 +78,21 @@ void P2PMoveBase::initial(const std::shared_ptr<local_planner::Local_Planner>& l
   GPM_ = gpm;
 
   STATE_ = std::make_shared<p2p_move_base::State>(this->get_node_logging_interface(), this->get_node_parameters_interface());
+
+  // Preserve the legacy one-cycle transition unless a robot profile opts into
+  // filtering at a rate matched to its perception stream.
+  this->declare_parameter("local_failure_confirmation_cycles", rclcpp::ParameterValue(1));
+  const auto local_failure_confirmation_cycles =
+    this->get_parameter("local_failure_confirmation_cycles").as_int();
+  if(local_failure_confirmation_cycles <= 0){
+    throw std::invalid_argument(
+      "local_failure_confirmation_cycles must be a positive integer");
+  }
+  local_failure_debounce_.configure(
+    static_cast<std::size_t>(local_failure_confirmation_cycles));
+  RCLCPP_INFO(
+    this->get_logger(), "local_failure_confirmation_cycles: %ld",
+    static_cast<long>(local_failure_confirmation_cycles));
   
   if(STATE_->use_twist_stamped_){
     stamped_cmd_vel_pub_ = this->create_publisher<geometry_msgs::msg::TwistStamped>("cmd_vel_stamped", 1);
@@ -216,6 +231,8 @@ void P2PMoveBase::executeCb(const std::shared_ptr<rclcpp_action::ServerGoalHandl
   //@ if we dont initialize oscillation pose here, the first controlling entry will cause recovery behavior.
   //@ the rclcpp::Time initial are all done in FSM class
   STATE_->initialParams(LP_->getGlobalPose(), clock_->now());
+  LP_->resetInPlaceRotationHysteresis();
+  local_failure_debounce_.reset();
   STATE_->current_goal_ = move_base_goal->target_pose;
   GPM_->setGoal(STATE_->current_goal_);
   GPM_->resume();
@@ -320,6 +337,7 @@ bool P2PMoveBase::executeCycle(const std::shared_ptr<rclcpp_action::ServerGoalHa
       if((clock_->now()-STATE_->last_valid_plan_).seconds()>STATE_->planner_patience_){
         RCLCPP_WARN(this->get_logger(), "Time out to find a plan to point (%.2f, %.2f, %.2f)", 
             STATE_->current_goal_.pose.position.x, STATE_->current_goal_.pose.position.y, STATE_->current_goal_.pose.position.z);
+        publishZeroVelocity();
         startRecoveryBehaviors("rotate_inplace");
         STATE_->setDecision("d_recovery_waitdone");
         return false;
@@ -338,6 +356,7 @@ bool P2PMoveBase::executeCycle(const std::shared_ptr<rclcpp_action::ServerGoalHa
           //@go to recovery
           auto diff = (clock_->now()-STATE_->last_oscillation_reset_).seconds();
           RCLCPP_WARN(this->get_logger(), "Oscillation time out is detected: %.2f secs for %.2f m.", diff, STATE_->getDistance(STATE_->global_pose_, STATE_->oscillation_pose_));
+          publishZeroVelocity();
           startRecoveryBehaviors("rotate_inplace");
           STATE_->setDecision("d_recovery_waitdone");  
           return false;
@@ -420,6 +439,7 @@ bool P2PMoveBase::executeCycle(const std::shared_ptr<rclcpp_action::ServerGoalHa
           //@go to recovery
           auto diff = (clock_->now()-STATE_->last_oscillation_reset_).seconds();
           RCLCPP_WARN(this->get_logger(), "Oscillation time out is detected: %.2f secs for %.2f m.", diff, STATE_->getDistance(STATE_->global_pose_, STATE_->oscillation_pose_));
+          publishZeroVelocity();
           startRecoveryBehaviors("rotate_inplace");
           STATE_->setDecision("d_recovery_waitdone"); 
           return false;
@@ -509,6 +529,7 @@ bool P2PMoveBase::executeCycle(const std::shared_ptr<rclcpp_action::ServerGoalHa
         //@go to recovery
         auto diff = (clock_->now()-STATE_->last_oscillation_reset_).seconds();
         RCLCPP_WARN(this->get_logger(), "Oscillation time out is detected: %.2f secs for %.2f m.", diff, STATE_->getDistance(STATE_->global_pose_, STATE_->oscillation_pose_));
+        publishZeroVelocity();
         startRecoveryBehaviors("rotate_inplace");
         STATE_->setDecision("d_recovery_waitdone");
         return false;
@@ -516,8 +537,15 @@ bool P2PMoveBase::executeCycle(const std::shared_ptr<rclcpp_action::ServerGoalHa
 
       base_trajectory::Trajectory best_traj;
       dddmr_sys_core::PlannerState PS = LP_->computeVelocityCommand(STATE_->main_trajectory_generator_, best_traj);
+      if(
+        PS != dddmr_sys_core::PlannerState::ALL_TRAJECTORIES_FAIL &&
+        PS != dddmr_sys_core::PlannerState::PATH_BLOCKED_WAIT)
+      {
+        local_failure_debounce_.reset();
+      }
 
       if(PS == dddmr_sys_core::PlannerState::TRAJECTORY_FOUND){
+        local_failure_debounce_.recordSafeCycle();
         STATE_->last_valid_control_ = clock_->now();
         STATE_->setDecision("d_controlling");  
         publishVelocity(best_traj.xv_, best_traj.yv_, best_traj.thetav_);
@@ -539,6 +567,7 @@ bool P2PMoveBase::executeCycle(const std::shared_ptr<rclcpp_action::ServerGoalHa
         return false;
       }
       else if(PS == dddmr_sys_core::PlannerState::PRUNE_PLAN_FAIL){
+        local_failure_debounce_.reset();
         //@ this assignment will allow at least one time planning query
         STATE_->last_valid_plan_ = clock_->now();
         publishZeroVelocity();
@@ -546,6 +575,18 @@ bool P2PMoveBase::executeCycle(const std::shared_ptr<rclcpp_action::ServerGoalHa
         return false;
       }
       else if(PS == dddmr_sys_core::PlannerState::ALL_TRAJECTORIES_FAIL){
+        // A failed cycle has no safe trajectory, so stop immediately.  Do not
+        // launch a full global replan for a single noisy perception frame.
+        publishZeroVelocity();
+        if(!local_failure_debounce_.recordFailure()){
+          STATE_->setDecision("d_controlling");
+          RCLCPP_WARN_THROTTLE(
+            this->get_logger(), *clock_, 1000,
+            "Transient local trajectory failure (%zu cycle); stopped and retrying locally.",
+            local_failure_debounce_.failureCycles());
+          return false;
+        }
+        local_failure_debounce_.reset();
         //At least implement last_valid_control_ timeout to abort here
         //@ this assignment will allow at least one time planning query
         if((clock_->now() - STATE_->last_valid_control_).seconds() > STATE_->controller_patience_){
@@ -562,6 +603,7 @@ bool P2PMoveBase::executeCycle(const std::shared_ptr<rclcpp_action::ServerGoalHa
       }
 
       else if(PS == dddmr_sys_core::PlannerState::PATH_BLOCKED_REPLANNING){
+        local_failure_debounce_.reset();
         STATE_->last_valid_plan_ = clock_->now();
         publishZeroVelocity();
         STATE_->setDecision("d_planning"); 
@@ -570,6 +612,19 @@ bool P2PMoveBase::executeCycle(const std::shared_ptr<rclcpp_action::ServerGoalHa
       }
 
       else if(PS == dddmr_sys_core::PlannerState::PATH_BLOCKED_WAIT){
+        // Keep the mandatory stop, but require the no-safe-trajectory result
+        // to persist before changing states.  This filters the one-frame
+        // controlling<->waiting chatter seen in the live Go2 trace.
+        publishZeroVelocity();
+        if(!local_failure_debounce_.recordFailure()){
+          STATE_->setDecision("d_controlling");
+          RCLCPP_WARN_THROTTLE(
+            this->get_logger(), *clock_, 1000,
+            "Transient path-blocked result (%zu cycle); stopped and retrying locally.",
+            local_failure_debounce_.failureCycles());
+          return false;
+        }
+        local_failure_debounce_.reset();
         STATE_->waiting_time_ = clock_->now();
         STATE_->setDecision("d_waiting");
         RCLCPP_WARN_THROTTLE(this->get_logger(), *clock_, 5000, "Path conflits, switch to waiting state.");
@@ -646,7 +701,8 @@ bool P2PMoveBase::executeCycle(const std::shared_ptr<rclcpp_action::ServerGoalHa
       
       //if continue conflict over 10s,to recalculate the path
       if((clock_->now()-STATE_->waiting_time_).seconds() >= STATE_->waiting_patience_){ 
-       	STATE_->last_valid_plan_ = clock_->now();
+        STATE_->last_valid_plan_ = clock_->now();
+        publishZeroVelocity();
         STATE_->setDecision("d_planning");
         RCLCPP_WARN(this->get_logger(), "waiting time over %.2f,change to d_planning", STATE_->waiting_patience_);
         return false;
@@ -662,8 +718,10 @@ bool P2PMoveBase::executeCycle(const std::shared_ptr<rclcpp_action::ServerGoalHa
       dddmr_sys_core::PlannerState PS = LP_->computeVelocityCommand(STATE_->main_trajectory_generator_, best_traj);
 
       if(PS == dddmr_sys_core::PlannerState::TRAJECTORY_FOUND){
+        local_failure_debounce_.recordSafeCycle();
         STATE_->last_valid_control_ = clock_->now();
-        STATE_->setDecision("d_controlling");  
+        STATE_->setDecision("d_controlling");
+        publishVelocity(best_traj.xv_, best_traj.yv_, best_traj.thetav_);
         return false;
       }
 
@@ -691,6 +749,7 @@ bool P2PMoveBase::executeCycle(const std::shared_ptr<rclcpp_action::ServerGoalHa
       }
 
       else if(PS == dddmr_sys_core::PlannerState::ALL_TRAJECTORIES_FAIL){
+        publishZeroVelocity();
         //At least implement last_valid_control_ timeout to abort here
         //@ this assignment will allow at least one time planning query
         if((clock_->now() - STATE_->last_valid_control_).seconds() > STATE_->controller_patience_){
@@ -702,6 +761,7 @@ bool P2PMoveBase::executeCycle(const std::shared_ptr<rclcpp_action::ServerGoalHa
           STATE_->last_valid_plan_ = clock_->now();
           STATE_->setDecision("d_planning");  
         }
+        return false;
       }
 
       else if(PS == dddmr_sys_core::PlannerState::PATH_BLOCKED_WAIT || PS == dddmr_sys_core::PlannerState::PATH_BLOCKED_REPLANNING){

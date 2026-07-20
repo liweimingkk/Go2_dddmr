@@ -35,7 +35,7 @@ namespace dddmr_pg_map_server
 DDDMRPGMapServer::DDDMRPGMapServer(std::string name) : Node(name){
 
   clock_ = this->get_clock();
-  
+
   access_ = new sub_maps_mutex_t();
 
   declare_parameter("pose_graph_dir", rclcpp::ParameterValue(""));

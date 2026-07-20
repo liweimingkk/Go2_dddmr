@@ -22,9 +22,9 @@ CYCLONEDDS_URI="${CYCLONEDDS_URI:-${HOME}/cyclonedds_ws/cyclonedds.xml}"
 #     /tf_static: useful when corrected static extrinsics are being published.
 #     IMU/lowstate/pose topics are diagnostics, not required by LeGO mapping.
 REQUIRED_TOPICS=(${REQUIRED_TOPICS:-/lidar_points /utlidar/robot_odom})
-OPTIONAL_TOPICS=(${OPTIONAL_TOPICS:-/dddmr_go2/robot_odom_standard /tf_static /lidar_imu /utlidar/imu /utlidar/robot_pose /lowstate})
+OPTIONAL_TOPICS=(${OPTIONAL_TOPICS:-/dddmr_go2/robot_odom_standard /tf_static /lidar_imu /utlidar/imu /utlidar/robot_pose /lowstate /odom_sync_diagnostics /mapping_diagnostics /key_poses /cloud_keypose_6d})
 INCLUDE_DYNAMIC_TF="${INCLUDE_DYNAMIC_TF:-false}"
-INCLUDE_MOUTH_CLOUD="${INCLUDE_MOUTH_CLOUD:-false}"
+INCLUDE_MOUTH_CLOUD="${INCLUDE_MOUTH_CLOUD:-true}"
 
 PID_FILE="${STATE_DIR}/record.pid"
 BAG_FILE="${STATE_DIR}/record.bag"
@@ -281,15 +281,16 @@ Defaults:
   BAG_PREFIX=go2_xt16_dddmr_mapping
   STATE_DIR=/home/unitree/.go2_xt16_dddmr_mapping_recorder
   REQUIRED_TOPICS="/lidar_points /utlidar/robot_odom"
-  OPTIONAL_TOPICS="/dddmr_go2/robot_odom_standard /tf_static /lidar_imu /utlidar/imu /utlidar/robot_pose /lowstate"
+  OPTIONAL_TOPICS="/dddmr_go2/robot_odom_standard /tf_static /lidar_imu /utlidar/imu /utlidar/robot_pose /lowstate /odom_sync_diagnostics /mapping_diagnostics /key_poses /cloud_keypose_6d"
   INCLUDE_DYNAMIC_TF=false
-  INCLUDE_MOUTH_CLOUD=false
+  INCLUDE_MOUTH_CLOUD=true
 
 Notes:
-  The default is a clean raw bag for offline LeGO/DDDMR mapping.
+  The default records the raw XT16/odom inputs plus /utlidar/cloud_base for
+  offline mouth-ground fusion workflows.
   /tf is excluded by default to avoid recording live mapping output transforms.
   Set INCLUDE_DYNAMIC_TF=true only if you intentionally want dynamic /tf.
-  Set INCLUDE_MOUTH_CLOUD=true only if you also want /utlidar/cloud_base.
+  Set INCLUDE_MOUTH_CLOUD=false only if you want an XT16-only bag.
 USAGE
 }
 

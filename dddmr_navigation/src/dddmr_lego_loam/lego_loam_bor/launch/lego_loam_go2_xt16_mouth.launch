@@ -19,7 +19,8 @@
   <arg name="mouth_cloud_topic" default="/utlidar/cloud_base"/>
   <arg name="mouth_frame_override" default=""/>
   <arg name="mouth_filter_frame" default="base_link"/>
-  <arg name="mouth_max_time_diff" default="0.08"/>
+  <arg name="mouth_sync_mode" default="receipt_time"/>
+  <arg name="mouth_max_time_diff" default="0.03"/>
   <arg name="mouth_time_offset_sec" default="0.0"/>
   <arg name="mouth_ground_z_min" default="-0.42"/>
   <arg name="mouth_ground_z_max" default="-0.18"/>
@@ -30,6 +31,9 @@
   <arg name="raw_odom_topic" default="/utlidar/robot_odom"/>
   <arg name="standardized_odom_topic" default="/dddmr_go2/robot_odom_standard"/>
   <arg name="odom_topic" default="/utlidar/robot_odom"/>
+  <arg name="odom_sync_tolerance_sec" default="0.05"/>
+  <arg name="odom_sync_wait_timeout_sec" default="0.1"/>
+  <arg name="odom_time_offset_sec" default="0.0"/>
   <arg name="raw_to_standard_yaw" default="0.0"/>
   <arg name="rotate_odom_parent_frame" default="false"/>
   <arg name="rotate_odom_twist" default="false"/>
@@ -54,6 +58,7 @@
     <param name="imageProjection.mouth_cloud_topic" value="$(var mouth_cloud_topic)"/>
     <param name="imageProjection.mouth_frame_override" value="$(var mouth_frame_override)"/>
     <param name="imageProjection.mouth_filter_frame" value="$(var mouth_filter_frame)"/>
+    <param name="imageProjection.mouth_sync_mode" value="$(var mouth_sync_mode)"/>
     <param name="imageProjection.mouth_max_time_diff" value="$(var mouth_max_time_diff)"/>
     <param name="imageProjection.mouth_time_offset_sec" value="$(var mouth_time_offset_sec)"/>
     <param name="imageProjection.mouth_ground_z_min" value="$(var mouth_ground_z_min)"/>
@@ -61,6 +66,9 @@
     <param name="imageProjection.mouth_x_min" value="$(var mouth_x_min)"/>
     <param name="imageProjection.mouth_x_max" value="$(var mouth_x_max)"/>
     <param name="imageProjection.mouth_y_abs" value="$(var mouth_y_abs)"/>
+    <param name="featureAssociation.odom_sync_tolerance_sec" value="$(var odom_sync_tolerance_sec)"/>
+    <param name="featureAssociation.odom_sync_wait_timeout_sec" value="$(var odom_sync_wait_timeout_sec)"/>
+    <param name="featureAssociation.odom_time_offset_sec" value="$(var odom_time_offset_sec)"/>
     <remap from="/lslidar_point_cloud" to="$(var xt16_topic)"/>
     <remap from="/odom" to="$(var odom_topic)"/>
     <param name="use_sim_time" value="false"/>

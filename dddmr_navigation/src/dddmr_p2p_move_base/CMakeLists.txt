@@ -135,6 +135,16 @@ install(PROGRAMS
   DESTINATION lib/${PROJECT_NAME}
 )
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_local_failure_debounce
+    test/test_local_failure_debounce.cpp
+  )
+  target_include_directories(test_local_failure_debounce PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+endif()
+
 
 ament_export_include_directories(include)
 ament_export_libraries(p2p_state p2p_mov2_base p2p_global_plan_manager)

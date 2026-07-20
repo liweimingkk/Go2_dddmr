@@ -111,6 +111,8 @@ class StaticLayer: public Sensor{
     double intensity_search_radius_;
     double intensity_search_punish_weight_;
     double static_imposing_radius_;
+    double static_obstacle_xy_radius_;
+    int static_obstacle_min_points_;
     bool mapping_mode_;
     std::string map_topic_;
     std::string ground_topic_;
