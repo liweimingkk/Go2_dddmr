@@ -343,7 +343,7 @@ src/dddmr_lego_loam/lego_loam_bor/config/loam_go2_xt16_live.yaml
 
 ```yaml
 num_vertical_scans: 16
-num_horizontal_scans: 4000
+num_horizontal_scans: 2000
 vertical_angle_bottom: -15.0
 vertical_angle_top: 15.0
 scan_period: 0.1
