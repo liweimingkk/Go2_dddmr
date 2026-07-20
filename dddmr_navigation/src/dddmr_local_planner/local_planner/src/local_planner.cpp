@@ -415,8 +415,7 @@ bool Local_Planner::isGoalReached(){
   final_pose = global_plan_.back();
   double dx = trans_gbl2b_.transform.translation.x - final_pose.pose.position.x;
   double dy = trans_gbl2b_.transform.translation.y - final_pose.pose.position.y;
-  double dz = trans_gbl2b_.transform.translation.z - final_pose.pose.position.z;
-  double distance = sqrt(dx*dx + dy*dy + dz*dz);
+  double distance = std::hypot(dx, dy);
   if(xy_goal_tolerance_>distance)
     return true;
   else

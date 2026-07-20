@@ -102,6 +102,10 @@ class A_Star_on_Graph{
       void getPath( unsigned int start, unsigned int goal, std::vector<unsigned int>& path);
       
       void setupTurningWeight(double m_weight){turning_weight_ = m_weight;}
+      void setupMaximumGroundConnectionZ(double maximum_z)
+      {
+        maximum_ground_connection_z_ = maximum_z;
+      }
 
     private:
       
@@ -121,10 +125,10 @@ class A_Star_on_Graph{
       
       //@ neighborhodd expanding radius
       double a_star_expanding_radius_;
+      double maximum_ground_connection_z_ {0.26};
 
       double getThetaFromParent2Expanding(pcl::PointXYZI m_pcl_current_parent, pcl::PointXYZI m_pcl_current, pcl::PointXYZI m_pcl_expanding);
       double getPitchFromParent2Expanding(pcl::PointXYZI m_pcl_current_parent, pcl::PointXYZI m_pcl_current, pcl::PointXYZI m_pcl_expanding);
 
       bool isLineOfSightClear(pcl::PointXYZI& pcl_current, pcl::PointXYZI& pcl_expanding, double inscribed_radius);
 };
-
