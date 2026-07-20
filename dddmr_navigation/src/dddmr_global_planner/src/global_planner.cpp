@@ -30,6 +30,11 @@
 */
 #include <global_planner/global_planner.h>
 
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <stdexcept>
+
 using namespace std::chrono_literals;
 
 namespace global_planner
@@ -97,6 +102,10 @@ void GlobalPlanner::initial(const std::shared_ptr<perception_3d::Perception3D_RO
   this->get_parameter("a_star_expanding_radius", a_star_expanding_radius_);
   RCLCPP_INFO(this->get_logger(), "a_star_expanding_radius: %.2f", a_star_expanding_radius_);    
 
+  declare_parameter("maximum_ground_connection_z", rclcpp::ParameterValue(0.26));
+  this->get_parameter("maximum_ground_connection_z", maximum_ground_connection_z_);
+  RCLCPP_INFO(this->get_logger(), "maximum_ground_connection_z: %.2f", maximum_ground_connection_z_);
+
   declare_parameter("use_pre_graph", rclcpp::ParameterValue(false));
   this->get_parameter("use_pre_graph", use_pre_graph_);
   RCLCPP_INFO(this->get_logger(), "use_pre_graph: %d", use_pre_graph_);    
@@ -104,6 +113,39 @@ void GlobalPlanner::initial(const std::shared_ptr<perception_3d::Perception3D_RO
   declare_parameter("find_start_tolerance", rclcpp::ParameterValue(0.5));
   this->get_parameter("find_start_tolerance", find_start_tolerance_);
   RCLCPP_INFO(this->get_logger(), "find_start_tolerance: %.2f", find_start_tolerance_);    
+
+  declare_parameter("find_goal_tolerance", rclcpp::ParameterValue(0.5));
+  this->get_parameter("find_goal_tolerance", find_goal_tolerance_);
+  RCLCPP_INFO(this->get_logger(), "find_goal_tolerance: %.2f", find_goal_tolerance_);
+
+  declare_parameter(
+    "project_start_goal_to_traversable_ground", rclcpp::ParameterValue(true));
+  this->get_parameter(
+    "project_start_goal_to_traversable_ground",
+    project_start_goal_to_traversable_ground_);
+  RCLCPP_INFO(
+    this->get_logger(), "project_start_goal_to_traversable_ground: %d",
+    project_start_goal_to_traversable_ground_);
+
+  declare_parameter("max_endpoint_projection_xy", rclcpp::ParameterValue(0.35));
+  this->get_parameter("max_endpoint_projection_xy", max_endpoint_projection_xy_);
+  RCLCPP_INFO(
+    this->get_logger(), "max_endpoint_projection_xy: %.2f",
+    max_endpoint_projection_xy_);
+
+  declare_parameter("max_endpoint_projection_z", rclcpp::ParameterValue(0.35));
+  this->get_parameter("max_endpoint_projection_z", max_endpoint_projection_z_);
+  RCLCPP_INFO(
+    this->get_logger(), "max_endpoint_projection_z: %.2f",
+    max_endpoint_projection_z_);
+
+  if (
+    a_star_expanding_radius_ <= 0.0 || maximum_ground_connection_z_ <= 0.0 ||
+    find_start_tolerance_ <= 0.0 || find_goal_tolerance_ <= 0.0 ||
+    max_endpoint_projection_xy_ <= 0.0 || max_endpoint_projection_z_ <= 0.0)
+  {
+    throw std::invalid_argument("global planner endpoint tolerances must be positive");
+  }
 
   
 
@@ -209,13 +251,15 @@ void GlobalPlanner::cbClickedPoint(const geometry_msgs::msg::PointStamped::Share
   }
   
   std::unique_lock<std::mutex> lock(protect_kdtree_ground_);
-  unsigned int start_id, goal_id;
+  unsigned int start_id = 0;
+  unsigned int goal_id = 0;
   std::vector<unsigned int> path;
   std::vector<unsigned int> smoothed_path;
   std::vector<unsigned int> smoothed_path_2nd;
   nav_msgs::msg::Path ros_path;
 
-  if(getStartGoalID(start, goal, start_id, goal_id)){
+  const bool endpoints_found = getStartGoalID(start, goal, start_id, goal_id);
+  if(endpoints_found){
     if(!use_pre_graph_)
       a_star_planner_->getPath(start_id, goal_id, path);
     else
@@ -223,7 +267,10 @@ void GlobalPlanner::cbClickedPoint(const geometry_msgs::msg::PointStamped::Share
   }
 
 
-  if(path.empty()){
+  if(!endpoints_found){
+    RCLCPP_WARN(this->get_logger(), "No path: a traversable start or goal was not found.");
+  }
+  else if(path.empty()){
     RCLCPP_WARN(this->get_logger(), "No path found from: %u to %u", start_id, goal_id);
   }
   else{
@@ -395,86 +442,122 @@ void GlobalPlanner::getROSPath(std::vector<unsigned int>& path_id, nav_msgs::msg
   }
 }
 
-bool GlobalPlanner::getStartGoalID(const geometry_msgs::msg::PoseStamped& start, const geometry_msgs::msg::PoseStamped& goal,
-                                    unsigned int& start_id, unsigned int& goal_id){
-
-  //@Get goal ID
-  std::vector<int> pointIdxRadiusSearch_goal;
-  std::vector<float> pointRadiusSquaredDistance_goal;
-  pcl::PointXYZI pcl_goal;
-  pcl_goal.x = goal.pose.position.x;
-  pcl_goal.y = goal.pose.position.y;
-  pcl_goal.z = goal.pose.position.z;
-
-  //@Compute nearest pc as goal
-  //@TODO: add an edge between goal and nearest pc
-  
-  if(kdtree_ground_->radiusSearch (pcl_goal, 0.5, pointIdxRadiusSearch_goal, pointRadiusSquaredDistance_goal)<1){
-    RCLCPP_WARN(this->get_logger(), "Goal is not found.");
-    RCLCPP_WARN(this->get_logger(), "Using vertical search to find a goal on the ground.");
-    bool second_search = false;
-    if(graph_ready_){
-      for(double z=goal.pose.position.z; z>-10;z-=0.1){
-        pointIdxRadiusSearch_goal.clear();
-        pointRadiusSquaredDistance_goal.clear();
-        pcl_goal.z = z;
-        if(kdtree_ground_->radiusSearch(pcl_goal, 0.3, pointIdxRadiusSearch_goal, pointRadiusSquaredDistance_goal,0)>0)
-        {
-          second_search = true;
-          break;
-        }
-      }
-      if(!second_search)
-        return false;
-    }
-    else{
-      return false;
-    }
+bool GlobalPlanner::selectTraversableGround(
+  const pcl::PointXYZI & requested, double search_radius,
+  const char * endpoint_name, unsigned int & selected_id)
+{
+  std::vector<int> candidate_ids;
+  std::vector<float> candidate_squared_distances;
+  if (
+    kdtree_ground_->radiusSearch(
+      requested, search_radius, candidate_ids, candidate_squared_distances) < 1)
+  {
+    RCLCPP_WARN(
+      this->get_logger(), "%s is not within %.2f m of mapground.",
+      endpoint_name, search_radius);
     return false;
   }
-  
-  if(enable_detail_log_){
-    RCLCPP_WARN(this->get_logger(), "Selected goal: %.2f, %.2f, %.2f, Nearest-> id: %u, x: %.2f, y: %.2f, z: %.2f", 
-      goal.pose.position.x, goal.pose.position.y, goal.pose.position.z, pointIdxRadiusSearch_goal[0], 
-      pcl_ground_->points[pointIdxRadiusSearch_goal[0]].x, pcl_ground_->points[pointIdxRadiusSearch_goal[0]].y, pcl_ground_->points[pointIdxRadiusSearch_goal[0]].z);
+
+  const double inscribed_radius =
+    perception_3d_ros_->getGlobalUtils()->getInscribedRadius();
+  double best_squared_distance = std::numeric_limits<double>::infinity();
+  int best_id = -1;
+  int nearest_id = -1;
+  double nearest_squared_distance = std::numeric_limits<double>::infinity();
+  double nearest_clearance = 0.0;
+
+  for (std::size_t index = 0; index < candidate_ids.size(); ++index) {
+    const int candidate_id = candidate_ids[index];
+    const auto & candidate = pcl_ground_->points[candidate_id];
+    const double dx = static_cast<double>(candidate.x - requested.x);
+    const double dy = static_cast<double>(candidate.y - requested.y);
+    const double dz = static_cast<double>(candidate.z - requested.z);
+    const double xy_distance = std::hypot(dx, dy);
+    const double squared_distance = dx * dx + dy * dy + dz * dz;
+    const double clearance =
+      perception_3d_ros_->get_min_dGraphValue(candidate_id);
+
+    if (squared_distance < nearest_squared_distance) {
+      nearest_squared_distance = squared_distance;
+      nearest_id = candidate_id;
+      nearest_clearance = clearance;
+    }
+
+    if (
+      xy_distance > max_endpoint_projection_xy_ ||
+      std::abs(dz) > max_endpoint_projection_z_)
+    {
+      continue;
+    }
+    if (
+      project_start_goal_to_traversable_ground_ &&
+      clearance < inscribed_radius)
+    {
+      continue;
+    }
+    if (squared_distance < best_squared_distance) {
+      best_squared_distance = squared_distance;
+      best_id = candidate_id;
+    }
   }
-  else{
-    RCLCPP_WARN_THROTTLE(this->get_logger(), *clock_, 5000, "Selected goal: %.2f, %.2f, %.2f, Nearest-> id: %u, x: %.2f, y: %.2f, z: %.2f", 
-      goal.pose.position.x, goal.pose.position.y, goal.pose.position.z, pointIdxRadiusSearch_goal[0], 
-      pcl_ground_->points[pointIdxRadiusSearch_goal[0]].x, pcl_ground_->points[pointIdxRadiusSearch_goal[0]].y, pcl_ground_->points[pointIdxRadiusSearch_goal[0]].z);
+
+  if (best_id < 0) {
+    RCLCPP_WARN(
+      this->get_logger(),
+      "%s has no traversable mapground candidate within XY %.2f m / Z %.2f m; "
+      "nearest id=%d clearance=%.3f m (required %.3f m).",
+      endpoint_name, max_endpoint_projection_xy_, max_endpoint_projection_z_,
+      nearest_id, nearest_clearance, inscribed_radius);
+    return false;
   }
-  
-  goal_id = pointIdxRadiusSearch_goal[0];
-  
-  //--------------------------------------------------------------------------------------
-  //@Get start ID
-  std::vector<int> pointIdxRadiusSearch_start;
-  std::vector<float> pointRadiusSquaredDistance_start;
+
+  selected_id = static_cast<unsigned int>(best_id);
+  const auto & selected = pcl_ground_->points[selected_id];
+  const double projection_xy = std::hypot(
+    static_cast<double>(selected.x - requested.x),
+    static_cast<double>(selected.y - requested.y));
+  const double projection_z =
+    std::abs(static_cast<double>(selected.z - requested.z));
+  const double selected_clearance =
+    perception_3d_ros_->get_min_dGraphValue(selected_id);
+  if (best_id != nearest_id) {
+    RCLCPP_WARN(
+      this->get_logger(),
+      "%s nearest ground id=%d is not traversable (clearance %.3f m); "
+      "projected to id=%u by XY %.3f m / Z %.3f m (clearance %.3f m).",
+      endpoint_name, nearest_id, nearest_clearance, selected_id,
+      projection_xy, projection_z, selected_clearance);
+  } else if (enable_detail_log_) {
+    RCLCPP_INFO(
+      this->get_logger(),
+      "%s selected id=%u at (%.3f, %.3f, %.3f), projection XY %.3f m / "
+      "Z %.3f m, clearance %.3f m.",
+      endpoint_name, selected_id, selected.x, selected.y, selected.z,
+      projection_xy, projection_z, selected_clearance);
+  }
+  return true;
+}
+
+bool GlobalPlanner::getStartGoalID(
+  const geometry_msgs::msg::PoseStamped & start,
+  const geometry_msgs::msg::PoseStamped & goal,
+  unsigned int & start_id, unsigned int & goal_id)
+{
   pcl::PointXYZI pcl_start;
   pcl_start.x = start.pose.position.x;
   pcl_start.y = start.pose.position.y;
   pcl_start.z = start.pose.position.z;
 
-  if(kdtree_ground_->radiusSearch (pcl_start, find_start_tolerance_, pointIdxRadiusSearch_start, pointRadiusSquaredDistance_start)<1){
-    RCLCPP_WARN(this->get_logger(), "Start is not found.");
-    return false;
-  }
-  
-  if(enable_detail_log_){
-    RCLCPP_WARN(this->get_logger(), "Selected start: %.2f, %.2f, %.2f, Nearest-> id: %u, x: %.2f, y: %.2f, z: %.2f", 
-      start.pose.position.x, start.pose.position.y, start.pose.position.z, pointIdxRadiusSearch_start[0], 
-      pcl_ground_->points[pointIdxRadiusSearch_start[0]].x, pcl_ground_->points[pointIdxRadiusSearch_start[0]].y, pcl_ground_->points[pointIdxRadiusSearch_start[0]].z);
-  }
-  else{
-    RCLCPP_WARN_THROTTLE(this->get_logger(), *clock_, 5000, "Selected start: %.2f, %.2f, %.2f, Nearest-> id: %u, x: %.2f, y: %.2f, z: %.2f", 
-      start.pose.position.x, start.pose.position.y, start.pose.position.z, pointIdxRadiusSearch_start[0], 
-      pcl_ground_->points[pointIdxRadiusSearch_start[0]].x, pcl_ground_->points[pointIdxRadiusSearch_start[0]].y, pcl_ground_->points[pointIdxRadiusSearch_start[0]].z);
+  pcl::PointXYZI pcl_goal;
+  pcl_goal.x = goal.pose.position.x;
+  pcl_goal.y = goal.pose.position.y;
+  pcl_goal.z = goal.pose.position.z;
 
-  }
-  start_id = pointIdxRadiusSearch_start[0];
-
-  return true;
-
+  return
+    selectTraversableGround(
+      pcl_start, find_start_tolerance_, "Start", start_id) &&
+    selectTraversableGround(
+      pcl_goal, find_goal_tolerance_, "Goal", goal_id);
 }
 
 void GlobalPlanner::makePlan(const std::shared_ptr<rclcpp_action::ServerGoalHandle<dddmr_sys_core::action::GetPlan>> goal_handle){
@@ -517,17 +600,26 @@ void GlobalPlanner::makePlan(const std::shared_ptr<rclcpp_action::ServerGoalHand
 nav_msgs::msg::Path GlobalPlanner::makeROSPlan(const geometry_msgs::msg::PoseStamped& start, const geometry_msgs::msg::PoseStamped& goal){
   
   std::unique_lock<std::mutex> lock(protect_kdtree_ground_);
-  unsigned int start_id, goal_id;
+  unsigned int start_id = 0;
+  unsigned int goal_id = 0;
   std::vector<unsigned int> path;
   std::vector<unsigned int> smoothed_path;
   std::vector<unsigned int> smoothed_path_2nd;
   nav_msgs::msg::Path ros_path;
 
-  if(getStartGoalID(start, goal, start_id, goal_id)){
+  const bool endpoints_found = getStartGoalID(start, goal, start_id, goal_id);
+  if(endpoints_found){
     if(!use_pre_graph_)
       a_star_planner_->getPath(start_id, goal_id, path);
     else
       a_star_planner_pre_graph_->getPath(start_id, goal_id, path);  
+  }
+
+  if(!endpoints_found){
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *clock_, 5000,
+      "No path: a traversable start or goal was not found.");
+    return ros_path;
   }
 
   if(path.empty()){
@@ -543,7 +635,17 @@ nav_msgs::msg::Path GlobalPlanner::makeROSPlan(const geometry_msgs::msg::PoseSta
     else
       RCLCPP_INFO_THROTTLE(this->get_logger(), *clock_, 5000, "Path found from: %u to %u", start_id, goal_id);
     getROSPath(path, ros_path);
-    ros_path.poses.push_back(goal);
+    const auto & requested_orientation = goal.pose.orientation;
+    const double orientation_norm = std::sqrt(
+      requested_orientation.x * requested_orientation.x +
+      requested_orientation.y * requested_orientation.y +
+      requested_orientation.z * requested_orientation.z +
+      requested_orientation.w * requested_orientation.w);
+    if (!ros_path.poses.empty() && orientation_norm > 1e-6) {
+      // Keep the selected traversable ground position. Appending the raw goal
+      // can recreate a final segment into the obstacle that caused projection.
+      ros_path.poses.back().pose.orientation = requested_orientation;
+    }
     return ros_path;
   }
 }
@@ -560,14 +662,20 @@ void GlobalPlanner::getStaticGraphFromPerception3D(){
     if(!use_pre_graph_){
       a_star_planner_ = std::make_shared<A_Star_on_Graph>(pcl_ground_, perception_3d_ros_, a_star_expanding_radius_);
       a_star_planner_->setupTurningWeight(turning_weight_);
+      a_star_planner_->setupMaximumGroundConnectionZ(maximum_ground_connection_z_);
     }
     else{
       a_star_planner_pre_graph_ = std::make_shared<A_Star_on_PreGraph>(pcl_ground_, static_graph_, perception_3d_ros_, a_star_expanding_radius_);
       a_star_planner_pre_graph_->setupTurningWeight(turning_weight_);
+      a_star_planner_pre_graph_->setupMaximumGroundConnectionZ(maximum_ground_connection_z_);
     }
   }
   else{
-    a_star_planner_->updateGraph(pcl_ground_);
+    if (!use_pre_graph_) {
+      a_star_planner_->updateGraph(pcl_ground_);
+    } else {
+      a_star_planner_pre_graph_->updateGraph(pcl_ground_, static_graph_);
+    }
   }
 
   pubWeight();

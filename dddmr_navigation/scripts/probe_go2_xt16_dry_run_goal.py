@@ -57,6 +57,11 @@ class ProbeState:
     best_path_forward_m: float = 0.0
     best_path_lateral_m: float = 0.0
     best_path_lateral_ratio: float = 0.0
+    best_path_3d_length_m: float = 0.0
+    best_path_z_gain_m: float = 0.0
+    best_path_start_error_m: float = math.inf
+    best_path_goal_error_m: float = math.inf
+    best_path_required_waypoints_hit: int = 0
     feedback_count: int = 0
     goal_accepted: bool = False
     cancel_accepted: bool = False
@@ -90,9 +95,50 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-allowed-x", type=float, default=0.30)
     parser.add_argument("--max-allowed-y", type=float, default=0.0)
     parser.add_argument("--max-allowed-yaw", type=float, default=0.25)
+    parser.add_argument("--max-safe-x", type=float, default=None)
+    parser.add_argument("--max-safe-y", type=float, default=None)
+    parser.add_argument("--max-safe-yaw", type=float, default=None)
     parser.add_argument("--min-path-forward", type=float, default=0.05)
     parser.add_argument("--max-path-lateral-ratio", type=float, default=1.5)
+    parser.add_argument("--min-path-3d-length", type=float, default=0.0)
+    parser.add_argument("--min-path-z-gain", type=float, default=-math.inf)
+    parser.add_argument("--max-path-start-error", type=float, default=math.inf)
+    parser.add_argument("--max-path-goal-error", type=float, default=math.inf)
+    parser.add_argument(
+        "--required-waypoint",
+        action="append",
+        default=[],
+        metavar="X,Y,Z",
+        help="Require the selected path to pass an XYZ stair checkpoint; repeatable",
+    )
+    parser.add_argument("--waypoint-xy-tolerance", type=float, default=0.50)
+    parser.add_argument("--waypoint-z-tolerance", type=float, default=0.35)
+    parser.add_argument(
+        "--require-no-ros-sport-publisher",
+        action="store_true",
+        help="Fail if a ROS node (rather than a remote bare-DDS endpoint) publishes the real Sport request topic",
+    )
+    parser.add_argument("--real-sport-topic", default="/api/sport/request")
     return parser.parse_args()
+
+
+def parse_waypoint(value: str) -> tuple[float, float, float]:
+    fields = value.split(",")
+    if len(fields) != 3:
+        raise argparse.ArgumentTypeError(
+            f"required waypoint must be X,Y,Z, got {value!r}"
+        )
+    try:
+        waypoint = tuple(float(field) for field in fields)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"required waypoint must contain finite numbers, got {value!r}"
+        ) from exc
+    if not all(math.isfinite(coordinate) for coordinate in waypoint):
+        raise argparse.ArgumentTypeError(
+            f"required waypoint must contain finite numbers, got {value!r}"
+        )
+    return waypoint
 
 
 def quaternion_to_yaw(quat) -> float:
@@ -123,6 +169,11 @@ class DryRunGoalProbe(Node):
         self.reference_x: float | None = None
         self.reference_y: float | None = None
         self.reference_yaw: float | None = None
+        self.reference_z: float | None = None
+        self.goal_x: float | None = None
+        self.goal_y: float | None = None
+        self.goal_z: float | None = None
+        self.required_waypoints = [parse_waypoint(value) for value in args.required_waypoint]
         self.create_subscription(Twist, args.dry_topic, self._dry_cb, 20)
         self.create_subscription(Twist, args.safe_topic, self._safe_cb, 20)
         self.create_subscription(String, args.decision_topic, self._decision_cb, 20)
@@ -153,7 +204,15 @@ class DryRunGoalProbe(Node):
         self._record_path("prune_plan", msg)
 
     def _record_path(self, source: str, msg: Path) -> None:
-        if self.reference_x is None or self.reference_y is None or self.reference_yaw is None:
+        if (
+            self.reference_x is None
+            or self.reference_y is None
+            or self.reference_z is None
+            or self.reference_yaw is None
+            or self.goal_x is None
+            or self.goal_y is None
+            or self.goal_z is None
+        ):
             return
         if len(msg.poses) < 2:
             return
@@ -167,11 +226,48 @@ class DryRunGoalProbe(Node):
         lateral = -dx * math.sin(self.reference_yaw) + dy * math.cos(self.reference_yaw)
         lateral_ratio = abs(lateral) / max(abs(forward), 1e-6)
         if len(msg.poses) >= self.state.best_path_size:
+            path_3d_length = 0.0
+            for previous, current in zip(msg.poses, msg.poses[1:]):
+                previous_position = previous.pose.position
+                current_position = current.pose.position
+                path_3d_length += math.sqrt(
+                    (float(current_position.x) - float(previous_position.x)) ** 2
+                    + (float(current_position.y) - float(previous_position.y)) ** 2
+                    + (float(current_position.z) - float(previous_position.z)) ** 2
+                )
+            start_error = math.sqrt(
+                (float(first.x) - self.reference_x) ** 2
+                + (float(first.y) - self.reference_y) ** 2
+                + (float(first.z) - self.reference_z) ** 2
+            )
+            goal_error = math.sqrt(
+                (float(last.x) - self.goal_x) ** 2
+                + (float(last.y) - self.goal_y) ** 2
+                + (float(last.z) - self.goal_z) ** 2
+            )
+            required_waypoints_hit = 0
+            for waypoint_x, waypoint_y, waypoint_z in self.required_waypoints:
+                if any(
+                    math.hypot(
+                        float(path_pose.pose.position.x) - waypoint_x,
+                        float(path_pose.pose.position.y) - waypoint_y,
+                    )
+                    <= self.args.waypoint_xy_tolerance
+                    and abs(float(path_pose.pose.position.z) - waypoint_z)
+                    <= self.args.waypoint_z_tolerance
+                    for path_pose in msg.poses
+                ):
+                    required_waypoints_hit += 1
             self.state.best_path_source = source
             self.state.best_path_size = len(msg.poses)
             self.state.best_path_forward_m = forward
             self.state.best_path_lateral_m = lateral
             self.state.best_path_lateral_ratio = lateral_ratio
+            self.state.best_path_3d_length_m = path_3d_length
+            self.state.best_path_z_gain_m = float(last.z - first.z)
+            self.state.best_path_start_error_m = start_error
+            self.state.best_path_goal_error_m = goal_error
+            self.state.best_path_required_waypoints_hit = required_waypoints_hit
 
     def lookup_current_pose(self):
         deadline = time.monotonic() + self.args.tf_timeout_sec
@@ -237,11 +333,13 @@ def bool_text(value: bool) -> str:
     return "true" if value else "false"
 
 
-def limit_ok(stats: TwistStats, args: argparse.Namespace) -> bool:
+def limit_ok(
+    stats: TwistStats, max_x: float, max_y: float, max_yaw: float
+) -> bool:
     return (
-        stats.max_abs_x <= args.max_allowed_x + 1e-6
-        and stats.max_abs_y <= args.max_allowed_y + 1e-6
-        and stats.max_abs_yaw <= args.max_allowed_yaw + 1e-6
+        stats.max_abs_x <= max_x + 1e-6
+        and stats.max_abs_y <= max_y + 1e-6
+        and stats.max_abs_yaw <= max_yaw + 1e-6
     )
 
 
@@ -254,16 +352,34 @@ def main() -> int:
         raise SystemExit("--distance must be > 0")
     if args.duration <= 0.0:
         raise SystemExit("--duration must be > 0")
+    for name in (
+        "max_allowed_x",
+        "max_allowed_y",
+        "max_allowed_yaw",
+        "min_path_3d_length",
+        "max_path_start_error",
+        "max_path_goal_error",
+        "waypoint_xy_tolerance",
+        "waypoint_z_tolerance",
+    ):
+        value = getattr(args, name)
+        if value < 0.0:
+            raise SystemExit(f"--{name.replace('_', '-')} must be >= 0")
 
     rclpy.init()
     node = DryRunGoalProbe(args)
+    ros_sport_publishers: list[str] = []
     try:
         transform = node.lookup_current_pose()
         start = transform.transform.translation
         yaw = quaternion_to_yaw(transform.transform.rotation)
         node.reference_x = float(start.x)
         node.reference_y = float(start.y)
+        node.reference_z = float(start.z)
         goal = node.make_goal(transform)
+        node.goal_x = float(goal.pose.position.x)
+        node.goal_y = float(goal.pose.position.y)
+        node.goal_z = float(goal.pose.position.z)
         target_dx = float(goal.pose.position.x - start.x)
         target_dy = float(goal.pose.position.y - start.y)
         target_distance = math.hypot(target_dx, target_dy)
@@ -271,13 +387,27 @@ def main() -> int:
             raise RuntimeError("target is too close to current pose")
         node.reference_yaw = math.atan2(target_dy, target_dx)
         node.send_goal_and_collect(goal)
+        ros_sport_publishers = sorted(
+            {
+                endpoint.node_name
+                for endpoint in node.get_publishers_info_by_topic(args.real_sport_topic)
+                if endpoint.node_name != "_CREATED_BY_BARE_DDS_APP_"
+            }
+        )
     finally:
         state = node.state
         node.destroy_node()
         rclpy.shutdown()
 
-    dry_limit_ok = limit_ok(state.dry, args)
-    safe_limit_ok = limit_ok(state.safe, args)
+    safe_max_x = args.max_allowed_x if args.max_safe_x is None else args.max_safe_x
+    safe_max_y = args.max_allowed_y if args.max_safe_y is None else args.max_safe_y
+    safe_max_yaw = (
+        args.max_allowed_yaw if args.max_safe_yaw is None else args.max_safe_yaw
+    )
+    dry_limit_ok = limit_ok(
+        state.dry, args.max_allowed_x, args.max_allowed_y, args.max_allowed_yaw
+    )
+    safe_limit_ok = limit_ok(state.safe, safe_max_x, safe_max_y, safe_max_yaw)
     got_global_path = bool(state.global_path_sizes and max(state.global_path_sizes) > 1)
     got_awared_path = bool(state.awared_path_sizes and max(state.awared_path_sizes) > 1)
     got_prune = bool(state.prune_plan_sizes and max(state.prune_plan_sizes) > 1)
@@ -287,6 +417,17 @@ def main() -> int:
         and state.best_path_forward_m > args.min_path_forward
         and state.best_path_lateral_ratio <= args.max_path_lateral_ratio
     )
+    path_extent_ok = (
+        state.best_path_size > 1
+        and state.best_path_3d_length_m >= args.min_path_3d_length
+        and state.best_path_z_gain_m >= args.min_path_z_gain
+        and state.best_path_start_error_m <= args.max_path_start_error
+        and state.best_path_goal_error_m <= args.max_path_goal_error
+    )
+    required_waypoints_ok = (
+        state.best_path_required_waypoints_hit == len(args.required_waypoint)
+    )
+    no_ros_sport_publisher = not ros_sport_publishers
     got_dry_nonzero = state.dry.nonzero_count > 0
     got_safe_samples = state.safe.count > 0
     passed = (
@@ -294,9 +435,13 @@ def main() -> int:
         and state.cancel_accepted
         and got_path
         and path_direction_ok
+        and path_extent_ok
+        and required_waypoints_ok
         and got_dry_nonzero
+        and got_safe_samples
         and dry_limit_ok
         and safe_limit_ok
+        and (no_ros_sport_publisher or not args.require_no_ros_sport_publisher)
     )
 
     print(f"DRY_RUN_GOAL_START_X={start.x:.6f}")
@@ -323,6 +468,16 @@ def main() -> int:
     print(f"DRY_RUN_PATH_LATERAL_M={state.best_path_lateral_m:.6f}")
     print(f"DRY_RUN_PATH_LATERAL_RATIO={state.best_path_lateral_ratio:.6f}")
     print(f"DRY_RUN_PATH_DIRECTION_OK={bool_text(path_direction_ok)}")
+    print(f"DRY_RUN_PATH_3D_LENGTH_M={state.best_path_3d_length_m:.6f}")
+    print(f"DRY_RUN_PATH_Z_GAIN_M={state.best_path_z_gain_m:.6f}")
+    print(f"DRY_RUN_PATH_START_ERROR_M={state.best_path_start_error_m:.6f}")
+    print(f"DRY_RUN_PATH_GOAL_ERROR_M={state.best_path_goal_error_m:.6f}")
+    print(
+        "DRY_RUN_REQUIRED_WAYPOINTS_HIT="
+        f"{state.best_path_required_waypoints_hit}/{len(args.required_waypoint)}"
+    )
+    print(f"DRY_RUN_PATH_EXTENT_OK={bool_text(path_extent_ok)}")
+    print(f"DRY_RUN_REQUIRED_WAYPOINTS_OK={bool_text(required_waypoints_ok)}")
     print(f"DRY_RUN_CMD_COUNT={state.dry.count}")
     print(f"DRY_RUN_CMD_NONZERO_COUNT={state.dry.nonzero_count}")
     print(f"DRY_RUN_CMD_MAX_ABS_X={state.dry.max_abs_x:.6f}")
@@ -342,6 +497,8 @@ def main() -> int:
     print(f"DRY_RUN_GOT_AWARED_PATH={bool_text(got_awared_path)}")
     print(f"DRY_RUN_GOT_PRUNE_PLAN={bool_text(got_prune)}")
     print(f"DRY_RUN_GOT_SAFE_SAMPLES={bool_text(got_safe_samples)}")
+    print(f"DRY_RUN_REAL_SPORT_ROS_PUBLISHERS={','.join(ros_sport_publishers)}")
+    print(f"DRY_RUN_NO_ROS_SPORT_PUBLISHER={bool_text(no_ros_sport_publisher)}")
     print(f"DRY_RUN_GOAL_STATUS={'PASS' if passed else 'FAIL'}")
     return 0 if passed else 1
 

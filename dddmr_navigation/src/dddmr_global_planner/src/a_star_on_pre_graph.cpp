@@ -192,6 +192,9 @@ void A_Star_on_PreGraph::getPath(
   unsigned int start, unsigned int goal,
   std::vector<unsigned int>& path){
 
+  std::unique_lock<std::recursive_mutex> perception_lock(
+    perception_ros_->getSharedDataPtr()->ground_kdtree_cb_mutex_);
+
   //RCLCPP_INFO(rclcpp::get_logger("astar"),"Start: %u, Goal: %u", start, goal);
 
   /*
@@ -236,6 +239,12 @@ void A_Star_on_PreGraph::getPath(
       pcl::PointXYZI pcl_current = pc_original_z_up_->points[current_node.self_index];
       pcl::PointXYZI pcl_current_parent = pc_original_z_up_->points[current_node.parent_index];
       pcl::PointXYZI pcl_expanding = pc_original_z_up_->points[(*it).first];
+
+      if (std::abs(pcl_expanding.z - pcl_current.z) >
+        maximum_ground_connection_z_)
+      {
+        continue;
+      }
 
       double factor = exp(-1.0 * inflation_descending_rate * (dGraphValue - inscribed_radius));
 

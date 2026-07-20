@@ -128,9 +128,14 @@ class GlobalPlanner : public rclcpp::Node {
       double turning_weight_;
       bool enable_detail_log_;
       double a_star_expanding_radius_;
+      double maximum_ground_connection_z_;
       size_t static_ground_size_;
       bool use_pre_graph_;
       double find_start_tolerance_;
+      double find_goal_tolerance_;
+      bool project_start_goal_to_traversable_ground_;
+      double max_endpoint_projection_xy_;
+      double max_endpoint_projection_z_;
       
       /*Original point cloud*/
       pcl::PointCloud<pcl::PointXYZI>::Ptr pcl_ground_;
@@ -167,6 +172,11 @@ class GlobalPlanner : public rclcpp::Node {
 
       bool getStartGoalID(const geometry_msgs::msg::PoseStamped& start, const geometry_msgs::msg::PoseStamped& goal, 
                           unsigned int& start_id, unsigned int& goal_id);
+      bool selectTraversableGround(
+        const pcl::PointXYZI & requested,
+        double search_radius,
+        const char * endpoint_name,
+        unsigned int & selected_id);
 
       void pubStaticGraph();
       void getROSPath(std::vector<unsigned int>& path_id, nav_msgs::msg::Path& ros_path);
