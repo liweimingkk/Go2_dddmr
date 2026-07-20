@@ -192,6 +192,9 @@ void A_Star_on_PreGraph::getPath(
   unsigned int start, unsigned int goal,
   std::vector<unsigned int>& path){
 
+  std::unique_lock<std::recursive_mutex> perception_lock(
+    perception_ros_->getSharedDataPtr()->ground_kdtree_cb_mutex_);
+
   //RCLCPP_INFO(rclcpp::get_logger("astar"),"Start: %u, Goal: %u", start, goal);
 
   /*

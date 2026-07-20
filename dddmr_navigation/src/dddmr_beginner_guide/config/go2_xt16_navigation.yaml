@@ -411,6 +411,8 @@ perception_3d_global:
       intensity_search_radius: 3.0 #this value is suggested to be 1.0 meters, because if it is too large, the narrow passage will be miscalculated
       intensity_search_punish_weight: 0.1 #the weight for a node. Set this value higher means we dont like path planning cross a orphan node.
       static_imposing_radius: 1.5 #use map to add weight on each ground node
+      static_obstacle_min_points: 11
+      static_obstacle_xy_radius: 0.40
       map_topic: "map1/mapcloud"
       ground_topic: "map1/mapground"
       support:

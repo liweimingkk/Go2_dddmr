@@ -30,6 +30,10 @@
 */
 #include <perception_3d/static_layer.h>
 
+#include <cmath>
+#include <limits>
+#include <stdexcept>
+
 PLUGINLIB_EXPORT_CLASS(perception_3d::StaticLayer, perception_3d::Sensor)
 
 namespace perception_3d
@@ -80,6 +84,22 @@ void StaticLayer::onInitialize()
   node_->get_parameter(name_ + ".static_imposing_radius", static_imposing_radius_);
   RCLCPP_INFO(node_->get_logger().get_child(name_), "static_imposing_radius: %.2f", static_imposing_radius_);    
 
+  node_->declare_parameter(name_ + ".static_obstacle_min_points", rclcpp::ParameterValue(11));
+  node_->get_parameter(name_ + ".static_obstacle_min_points", static_obstacle_min_points_);
+  if(static_obstacle_min_points_ < 1){
+    RCLCPP_FATAL(node_->get_logger().get_child(name_), "static_obstacle_min_points must be positive: %d", static_obstacle_min_points_);
+    throw std::invalid_argument("static_obstacle_min_points must be positive");
+  }
+  RCLCPP_INFO(node_->get_logger().get_child(name_), "static_obstacle_min_points: %d", static_obstacle_min_points_);
+
+  node_->declare_parameter(name_ + ".static_obstacle_xy_radius", rclcpp::ParameterValue(0.5));
+  node_->get_parameter(name_ + ".static_obstacle_xy_radius", static_obstacle_xy_radius_);
+  if(static_obstacle_xy_radius_ <= 0.0){
+    RCLCPP_FATAL(node_->get_logger().get_child(name_), "static_obstacle_xy_radius must be positive: %.3f", static_obstacle_xy_radius_);
+    throw std::invalid_argument("static_obstacle_xy_radius must be positive");
+  }
+  RCLCPP_INFO(node_->get_logger().get_child(name_), "static_obstacle_xy_radius: %.2f", static_obstacle_xy_radius_);
+
   node_->declare_parameter(name_ + ".is_local_planner", rclcpp::ParameterValue(false));
   node_->get_parameter(name_ + ".is_local_planner", is_local_planner_);
   RCLCPP_INFO(node_->get_logger().get_child(name_), "is_local_planner: %d", is_local_planner_);      
@@ -107,7 +127,8 @@ void StaticLayer::onInitialize()
   
   shared_data_->mapping_mode_ = mapping_mode_;
   
-  pub_dGraph_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>(name_ + "/dGraph", 2);
+  const std::string dgraph_topic = std::string{node_->get_name()} + "/" + name_ + "/dGraph";
+  pub_dGraph_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>(dgraph_topic, 2);
   
   if(mapping_mode_){
     pcl_map_sub_ = node_->create_subscription<sensor_msgs::msg::PointCloud2>(
@@ -185,6 +206,20 @@ void StaticLayer::cbGround(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
 }
 
 void StaticLayer::updateLethalPointCloud(){
+  std::unique_lock<std::recursive_mutex> lock(shared_data_->ground_kdtree_cb_mutex_);
+  current_lethal_->clear();
+  current_lethal_->header.frame_id = gbl_utils_->getGblFrame();
+
+  if(!is_ground_and_map_being_initialized_once_ || is_local_planner_){
+    return;
+  }
+
+  const double inscribed_radius = gbl_utils_->getInscribedRadius();
+  for(unsigned int index = 0; index < pcl_ground_->points.size(); index++){
+    if(dGraph_.getValue(index) < inscribed_radius){
+      current_lethal_->push_back(pcl_ground_->points[index]);
+    }
+  }
 }
 
 void StaticLayer::selfMark(){
@@ -301,10 +336,12 @@ void StaticLayer::radiusSearchConnection(){
   
   // 1. Determine total loop size
   const unsigned int total_points = pcl_ground_->points.size();
+  std::size_t static_obstacle_nodes = 0;
+  std::size_t static_lethal_nodes = 0;
 
   // 2. OpenMP Parallel For Loop
   // We specify that 'index_cnt' is the loop variable (implicitly private)
-  #pragma omp parallel for
+  #pragma omp parallel for reduction(+:static_obstacle_nodes,static_lethal_nodes)
   for(unsigned int index_cnt = 0; index_cnt < total_points; index_cnt++){
     
     pcl::PointXYZI pcl_node = pcl_ground_->points[index_cnt];
@@ -400,19 +437,41 @@ void StaticLayer::radiusSearchConnection(){
       pass.filter (*pcl_z_axes);
       pass.setInputCloud (pcl_z_axes);
       pass.setFilterFieldName ("x");
-      pass.setFilterLimits (pcl_node.x-0.5, pcl_node.x+0.5);
+      pass.setFilterLimits (pcl_node.x-static_obstacle_xy_radius_, pcl_node.x+static_obstacle_xy_radius_);
       pass.filter (*pcl_z_axes);
       pass.setInputCloud (pcl_z_axes);
       pass.setFilterFieldName ("y");
-      pass.setFilterLimits (pcl_node.y-0.5, pcl_node.y+0.5);
+      pass.setFilterLimits (pcl_node.y-static_obstacle_xy_radius_, pcl_node.y+static_obstacle_xy_radius_);
       pass.filter (*pcl_z_axes);
       
-      if(pcl_z_axes->points.size()>10){
-        dGraph_.setValue(index_cnt, 0.25);
+      if(static_cast<int>(pcl_z_axes->points.size()) >= static_obstacle_min_points_){
+        double min_horizontal_distance = std::numeric_limits<double>::infinity();
+        for(const auto& obstacle_point : pcl_z_axes->points){
+          min_horizontal_distance = std::min(
+            min_horizontal_distance,
+            std::hypot(
+              static_cast<double>(obstacle_point.x - pcl_node.x),
+              static_cast<double>(obstacle_point.y - pcl_node.y)));
+        }
+        if(std::isfinite(min_horizontal_distance)){
+          // Preserve the actual centerline clearance. This keeps a detected
+          // wall lethal inside inscribed_radius without turning every ground
+          // node in the classification window into a zero-distance obstacle.
+          dGraph_.setValue(index_cnt, min_horizontal_distance);
+          static_obstacle_nodes++;
+          if(min_horizontal_distance < gbl_utils_->getInscribedRadius()){
+            static_lethal_nodes++;
+          }
+        }
       }  
     }
     shared_data_->sGraph_ptr_->setPenality(index_cnt, intensity_penality);
   }
+  RCLCPP_INFO(node_->get_logger().get_child(name_),
+    "Static obstacle ground nodes: %zu/%u classified, %zu/%u lethal "
+    "(minimum map points: %d, XY radius: %.2f)",
+    static_obstacle_nodes, total_points, static_lethal_nodes, total_points,
+    static_obstacle_min_points_, static_obstacle_xy_radius_);
   RCLCPP_DEBUG(node_->get_logger().get_child(name_), "Static graph has been generated.");
 }
 
