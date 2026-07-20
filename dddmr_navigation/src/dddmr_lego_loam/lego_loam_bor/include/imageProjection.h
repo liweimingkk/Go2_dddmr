@@ -4,7 +4,11 @@
 #include "utility.h"
 #include "channel.h"
 #include "mouth_ground_surface.h"
+#include "receipt_sync_utils.h"
 #include <Eigen/QR>
+
+#include <chrono>
+#include <condition_variable>
 
 // for tilted lidar
 #include <tf2_eigen/tf2_eigen.hpp>
@@ -68,7 +72,9 @@ class ImageProjection : public rclcpp::Node
     void publishClouds();
     bool allEssentialTFReady(std::string sensor_frame);
     void getNoPitchPoint(PointType& pt_in, PointType& pt_out);
-    void appendMouthGroundToPatchedGround(const rclcpp::Time& main_stamp);
+    void appendMouthGroundToPatchedGround(
+      const rclcpp::Time& main_stamp,
+      const std::chrono::steady_clock::time_point& main_receipt);
     
     pcl::PointCloud<PointType>::Ptr _laser_cloud_in;
 
@@ -104,6 +110,7 @@ class ImageProjection : public rclcpp::Node
 
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr _sub_laser_cloud;
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr _sub_mouth_cloud;
+    rclcpp::CallbackGroup::SharedPtr mouth_callback_group_;
 
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr _pub_full_info_cloud;
 
@@ -115,14 +122,22 @@ class ImageProjection : public rclcpp::Node
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr _pub_outlier_cloud;
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr _pub_projected_image;
 
-    std::deque<sensor_msgs::msg::PointCloud2::SharedPtr> mouth_cloud_buffer_;
+    struct MouthCloudSample
+    {
+      sensor_msgs::msg::PointCloud2::SharedPtr message;
+      std::chrono::steady_clock::time_point receipt;
+    };
+
+    std::deque<MouthCloudSample> mouth_cloud_buffer_;
     std::mutex mouth_cloud_mutex_;
+    std::condition_variable mouth_cloud_cv_;
 
     bool enable_mouth_ground_fusion_;
     std::string mouth_ground_mode_;
     std::string mouth_cloud_topic_;
     std::string mouth_frame_override_;
     std::string mouth_filter_frame_;
+    std::string mouth_sync_mode_;
     double mouth_max_time_diff_;
     double mouth_time_offset_sec_;
     double mouth_ground_z_min_;

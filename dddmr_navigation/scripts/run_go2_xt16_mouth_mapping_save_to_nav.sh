@@ -5,6 +5,7 @@ usage() {
   cat <<'EOF'
 Usage:
   scripts/run_go2_xt16_mouth_mapping_save_to_nav.sh
+  scripts/run_go2_xt16_mouth_mapping_save_to_nav.sh --measure-odom-only
 
 Starts Go2 XT16 + mouth lidar mapping, saves the current pose graph, copies it to
 the host bags directory, and updates the navigation config used by
@@ -21,8 +22,10 @@ Common environment overrides:
   MAPPING_CONTAINER=name     Save from an already-running mapping container.
   DDDMR_BAGS_DIR=...         Host bags directory. Default: ../bags.
   GO2_NET_IFACE=enp46s0      Network interface used for Go2 DDS.
-  MOUTH_MAX_TIME_DIFF=0.15
-  MOUTH_TIME_OFFSET_SEC=...   Explicit override; skips automatic measurement.
+  MOUTH_MAX_TIME_DIFF=0.03
+  MOUTH_SYNC_MODE=receipt_time
+                             Live default; use header_offset for bag replay.
+  MOUTH_TIME_OFFSET_SEC=...   header_offset mode only; skips auto measurement.
   AUTO_MEASURE_MOUTH_TIME_OFFSET=true
                              Measure and inject the mouth/XT16 clock offset first.
   MOUTH_OFFSET_MEASURE_SECONDS=8
@@ -31,6 +34,8 @@ Common environment overrides:
   MOUTH_OFFSET_ARRIVAL_WINDOW_SEC=0.03
   MOUTH_OFFSET_STABLE_STDEV_SEC=0.02
   MOUTH_OFFSET_STABLE_RANGE_SEC=0.08
+  MOUTH_OFFSET_MAX_CLOCK_STEP_SEC=0.25
+  MOUTH_OFFSET_CONFIRMATIONS=2
   MOUTH_CLOUD_TOPIC=/utlidar/cloud_base
                              Use this topic for both measurement and mapping.
   MOUTH_GROUND_TOPIC=/mouth_ground_cloud
@@ -39,6 +44,10 @@ Common environment overrides:
   AUTO_MEASURE_ODOM_TIME_OFFSET=true
                              Measure and inject the odom/XT16 clock offset first.
   ODOM_OFFSET_MEASURE_SECONDS=8
+  ODOM_OFFSET_MEASURE_ATTEMPTS=4
+  ODOM_OFFSET_CONFIRMATIONS=2
+  ODOM_OFFSET_CONSENSUS_TOLERANCE_SEC=0.02
+  ODOM_OFFSET_MAX_CLOCK_STEP_SEC=0.25
   ODOM_TIME_OFFSET_SEC=...    Explicit override; skips automatic measurement.
   NAV_CONFIG=...             Navigation YAML to update.
 
@@ -73,7 +82,8 @@ MAP_RVIZ_VALUE="${MAP_RVIZ:-true}"
 MAP_RVIZ_CONFIG="${MAP_RVIZ_CONFIG:-/root/dddmr_navigation/src/dddmr_lego_loam/lego_loam_bor/rviz/go2_xt16_map_result.rviz}"
 PUBLISH_STATIC_TF_VALUE="${PUBLISH_STATIC_TF:-true}"
 MAPPING_SECONDS_VALUE="${MAPPING_SECONDS:-}"
-MOUTH_MAX_TIME_DIFF_VALUE="${MOUTH_MAX_TIME_DIFF:-0.15}"
+MOUTH_MAX_TIME_DIFF_VALUE="${MOUTH_MAX_TIME_DIFF:-0.03}"
+MOUTH_SYNC_MODE_VALUE="${MOUTH_SYNC_MODE:-receipt_time}"
 MOUTH_TIME_OFFSET_SEC_VALUE="${MOUTH_TIME_OFFSET_SEC:-}"
 AUTO_MEASURE_MOUTH_TIME_OFFSET_VALUE="${AUTO_MEASURE_MOUTH_TIME_OFFSET:-true}"
 MOUTH_OFFSET_MEASURE_SECONDS_VALUE="${MOUTH_OFFSET_MEASURE_SECONDS:-8}"
@@ -82,17 +92,23 @@ MOUTH_OFFSET_MIN_PAIRS_VALUE="${MOUTH_OFFSET_MIN_PAIRS:-20}"
 MOUTH_OFFSET_ARRIVAL_WINDOW_SEC_VALUE="${MOUTH_OFFSET_ARRIVAL_WINDOW_SEC:-0.03}"
 MOUTH_OFFSET_STABLE_STDEV_SEC_VALUE="${MOUTH_OFFSET_STABLE_STDEV_SEC:-0.02}"
 MOUTH_OFFSET_STABLE_RANGE_SEC_VALUE="${MOUTH_OFFSET_STABLE_RANGE_SEC:-0.08}"
+MOUTH_OFFSET_MAX_CLOCK_STEP_SEC_VALUE="${MOUTH_OFFSET_MAX_CLOCK_STEP_SEC:-0.25}"
+MOUTH_OFFSET_CONFIRMATIONS_VALUE="${MOUTH_OFFSET_CONFIRMATIONS:-2}"
+MOUTH_OFFSET_CONSENSUS_TOLERANCE_SEC_VALUE="${MOUTH_OFFSET_CONSENSUS_TOLERANCE_SEC:-0.02}"
 MOUTH_GROUND_SAMPLE_TIMEOUT_SEC_VALUE="${MOUTH_GROUND_SAMPLE_TIMEOUT_SEC:-20}"
 MOUTH_CLOUD_TOPIC_VALUE="${MOUTH_CLOUD_TOPIC:-/utlidar/cloud_base}"
 MOUTH_GROUND_TOPIC_VALUE="${MOUTH_GROUND_TOPIC:-/mouth_ground_cloud}"
 AUTO_MEASURE_ODOM_TIME_OFFSET_VALUE="${AUTO_MEASURE_ODOM_TIME_OFFSET:-true}"
 ODOM_TIME_OFFSET_SEC_VALUE="${ODOM_TIME_OFFSET_SEC:-}"
 ODOM_OFFSET_MEASURE_SECONDS_VALUE="${ODOM_OFFSET_MEASURE_SECONDS:-8}"
-ODOM_OFFSET_MEASURE_ATTEMPTS_VALUE="${ODOM_OFFSET_MEASURE_ATTEMPTS:-2}"
+ODOM_OFFSET_MEASURE_ATTEMPTS_VALUE="${ODOM_OFFSET_MEASURE_ATTEMPTS:-4}"
 ODOM_OFFSET_MIN_PAIRS_VALUE="${ODOM_OFFSET_MIN_PAIRS:-20}"
 ODOM_OFFSET_ARRIVAL_WINDOW_SEC_VALUE="${ODOM_OFFSET_ARRIVAL_WINDOW_SEC:-0.03}"
 ODOM_OFFSET_STABLE_STDEV_SEC_VALUE="${ODOM_OFFSET_STABLE_STDEV_SEC:-0.02}"
 ODOM_OFFSET_STABLE_RANGE_SEC_VALUE="${ODOM_OFFSET_STABLE_RANGE_SEC:-0.08}"
+ODOM_OFFSET_CONFIRMATIONS_VALUE="${ODOM_OFFSET_CONFIRMATIONS:-2}"
+ODOM_OFFSET_CONSENSUS_TOLERANCE_SEC_VALUE="${ODOM_OFFSET_CONSENSUS_TOLERANCE_SEC:-0.02}"
+ODOM_OFFSET_MAX_CLOCK_STEP_SEC_VALUE="${ODOM_OFFSET_MAX_CLOCK_STEP_SEC:-0.25}"
 ODOM_SYNC_TOLERANCE_SEC_VALUE="${ODOM_SYNC_TOLERANCE_SEC:-0.05}"
 ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE="${ODOM_SYNC_WAIT_TIMEOUT_SEC:-0.1}"
 ODOM_TOPIC_VALUE="${ODOM_TOPIC:-/utlidar/robot_odom}"
@@ -147,6 +163,44 @@ is_positive_number() {
 
 is_nonnegative_number() {
   is_number "$1" && awk -v value="$1" 'BEGIN { exit !(value >= 0) }'
+}
+
+CONSENSUS_MEDIAN=""
+CONSENSUS_RANGE=""
+update_offset_consensus() {
+  local label="$1"
+  local tolerance="$2"
+  local value="$3"
+  local array_name="$4"
+  local -n values_ref="${array_name}"
+  local -a sorted_values=()
+  local minimum maximum count
+
+  values_ref+=("${value}")
+  mapfile -t sorted_values < <(printf '%s\n' "${values_ref[@]}" | sort -n)
+  count="${#sorted_values[@]}"
+  minimum="${sorted_values[0]}"
+  maximum="${sorted_values[count - 1]}"
+  CONSENSUS_RANGE="$(awk -v low="${minimum}" -v high="${maximum}" \
+    'BEGIN {printf "%.9f", high-low}')"
+
+  if ! awk -v range="${CONSENSUS_RANGE}" -v limit="${tolerance}" \
+      'BEGIN {exit !(range <= limit)}'; then
+    log "${label} offset epoch changed; candidate span ${CONSENSUS_RANGE}s exceeds ${tolerance}s. Resetting to ${value}s."
+    values_ref=("${value}")
+    sorted_values=("${value}")
+    count=1
+    CONSENSUS_RANGE="0.000000000"
+  fi
+
+  if (( count % 2 == 1 )); then
+    CONSENSUS_MEDIAN="${sorted_values[count / 2]}"
+  else
+    CONSENSUS_MEDIAN="$(awk \
+      -v a="${sorted_values[count / 2 - 1]}" \
+      -v b="${sorted_values[count / 2]}" \
+      'BEGIN {printf "%.9f", (a+b)/2.0}')"
+  fi
 }
 
 nav_container_names() {
@@ -383,6 +437,31 @@ print_summary() {
 }
 
 measure_mouth_time_offset() {
+  is_nonnegative_number "${MOUTH_MAX_TIME_DIFF_VALUE}" || \
+    die "MOUTH_MAX_TIME_DIFF must be finite and nonnegative."
+  case "${MOUTH_SYNC_MODE_VALUE}" in
+    receipt_time)
+      is_positive_number "${MOUTH_MAX_TIME_DIFF_VALUE}" || \
+        die "MOUTH_MAX_TIME_DIFF must be positive in receipt_time mode."
+      if [[ -n "${MOUTH_TIME_OFFSET_SEC_VALUE}" ]]; then
+        is_number "${MOUTH_TIME_OFFSET_SEC_VALUE}" || \
+          die "MOUTH_TIME_OFFSET_SEC must be a finite number: ${MOUTH_TIME_OFFSET_SEC_VALUE}"
+        awk -v value="${MOUTH_TIME_OFFSET_SEC_VALUE}" \
+          'BEGIN {if (value < 0) value=-value; exit !(value <= 1e-9)}' || \
+          die "MOUTH_TIME_OFFSET_SEC is ignored in receipt_time mode; unset it or set it to 0."
+      fi
+      MOUTH_TIME_OFFSET_SEC_VALUE="0.0"
+      export MOUTH_TIME_OFFSET_SEC="${MOUTH_TIME_OFFSET_SEC_VALUE}"
+      log "Using live receipt-time mouth synchronization; header offset measurement is not required."
+      return 0
+      ;;
+    header_offset)
+      ;;
+    *)
+      die "MOUTH_SYNC_MODE must be receipt_time or header_offset."
+      ;;
+  esac
+
   if [[ -n "${MOUTH_TIME_OFFSET_SEC_VALUE}" ]]; then
     is_number "${MOUTH_TIME_OFFSET_SEC_VALUE}" || \
       die "MOUTH_TIME_OFFSET_SEC must be a finite number: ${MOUTH_TIME_OFFSET_SEC_VALUE}"
@@ -402,10 +481,15 @@ measure_mouth_time_offset() {
   esac
 
   require_file "${SCRIPT_DIR}/measure_go2_mouth_xt16_time_offset.py"
+  require_file "${SCRIPT_DIR}/go2_time_sync_utils.py"
   is_positive_number "${MOUTH_OFFSET_MEASURE_SECONDS_VALUE}" || \
     die "MOUTH_OFFSET_MEASURE_SECONDS must be greater than zero."
   is_positive_integer "${MOUTH_OFFSET_MEASURE_ATTEMPTS_VALUE}" || \
     die "MOUTH_OFFSET_MEASURE_ATTEMPTS must be a positive integer."
+  is_positive_integer "${MOUTH_OFFSET_CONFIRMATIONS_VALUE}" || \
+    die "MOUTH_OFFSET_CONFIRMATIONS must be a positive integer."
+  (( MOUTH_OFFSET_CONFIRMATIONS_VALUE <= MOUTH_OFFSET_MEASURE_ATTEMPTS_VALUE )) || \
+    die "MOUTH_OFFSET_CONFIRMATIONS cannot exceed MOUTH_OFFSET_MEASURE_ATTEMPTS."
   is_positive_integer "${MOUTH_OFFSET_MIN_PAIRS_VALUE}" || \
     die "MOUTH_OFFSET_MIN_PAIRS must be a positive integer."
   is_positive_number "${MOUTH_OFFSET_ARRIVAL_WINDOW_SEC_VALUE}" || \
@@ -414,8 +498,13 @@ measure_mouth_time_offset() {
     die "MOUTH_OFFSET_STABLE_STDEV_SEC must be nonnegative."
   is_nonnegative_number "${MOUTH_OFFSET_STABLE_RANGE_SEC_VALUE}" || \
     die "MOUTH_OFFSET_STABLE_RANGE_SEC must be nonnegative."
+  is_nonnegative_number "${MOUTH_OFFSET_MAX_CLOCK_STEP_SEC_VALUE}" || \
+    die "MOUTH_OFFSET_MAX_CLOCK_STEP_SEC must be nonnegative."
+  is_nonnegative_number "${MOUTH_OFFSET_CONSENSUS_TOLERANCE_SEC_VALUE}" || \
+    die "MOUTH_OFFSET_CONSENSUS_TOLERANCE_SEC must be nonnegative."
 
-  local attempt report rc stable measured_offset paired_count
+  local attempt report rc stable measured_offset paired_count confirmations
+  local -a confirmed_offsets=()
   for ((attempt = 1; attempt <= MOUTH_OFFSET_MEASURE_ATTEMPTS_VALUE; ++attempt)); do
     log "Measuring mouth/XT16 time offset (${attempt}/${MOUTH_OFFSET_MEASURE_ATTEMPTS_VALUE}, ${MOUTH_OFFSET_MEASURE_SECONDS_VALUE}s)..."
     set +e
@@ -428,9 +517,11 @@ measure_mouth_time_offset() {
       -e "MOUTH_TOPIC=${MOUTH_CLOUD_TOPIC_VALUE}" \
       -e "XT16_TOPIC=${XT16_TOPIC_VALUE}" \
       -e "MEASURE_SECONDS=${MOUTH_OFFSET_MEASURE_SECONDS_VALUE}" \
+      -e "MIN_PAIRS=${MOUTH_OFFSET_MIN_PAIRS_VALUE}" \
       -e "ARRIVAL_WINDOW_SEC=${MOUTH_OFFSET_ARRIVAL_WINDOW_SEC_VALUE}" \
       -e "STABLE_STDEV_SEC=${MOUTH_OFFSET_STABLE_STDEV_SEC_VALUE}" \
       -e "STABLE_RANGE_SEC=${MOUTH_OFFSET_STABLE_RANGE_SEC_VALUE}" \
+      -e "MAX_CLOCK_STEP_SEC=${MOUTH_OFFSET_MAX_CLOCK_STEP_SEC_VALUE}" \
       -v "${WS_ROOT}:/root/dddmr_navigation:ro" \
       "${IMAGE}" \
       bash -lc 'set -eo pipefail
@@ -442,9 +533,11 @@ exec python3 /root/dddmr_navigation/scripts/measure_go2_mouth_xt16_time_offset.p
   --mouth-topic "${MOUTH_TOPIC}" \
   --xt16-topic "${XT16_TOPIC}" \
   --duration "${MEASURE_SECONDS}" \
+  --min-pairs "${MIN_PAIRS}" \
   --arrival-window "${ARRIVAL_WINDOW_SEC}" \
   --stable-stdev "${STABLE_STDEV_SEC}" \
-  --stable-range "${STABLE_RANGE_SEC}"' 2>&1)"
+  --stable-range "${STABLE_RANGE_SEC}" \
+  --max-clock-step "${MAX_CLOCK_STEP_SEC}"' 2>&1)"
     rc=$?
     set -e
 
@@ -455,11 +548,24 @@ exec python3 /root/dddmr_navigation/scripts/measure_go2_mouth_xt16_time_offset.p
     if [[ "${rc}" -eq 0 && "${stable}" == "True" && "${paired_count}" =~ ^[0-9]+$ ]] && \
        (( paired_count >= MOUTH_OFFSET_MIN_PAIRS_VALUE )) && \
        is_number "${measured_offset}"; then
-      MOUTH_TIME_OFFSET_SEC_VALUE="${measured_offset}"
-      export MOUTH_TIME_OFFSET_SEC="${MOUTH_TIME_OFFSET_SEC_VALUE}"
-      log "Automatic mouth time offset accepted and injected: ${MOUTH_TIME_OFFSET_SEC_VALUE}s (${paired_count} pairs)"
-      return 0
+      update_offset_consensus \
+        "Mouth/XT16" "${MOUTH_OFFSET_CONSENSUS_TOLERANCE_SEC_VALUE}" \
+        "${measured_offset}" confirmed_offsets
+      confirmations="${#confirmed_offsets[@]}"
+      log "Mouth/XT16 offset confirmation ${confirmations}/${MOUTH_OFFSET_CONFIRMATIONS_VALUE}: median=${CONSENSUS_MEDIAN}s span=${CONSENSUS_RANGE}s"
+      if (( confirmations >= MOUTH_OFFSET_CONFIRMATIONS_VALUE )); then
+        MOUTH_TIME_OFFSET_SEC_VALUE="${CONSENSUS_MEDIAN}"
+        export MOUTH_TIME_OFFSET_SEC="${MOUTH_TIME_OFFSET_SEC_VALUE}"
+        log "Confirmed mouth time offset accepted and injected: ${MOUTH_TIME_OFFSET_SEC_VALUE}s"
+        return 0
+      fi
+      if (( attempt < MOUTH_OFFSET_MEASURE_ATTEMPTS_VALUE )); then
+        log "Another consistent mouth-offset window is required; measuring again..."
+      fi
+      continue
     fi
+
+    confirmed_offsets=()
 
     if [[ "${paired_count}" =~ ^[0-9]+$ ]] && (( paired_count < MOUTH_OFFSET_MIN_PAIRS_VALUE )); then
       log "Mouth offset measurement had ${paired_count} pairs; at least ${MOUTH_OFFSET_MIN_PAIRS_VALUE} are required."
@@ -477,7 +583,7 @@ require_mouth_ground_sample() {
     die "MOUTH_GROUND_SAMPLE_TIMEOUT_SEC must be a positive integer."
 
   local report rc width
-  log "Waiting for a fresh ${MOUTH_GROUND_TOPIC_VALUE} sample before save..."
+  log "Waiting for a fresh ${MOUTH_GROUND_TOPIC_VALUE} sample..."
   set +e
   report="$(docker_ros "timeout '${MOUTH_GROUND_SAMPLE_TIMEOUT_SEC_VALUE}' ros2 topic echo --once --field width '${MOUTH_GROUND_TOPIC_VALUE}' sensor_msgs/msg/PointCloud2" 2>&1)"
   rc=$?
@@ -514,14 +620,30 @@ measure_odom_time_offset() {
   esac
 
   require_file "${SCRIPT_DIR}/measure_go2_odom_xt16_time_offset.py"
-  is_number "${ODOM_OFFSET_MEASURE_SECONDS_VALUE}" || \
-    die "ODOM_OFFSET_MEASURE_SECONDS must be numeric."
+  require_file "${SCRIPT_DIR}/go2_time_sync_utils.py"
+  is_positive_number "${ODOM_OFFSET_MEASURE_SECONDS_VALUE}" || \
+    die "ODOM_OFFSET_MEASURE_SECONDS must be greater than zero."
   is_positive_integer "${ODOM_OFFSET_MEASURE_ATTEMPTS_VALUE}" || \
     die "ODOM_OFFSET_MEASURE_ATTEMPTS must be a positive integer."
+  is_positive_integer "${ODOM_OFFSET_CONFIRMATIONS_VALUE}" || \
+    die "ODOM_OFFSET_CONFIRMATIONS must be a positive integer."
+  (( ODOM_OFFSET_CONFIRMATIONS_VALUE <= ODOM_OFFSET_MEASURE_ATTEMPTS_VALUE )) || \
+    die "ODOM_OFFSET_CONFIRMATIONS cannot exceed ODOM_OFFSET_MEASURE_ATTEMPTS."
   is_positive_integer "${ODOM_OFFSET_MIN_PAIRS_VALUE}" || \
     die "ODOM_OFFSET_MIN_PAIRS must be a positive integer."
+  is_positive_number "${ODOM_OFFSET_ARRIVAL_WINDOW_SEC_VALUE}" || \
+    die "ODOM_OFFSET_ARRIVAL_WINDOW_SEC must be greater than zero."
+  is_nonnegative_number "${ODOM_OFFSET_STABLE_STDEV_SEC_VALUE}" || \
+    die "ODOM_OFFSET_STABLE_STDEV_SEC must be nonnegative."
+  is_nonnegative_number "${ODOM_OFFSET_STABLE_RANGE_SEC_VALUE}" || \
+    die "ODOM_OFFSET_STABLE_RANGE_SEC must be nonnegative."
+  is_nonnegative_number "${ODOM_OFFSET_CONSENSUS_TOLERANCE_SEC_VALUE}" || \
+    die "ODOM_OFFSET_CONSENSUS_TOLERANCE_SEC must be nonnegative."
+  is_nonnegative_number "${ODOM_OFFSET_MAX_CLOCK_STEP_SEC_VALUE}" || \
+    die "ODOM_OFFSET_MAX_CLOCK_STEP_SEC must be nonnegative."
 
-  local attempt report rc stable measured_offset
+  local attempt report rc stable measured_offset candidate_offset confirmations
+  local -a confirmed_offsets=()
   for ((attempt = 1; attempt <= ODOM_OFFSET_MEASURE_ATTEMPTS_VALUE; ++attempt)); do
     log "Measuring odom/XT16 time offset (${attempt}/${ODOM_OFFSET_MEASURE_ATTEMPTS_VALUE}, ${ODOM_OFFSET_MEASURE_SECONDS_VALUE}s)..."
     set +e
@@ -538,6 +660,7 @@ measure_odom_time_offset() {
       -e "ARRIVAL_WINDOW_SEC=${ODOM_OFFSET_ARRIVAL_WINDOW_SEC_VALUE}" \
       -e "STABLE_STDEV_SEC=${ODOM_OFFSET_STABLE_STDEV_SEC_VALUE}" \
       -e "STABLE_RANGE_SEC=${ODOM_OFFSET_STABLE_RANGE_SEC_VALUE}" \
+      -e "MAX_CLOCK_STEP_SEC=${ODOM_OFFSET_MAX_CLOCK_STEP_SEC_VALUE}" \
       -v "${WS_ROOT}:/root/dddmr_navigation:ro" \
       "${IMAGE}" \
       bash -lc 'set -eo pipefail
@@ -552,7 +675,8 @@ exec python3 /root/dddmr_navigation/scripts/measure_go2_odom_xt16_time_offset.py
   --min-pairs "${MIN_PAIRS}" \
   --arrival-window "${ARRIVAL_WINDOW_SEC}" \
   --stable-stdev "${STABLE_STDEV_SEC}" \
-  --stable-range "${STABLE_RANGE_SEC}"' 2>&1)"
+  --stable-range "${STABLE_RANGE_SEC}" \
+  --max-clock-step "${MAX_CLOCK_STEP_SEC}"' 2>&1)"
     rc=$?
     set -e
 
@@ -560,18 +684,30 @@ exec python3 /root/dddmr_navigation/scripts/measure_go2_odom_xt16_time_offset.py
     stable="$(awk -F= '$1 == "OFFSET_STABLE_FOR_MAPPING" {print $2}' <<<"${report}" | tail -n 1)"
     measured_offset="$(awk -F= '$1 == "recommended_odom_time_offset_sec" {print $2}' <<<"${report}" | tail -n 1)"
     if [[ "${rc}" -eq 0 && "${stable}" == "True" ]] && is_number "${measured_offset}"; then
-      ODOM_TIME_OFFSET_SEC_VALUE="${measured_offset}"
-      export ODOM_TIME_OFFSET_SEC="${ODOM_TIME_OFFSET_SEC_VALUE}"
-      log "Automatic odom time offset accepted and injected: ${ODOM_TIME_OFFSET_SEC_VALUE}s"
-      return 0
-    fi
-
-    if (( attempt < ODOM_OFFSET_MEASURE_ATTEMPTS_VALUE )); then
-      log "Offset measurement was unavailable or unstable (exit ${rc}); retrying..."
+      update_offset_consensus \
+        "Odom/XT16" "${ODOM_OFFSET_CONSENSUS_TOLERANCE_SEC_VALUE}" \
+        "${measured_offset}" confirmed_offsets
+      confirmations="${#confirmed_offsets[@]}"
+      candidate_offset="${CONSENSUS_MEDIAN}"
+      log "Odom/XT16 offset confirmation ${confirmations}/${ODOM_OFFSET_CONFIRMATIONS_VALUE}: median=${candidate_offset}s span=${CONSENSUS_RANGE}s"
+      if (( confirmations >= ODOM_OFFSET_CONFIRMATIONS_VALUE )); then
+        ODOM_TIME_OFFSET_SEC_VALUE="${candidate_offset}"
+        export ODOM_TIME_OFFSET_SEC="${ODOM_TIME_OFFSET_SEC_VALUE}"
+        log "Confirmed odom time offset accepted and injected: ${ODOM_TIME_OFFSET_SEC_VALUE}s"
+        return 0
+      fi
+      if (( attempt < ODOM_OFFSET_MEASURE_ATTEMPTS_VALUE )); then
+        log "A second consistent window is still required; measuring again..."
+      fi
+    else
+      confirmed_offsets=()
+      if (( attempt < ODOM_OFFSET_MEASURE_ATTEMPTS_VALUE )); then
+        log "Offset measurement was unavailable or unstable (exit ${rc}); retrying..."
+      fi
     fi
   done
 
-  die "Could not obtain a stable odom/XT16 time offset after ${ODOM_OFFSET_MEASURE_ATTEMPTS_VALUE} attempt(s). Check both topics and timestamps, or set ODOM_TIME_OFFSET_SEC explicitly."
+  die "Could not confirm a stable odom/XT16 time offset across ${ODOM_OFFSET_CONFIRMATIONS_VALUE} consecutive windows after ${ODOM_OFFSET_MEASURE_ATTEMPTS_VALUE} attempt(s). Check both topics and timestamps, or set ODOM_TIME_OFFSET_SEC explicitly."
 }
 
 start_mapping_container() {
@@ -609,7 +745,7 @@ source /root/dddmr_navigation/scripts/setup_go2_dds_env.sh
 source /root/dddmr_navigation/${INSTALL_BASE_VALUE}/setup.bash
 set -u
 echo 'MOUTH_MAPPING_CONTRACT mouth_cloud_topic=${MOUTH_CLOUD_TOPIC_VALUE} mouth_filter_frame=base_link'
-echo 'MOUTH_MAPPING_TIMING mouth_max_time_diff=${MOUTH_MAX_TIME_DIFF_VALUE} mouth_time_offset_sec=${MOUTH_TIME_OFFSET_SEC_VALUE}'
+echo 'MOUTH_MAPPING_TIMING mouth_sync_mode=${MOUTH_SYNC_MODE_VALUE} mouth_max_time_diff=${MOUTH_MAX_TIME_DIFF_VALUE} mouth_time_offset_sec=${MOUTH_TIME_OFFSET_SEC_VALUE}'
 echo 'ODOM_MAPPING_TIMING odom_topic=${ODOM_TOPIC_VALUE} xt16_topic=${XT16_TOPIC_VALUE} odom_sync_tolerance_sec=${ODOM_SYNC_TOLERANCE_SEC_VALUE} odom_sync_wait_timeout_sec=${ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE} odom_time_offset_sec=${ODOM_TIME_OFFSET_SEC_VALUE}'
 exec ros2 launch lego_loam_bor lego_loam_go2_xt16_mouth.launch \
   rviz:=${RVIZ_VALUE} \
@@ -619,6 +755,7 @@ exec ros2 launch lego_loam_bor lego_loam_go2_xt16_mouth.launch \
   odom_topic:=${ODOM_TOPIC_VALUE} \
   mouth_cloud_topic:=${MOUTH_CLOUD_TOPIC_VALUE} \
   mouth_filter_frame:=base_link \
+  mouth_sync_mode:=${MOUTH_SYNC_MODE_VALUE} \
   mouth_max_time_diff:=${MOUTH_MAX_TIME_DIFF_VALUE} \
   mouth_time_offset_sec:=${MOUTH_TIME_OFFSET_SEC_VALUE} \
   odom_sync_tolerance_sec:=${ODOM_SYNC_TOLERANCE_SEC_VALUE} \
@@ -648,6 +785,7 @@ main() {
   log "Waiting for /save_mapped_point_cloud service..."
   wait_for_service /save_mapped_point_cloud 90 || die "Timed out waiting for /save_mapped_point_cloud"
   wait_for_topic /lego_loam_map 90 || die "Timed out waiting for /lego_loam_map"
+  require_mouth_ground_sample
   start_map_result_rviz
 
   if [[ -n "${MAPPING_SECONDS_VALUE}" ]]; then
@@ -708,5 +846,18 @@ main() {
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-  main "$@"
+  case "${1:-}" in
+    "")
+      main
+      ;;
+    --measure-odom-only)
+      require_docker_image
+      measure_odom_time_offset
+      printf 'CONFIRMED_ODOM_TIME_OFFSET_SEC=%s\n' "${ODOM_TIME_OFFSET_SEC_VALUE}"
+      ;;
+    *)
+      usage >&2
+      exit 2
+      ;;
+  esac
 fi

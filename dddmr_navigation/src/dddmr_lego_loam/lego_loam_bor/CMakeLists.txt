@@ -512,6 +512,9 @@ if(BUILD_TESTING)
   target_link_libraries(test_mapping_math
     gtsam
   )
+  ament_add_gtest(test_receipt_sync
+    test/test_receipt_sync.cpp
+  )
 endif()
 
 # --- Everything CI/CD test finish here ---
