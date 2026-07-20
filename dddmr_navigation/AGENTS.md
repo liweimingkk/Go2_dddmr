@@ -72,13 +72,20 @@ The live Go2 XT16 stream previously verified in this project is:
 - topic: `/lidar_points`
 - type: `sensor_msgs/msg/PointCloud2`
 - frame: `hesai_lidar`
-- width: `64000`
+- width: `32000`
 - height: `1`
 - point step: `26`
 - fields: `x`, `y`, `z`, `intensity`, `ring`, `timestamp`
 - `ring`: `UINT16`, range `0..15`
+- points per ring: `2000`
 - `timestamp`: `FLOAT64`, per-frame span around `0.1s`
 - expected rate: about `10 Hz`
+
+This is the active navigation contract verified on 2026-07-10. The prior
+`64000`-point (`4000` points/ring) mode delivered only about `5 Hz` on this
+deployment. Do not configure a 4000-column range image for the active
+2000-points/ring stream; the empty alternating columns reduce segmentation
+continuity and downstream update rate.
 
 Do not accept publisher presence alone as readiness. Require actual samples and field decoding.
 
@@ -133,7 +140,7 @@ src/dddmr_lego_loam/lego_loam_bor/config/loam_go2_xt16_live.yaml
 It carries the issue 58/61 parameter lessons:
 
 - `num_vertical_scans: 16`
-- `num_horizontal_scans: 4000`
+- `num_horizontal_scans: 2000`
 - `vertical_angle_bottom: -15.0`
 - `vertical_angle_top: 15.0`
 - `scan_period: 0.1`

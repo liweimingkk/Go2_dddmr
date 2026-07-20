@@ -49,11 +49,15 @@ It assumes:
 - topic: `/lidar_points`
 - frame: `hesai_lidar`
 - fields: `x`, `y`, `z`, `intensity`, `ring`, `timestamp`
-- width: `64000`
+- width: `32000`
 - point step: `26`
 - rings: `0..15`
-- points per ring: `4000`
+- points per ring: `2000`
 - scan period: `0.1`
+
+This is the active navigation mode (`10 Hz`). The optional `64000`-point mode
+uses `4000` points per ring but has measured only about `5 Hz` on this system;
+use matching projection parameters whenever the driver mode changes.
 
 ## Commands
 
