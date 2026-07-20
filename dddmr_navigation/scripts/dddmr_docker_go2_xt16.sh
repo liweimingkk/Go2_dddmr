@@ -25,7 +25,7 @@ Commands:
 Environment:
   DDDMR_IMAGE=dddmr_go2_xt16:x64
   DDDMR_BASE_IMAGE=dddmr:x64
-  DDDMR_BAGS_DIR=/home/lin/dddmr_bags
+  DDDMR_BAGS_DIR=<repo-parent>/bags
   ROS_DOMAIN_ID=0
   GO2_DDS_IP=192.168.123.18
   GO2_NET_IFACE=<auto>
@@ -45,7 +45,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 IMAGE="${DDDMR_IMAGE:-dddmr_go2_xt16:x64}"
 BASE_IMAGE="${DDDMR_BASE_IMAGE:-dddmr:x64}"
-BAGS_DIR="${DDDMR_BAGS_DIR:-/home/lin/dddmr_bags}"
+BAGS_DIR="${DDDMR_BAGS_DIR:-${WS_ROOT}/../bags}"
 ROS_DOMAIN_ID_VALUE="${ROS_DOMAIN_ID:-0}"
 GO2_DDS_IP_VALUE="${GO2_DDS_IP:-192.168.123.18}"
 GO2_NET_IFACE_VALUE="${GO2_NET_IFACE:-}"
@@ -132,12 +132,12 @@ python3 scripts/go2_xt16_lidar_preflight.py \"\$@\"" bash "$@"
 
   build-lego)
     run_docker "${IMAGE}" bash -lc "${source_prefix}
-colcon --log-base \"\${DDDMR_LOG_BASE}\" build --symlink-install --packages-up-to lego_loam_bor --build-base \"\${DDDMR_BUILD_BASE}\" --install-base \"\${DDDMR_INSTALL_BASE}\" --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPython3_EXECUTABLE=/usr/bin/python3"
+colcon --log-base \"\${DDDMR_LOG_BASE}\" build --base-paths src --symlink-install --packages-up-to lego_loam_bor --build-base \"\${DDDMR_BUILD_BASE}\" --install-base \"\${DDDMR_INSTALL_BASE}\" --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPython3_EXECUTABLE=/usr/bin/python3"
     ;;
 
   build-navigation)
     run_docker "${IMAGE}" bash -lc "${source_prefix}
-colcon --log-base \"\${DDDMR_LOG_BASE}\" build --symlink-install --packages-up-to lego_loam_bor dddmr_pg_map_server mcl_3dl global_planner p2p_move_base perception_3d dddmr_beginner_guide dddmr_rviz_default_plugins --build-base \"\${DDDMR_BUILD_BASE}\" --install-base \"\${DDDMR_INSTALL_BASE}\" --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPython3_EXECUTABLE=/usr/bin/python3"
+colcon --log-base \"\${DDDMR_LOG_BASE}\" build --base-paths src --symlink-install --packages-up-to lego_loam_bor dddmr_pg_map_server mcl_3dl global_planner p2p_move_base perception_3d dddmr_beginner_guide dddmr_rviz_default_plugins --build-base \"\${DDDMR_BUILD_BASE}\" --install-base \"\${DDDMR_INSTALL_BASE}\" --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPython3_EXECUTABLE=/usr/bin/python3"
     ;;
 
   mapping)
