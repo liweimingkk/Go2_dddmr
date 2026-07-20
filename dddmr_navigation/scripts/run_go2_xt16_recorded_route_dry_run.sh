@@ -32,6 +32,10 @@ Environment overrides:
   ROS_DOMAIN_ID=0
   GO2_DDS_IP=192.168.123.18
   GO2_NET_IFACE=<auto>
+  ODOM_TIME_OFFSET_SEC=<explicit override; skips automatic measurement>
+  AUTO_MEASURE_ODOM_TIME_OFFSET=true
+  ODOM_SYNC_TOLERANCE_SEC=0.05
+  ODOM_SYNC_WAIT_TIMEOUT_SEC=0.1
   RVIZ=true
   PUBLISH_STATIC_TF=true
   BUILD=false              Set true to rebuild navigation before starting.
@@ -89,6 +93,11 @@ DDS_BUFFER_CHECK="${SCRIPT_DIR}/check_go2_dds_receive_buffers.sh"
 ROS_DOMAIN_ID_VALUE="${ROS_DOMAIN_ID:-0}"
 GO2_DDS_IP_VALUE="${GO2_DDS_IP:-192.168.123.18}"
 GO2_NET_IFACE_VALUE="${GO2_NET_IFACE:-}"
+ODOM_TIME_OFFSET_SEC_VALUE="${ODOM_TIME_OFFSET_SEC:-}"
+ODOM_SYNC_TOLERANCE_SEC_VALUE="${ODOM_SYNC_TOLERANCE_SEC:-0.05}"
+ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE="${ODOM_SYNC_WAIT_TIMEOUT_SEC:-0.1}"
+ODOM_OFFSET_RESOLVER="${GO2_ODOM_TIME_OFFSET_RESOLVER:-${SCRIPT_DIR}/resolve_go2_odom_time_offset.sh}"
+ODOM_SYNC_CHECKER="${GO2_ODOM_SYNC_CHECKER:-${SCRIPT_DIR}/check_go2_odom_sync.py}"
 BUILD_BASE_VALUE="${DDDMR_BUILD_BASE:-.docker_go2_xt16_build}"
 INSTALL_BASE_VALUE="${DDDMR_INSTALL_BASE:-.docker_go2_xt16_install}"
 LOG_BASE_VALUE="${DDDMR_LOG_BASE:-.docker_go2_xt16_log}"
@@ -126,6 +135,38 @@ require_positive_integer() {
   local value="$2"
   [[ "${value}" =~ ^[1-9][0-9]*$ ]] || \
     die "${name} must be a positive integer; got '${value}'."
+}
+
+is_number() {
+  [[ "$1" =~ ^[+-]?(([0-9]+([.][0-9]*)?)|([.][0-9]+))([eE][+-]?[0-9]+)?$ ]]
+}
+
+is_nonnegative_number() {
+  is_number "$1" && awk -v value="$1" 'BEGIN { exit !(value >= 0) }'
+}
+
+resolve_odom_time_offset() {
+  [[ -x "${ODOM_OFFSET_RESOLVER}" ]] || \
+    die "Odom time-offset resolver is not executable: ${ODOM_OFFSET_RESOLVER}"
+  [[ -f "${ODOM_SYNC_CHECKER}" ]] || \
+    die "Odom synchronization checker is missing: ${ODOM_SYNC_CHECKER}"
+  is_nonnegative_number "${ODOM_SYNC_TOLERANCE_SEC_VALUE}" || \
+    die "ODOM_SYNC_TOLERANCE_SEC must be a finite nonnegative number."
+  is_nonnegative_number "${ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE}" || \
+    die "ODOM_SYNC_WAIT_TIMEOUT_SEC must be a finite nonnegative number."
+
+  log "Running read-only odom/XT16 time-sync preflight..."
+  ODOM_TIME_OFFSET_SEC_VALUE="$(
+    DDDMR_IMAGE="${IMAGE}" \
+    ROS_DOMAIN_ID="${ROS_DOMAIN_ID_VALUE}" \
+    GO2_DDS_IP="${GO2_DDS_IP_VALUE}" \
+    GO2_NET_IFACE="${GO2_NET_IFACE_VALUE}" \
+      "${ODOM_OFFSET_RESOLVER}"
+  )" || die "Odom/XT16 time-sync preflight failed."
+  is_number "${ODOM_TIME_OFFSET_SEC_VALUE}" || \
+    die "Resolved odom time offset is not finite: ${ODOM_TIME_OFFSET_SEC_VALUE}"
+  export ODOM_TIME_OFFSET_SEC="${ODOM_TIME_OFFSET_SEC_VALUE}"
+  log "Confirmed odom/XT16 time offset: ${ODOM_TIME_OFFSET_SEC_VALUE}s"
 }
 
 require_cyclonedds_rmw() {
@@ -334,6 +375,44 @@ check_dry_run_isolation() {
   fi
 }
 
+check_odom_sync_runtime() {
+  local container="$1"
+  local report rc standardizer_report standardizer_offset
+
+  log "Requiring a valid live /odom_sync_diagnostics sample..."
+  set +e
+  report="$(docker_ros "${container}" \
+    "timeout 40 python3 /root/dddmr_navigation/scripts/check_go2_odom_sync.py \
+      --timeout 30 \
+      --max-error '${ODOM_SYNC_TOLERANCE_SEC_VALUE}' \
+      --expected-offset 0.0" 2>&1)"
+  rc=$?
+  set -e
+  printf '%s\n' "${report}"
+  (( rc == 0 )) || return 1
+
+  standardizer_report="$(docker_ros "${container}" \
+    "timeout 10 ros2 param get /go2_odom_standardizer stamp_time_offset_sec" 2>&1)" || {
+    printf '%s\n' "${standardizer_report}" >&2
+    return 1
+  }
+  standardizer_offset="$(
+    awk -F': ' '/Double value is:/ {print $2; exit}' <<<"${standardizer_report}"
+  )"
+  is_number "${standardizer_offset}" || {
+    printf 'Invalid stamp_time_offset_sec parameter response: %s\n' \
+      "${standardizer_report}" >&2
+    return 1
+  }
+  awk -v actual="${standardizer_offset}" -v expected="${ODOM_TIME_OFFSET_SEC_VALUE}" \
+    'BEGIN {delta=actual-expected; if (delta<0) delta=-delta; exit !(delta <= 1e-6)}' || {
+    printf 'Standardized odometry offset %ss does not match measured %ss.\n' \
+      "${standardizer_offset}" "${ODOM_TIME_OFFSET_SEC_VALUE}" >&2
+    return 1
+  }
+  log "Standardized odometry is applying ${standardizer_offset}s before all navigation consumers."
+}
+
 show_status() {
   local names name
   names="$(recorded_route_containers)"
@@ -453,6 +532,7 @@ start_dry_run() {
   GO2_NET_IFACE="${GO2_NET_IFACE_VALUE}" "${DOCKER_WRAPPER}" preflight \
     --samples "${PREFLIGHT_SAMPLES_VALUE}" \
     --timeout "${PREFLIGHT_TIMEOUT_VALUE}"
+  resolve_odom_time_offset
 
   if [[ "${RVIZ_VALUE}" == "true" && -n "${DISPLAY:-}" ]] && command -v xhost >/dev/null 2>&1; then
     xhost +local:docker >/dev/null || true
@@ -494,7 +574,11 @@ exec ros2 launch dddmr_beginner_guide go2_xt16_recorded_route_navigation.launch 
   config_file:="$2" \
   start_route_file_publisher:=true \
   rviz:="$3" \
-  publish_static_tf:="$4"'
+  publish_static_tf:="$4" \
+  odom_sync_enabled:=true \
+  odom_sync_tolerance_sec:="$5" \
+  odom_sync_wait_timeout_sec:="$6" \
+  odom_time_offset_sec:="$7"'
 
   log "Starting fail-closed recorded-route dry-run: ${CONTAINER_NAME}"
   docker run -d "${docker_args[@]}" "${IMAGE}" \
@@ -502,9 +586,17 @@ exec ros2 launch dddmr_beginner_guide go2_xt16_recorded_route_navigation.launch 
     "/root/dddmr_bags/${route_relative}" \
     "/root/dddmr_navigation/${config_relative}" \
     "${RVIZ_VALUE}" \
-    "${PUBLISH_STATIC_TF_VALUE}" >/dev/null
+    "${PUBLISH_STATIC_TF_VALUE}" \
+    "${ODOM_SYNC_TOLERANCE_SEC_VALUE}" \
+    "${ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE}" \
+    "${ODOM_TIME_OFFSET_SEC_VALUE}" >/dev/null
 
   trap 'save_and_remove_container "${CONTAINER_NAME}"; exit 130' INT TERM
+  if ! check_odom_sync_runtime "${CONTAINER_NAME}"; then
+    docker logs --tail 120 "${CONTAINER_NAME}" 2>&1 || true
+    save_and_remove_container "${CONTAINER_NAME}"
+    die "Live odom/XT16 synchronization did not pass runtime validation."
+  fi
   if ! wait_for_route_ready "${CONTAINER_NAME}"; then
     docker logs --tail 120 "${CONTAINER_NAME}" 2>&1 || true
     save_and_remove_container "${CONTAINER_NAME}"
