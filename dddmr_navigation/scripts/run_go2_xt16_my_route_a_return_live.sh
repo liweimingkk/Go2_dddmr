@@ -11,10 +11,10 @@ Interactive, onsite-supervised regression for:
 
 Modes:
   --live          Default. Run all no-motion gates, a short supervised Sport
-                  probe, launch the 0.30 m/s live runtime, wait for health, ask
-                  for final confirmation, and send the mission.
+                  probe, launch the 0.30 m/s / 0.40 rad/s live runtime, wait for
+                  health, ask for final confirmation, and send the mission.
   --prepare-only  Build and run static, no-motion, and read-only sensor checks.
-                  Never starts the Sport probe or live runtime.
+                  Never creates real Sport output or starts the live runtime.
 
 Ctrl-C in --live mode asks the existing live supervisor to publish StopMove
 and clean up the Docker navigation runtime and host Sport adapter.
@@ -71,7 +71,8 @@ RETURN_Z="-0.210476711"
 RETURN_YAW="-1.741948169"
 MAX_X="0.30"
 MAX_Y="0.0"
-MAX_YAW="0.20"
+MAX_YAW="0.40"
+PROBE_MAX_YAW="0.35"
 MOTION_DECISIONS="d_controlling,d_align_heading,d_align_goal_heading"
 FIRST_CONFIRM="I_AM_SUPERVISING_MY_ROUTE_A_RETURN"
 START_CONFIRM="START_MY_ROUTE_A_RETURN"
@@ -80,6 +81,8 @@ live_pid=""
 live_log=""
 probe_log=""
 probe_summary=""
+yaw_preview_log=""
+yaw_preview_summary=""
 nav_container=""
 cleanup_started="false"
 
@@ -156,6 +159,8 @@ cleanup() {
 
   [[ -z "${live_log}" ]] || info "live 日志：${live_log}"
   [[ -z "${probe_log}" ]] || info "Sport 探测日志：${probe_log}"
+  [[ -z "${yaw_preview_log}" ]] || \
+    info "${MAX_YAW} rad/s 隔离预览日志：${yaw_preview_log}"
   exit "${status}"
 }
 
@@ -193,6 +198,56 @@ validate_local_inputs() {
   esac
 }
 
+run_yaw_limit_preview() {
+  local adapter_log preview_rc
+  yaw_preview_log="$(mktemp /tmp/go2_my_route_a_yaw_preview.XXXXXX.log)"
+  info "在隔离话题预览 ${MAX_YAW} rad/s，不连接真实 Sport 输出"
+  set +e
+  env \
+    GO2_NET_IFACE="${GO2_NET_IFACE_VALUE}" \
+    GO2_SETUP="${GO2_SETUP_VALUE}" \
+    GO2_SPORT_CMD_TOPIC=/dddmr_go2/my_route_a_yaw_preview_cmd_vel \
+    GO2_DECISION_TOPIC=/dddmr_go2/my_route_a_yaw_preview_decision \
+    GO2_SPORT_PROBE_X=0.0 \
+    GO2_SPORT_PROBE_Y=0.0 \
+    GO2_SPORT_PROBE_YAW="${MAX_YAW}" \
+    GO2_SPORT_PROBE_DURATION=0.3 \
+    GO2_SPORT_PROBE_DECISION=d_align_heading \
+    GO2_SPORT_MAX_X=0.10 \
+    GO2_SPORT_MAX_Y=0.0 \
+    GO2_SPORT_MAX_YAW="${MAX_YAW}" \
+    GO2_REQUIRE_MOTION_DECISION=true \
+    GO2_MOTION_ALLOWED_DECISIONS="${MOTION_DECISIONS}" \
+    GO2_ENABLE_YAW_ARC_SHIM=false \
+    GO2_YAW_ARC_SHIM_MODE=off \
+    GO2_SPORT_SKIP_LIVE_TOPIC_CHECK=true \
+    "${SPORT_PROBE}" --dry-run | tee "${yaw_preview_log}"
+  preview_rc="${PIPESTATUS[0]}"
+  set -e
+  (( preview_rc == 0 )) || die "${MAX_YAW} rad/s 隔离预览失败"
+
+  yaw_preview_summary="$(awk -F= '$1 == "SUMMARY_LOG" {print $2}' \
+    "${yaw_preview_log}" | tail -n 1)"
+  [[ -n "${yaw_preview_summary}" && -f "${yaw_preview_summary}" ]] || \
+    die "旋转上限预览未生成有效 SUMMARY_LOG"
+  grep -Fxq 'MODE=dry-run' "${yaw_preview_summary}" || \
+    die "旋转上限预览模式不正确"
+  grep -Fxq "MAX_YAW=${MAX_YAW}" "${yaw_preview_summary}" || \
+    die "旋转上限预览未应用 ${MAX_YAW} rad/s"
+  grep -Fxq 'RESULT=GO2_SPORT_ADAPTER_dry_run_COMPLETE' \
+    "${yaw_preview_summary}" || die "旋转上限预览未完成"
+
+  adapter_log="$(awk -F= '$1 == "ADAPTER_LOG" {print $2}' \
+    "${yaw_preview_summary}" | tail -n 1)"
+  [[ -n "${adapter_log}" && -f "${adapter_log}" ]] || \
+    die "旋转上限预览缺少 adapter 日志"
+  grep -Fq 'SPORT OUTPUT DISABLED:' "${adapter_log}" || \
+    die "旋转上限预览未禁用 Sport 输出"
+  grep -Fq 'transformed_sport={"x":0.0,"y":0.0,"z":0.4}' "${adapter_log}" || \
+    die "adapter 未接受 ${MAX_YAW} rad/s 旋转命令"
+  info "${MAX_YAW} rad/s 隔离预览通过"
+}
+
 run_no_motion_gates() {
   info "Docker 构建导航工作区"
   GO2_NET_IFACE="${GO2_NET_IFACE_VALUE}" \
@@ -203,6 +258,8 @@ run_no_motion_gates() {
 
   info "运行网络隔离的完整零运动 dry-run"
   "${TEST_RUNNER}" --dry-run
+
+  run_yaw_limit_preview
 
   info "读取 3 帧真实 XT16 点云，不发布运动命令"
   GO2_NET_IFACE="${GO2_NET_IFACE_VALUE}" \
@@ -225,7 +282,7 @@ run_supervised_sport_probe() {
     GO2_SPORT_PROBE_DECISION=d_controlling \
     GO2_SPORT_MAX_X=0.10 \
     GO2_SPORT_MAX_Y=0.0 \
-    GO2_SPORT_MAX_YAW="${MAX_YAW}" \
+    GO2_SPORT_MAX_YAW="${PROBE_MAX_YAW}" \
     GO2_REQUIRE_MOTION_DECISION=true \
     GO2_MOTION_ALLOWED_DECISIONS="${MOTION_DECISIONS}" \
     GO2_ENABLE_YAW_ARC_SHIM=false \
@@ -245,7 +302,7 @@ start_live_runtime() {
   local probe_summary="$1"
   local deadline
   live_log="$(mktemp /tmp/go2_my_route_a_live.XXXXXX.log)"
-  info "启动 ${MAX_X} m/s、${LIVE_TIMEOUT_SEC} s 硬上限的 live 运行时"
+  info "启动 ${MAX_X} m/s、${MAX_YAW} rad/s、${LIVE_TIMEOUT_SEC} s 硬上限的 live 运行时"
 
   env \
     GO2_NET_IFACE="${GO2_NET_IFACE_VALUE}" \
@@ -486,7 +543,7 @@ if [[ "${mode}" == "live" ]]; then
 fi
 
 info "Go2 网卡：${GO2_NET_IFACE_VALUE}"
-info "路线：${ROUTE_ID}，速度上限：${MAX_X} m/s，live 上限：${LIVE_TIMEOUT_SEC} s"
+info "路线：${ROUTE_ID}，前向上限：${MAX_X} m/s，旋转上限：${MAX_YAW} rad/s，live 上限：${LIVE_TIMEOUT_SEC} s"
 run_no_motion_gates
 
 if [[ "${mode}" == "prepare-only" ]]; then
@@ -498,7 +555,7 @@ cat <<EOF
 
 即将执行真实运动：
   1. 以 0.05 m/s 做 0.6 s Sport 通道探测并停车；
-  2. 以最高 ${MAX_X} m/s 沿 my_route_a 到终点；
+  2. 以前向最高 ${MAX_X} m/s、旋转最高 ${MAX_YAW} rad/s 沿 my_route_a 到终点；
   3. 停稳后切换 P2P，返回记录起点；
   4. 任一健康门失败或 Ctrl-C 都会停止并清理。
 
