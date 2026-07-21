@@ -103,6 +103,25 @@ x=0.514610589  y=0.150227532  z=-0.210476711  yaw=-1.741948169
 
 真机运行复用现有 Sport adapter 探针、人工确认、速度限制和退出时 StopMove 逻辑。只有统一地图、路线指纹和 dry-run 全链路验收后，才可执行：
 
+`my_route_a` 到终点后返回起点的测试优先使用单入口交互脚本：
+
+```bash
+cd /home/kkkkkkq/new2_success/new22/new2/dddmr_navigation
+./scripts/run_go2_xt16_my_route_a_return_live.sh
+```
+
+该脚本自动完成 Docker 构建、静态检查、网络隔离 dry-run、真实 XT16
+只读预检、短距离 Sport 探测、live 启动、定位/感知/里程计/零速度/起点
+门检查及 Mission Action 发送。现场人员只需按提示完成两次明确确认。测试速度
+上限为 `0.30 m/s`，运行时有 360 秒硬上限；按 Ctrl-C 会请求 live supervisor
+发送 StopMove 并清理容器和 host adapter。仅准备、不启动任何真实运动时使用：
+
+```bash
+./scripts/run_go2_xt16_my_route_a_return_live.sh --prepare-only
+```
+
+通用任务或需要手工拆分步骤时仍可使用底层入口：
+
 ```bash
 GO2_OUTDOOR_INDOOR_LIVE_CONFIRM=I_AM_SUPERVISING_GO2_OUTDOOR_INDOOR_MISSION \
 GO2_NAV_LIVE_CONFIRM=I_AM_SUPERVISING_GO2_NAV \
