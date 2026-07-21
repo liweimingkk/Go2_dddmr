@@ -99,6 +99,7 @@ install(PROGRAMS
   scripts/outdoor_indoor_mission.py
   scripts/outdoor_indoor_mission_client.py
   scripts/outdoor_indoor_mission_lib.py
+  scripts/outdoor_indoor_mission_no_motion.py
   scripts/route_tool.py
   DESTINATION lib/${PROJECT_NAME}
 )

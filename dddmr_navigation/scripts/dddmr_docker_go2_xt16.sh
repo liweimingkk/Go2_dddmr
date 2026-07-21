@@ -44,6 +44,8 @@ Environment:
   DDDMR_DOCKER_NAME=<optional docker container name>
   MISSION_MAP_DIRECTORY=<container pose-graph map directory>
   MISSION_ROUTE_DIRECTORY=<container route JSON directory>
+  MISSION_NAV_CONFIG_FILE=<container navigation YAML>
+  MISSION_MAP_CONFIG_FILE=<container map-server YAML>
   RVIZ=false
   PUBLISH_STATIC_TF=true
   RUN_SECONDS=<empty for no timeout>
@@ -298,12 +300,22 @@ ${launch_cmd}" bash "$@"
     run_seconds="${RUN_SECONDS:-}"
     mission_map_directory="${MISSION_MAP_DIRECTORY:-/root/dddmr_bags/go2_xt16_mouth_mapping_20260720_155833_map_2026_07_20_07_58_32}"
     mission_route_directory="${MISSION_ROUTE_DIRECTORY:-/root/dddmr_bags/routes}"
+    mission_nav_config_file="${MISSION_NAV_CONFIG_FILE:-/root/dddmr_navigation/src/dddmr_beginner_guide/config/go2_xt16_navigation.yaml}"
+    mission_map_config_file="${MISSION_MAP_CONFIG_FILE:-${mission_nav_config_file}}"
     [[ "${mission_map_directory}" =~ ^/[A-Za-z0-9._/-]+$ ]] || {
       echo "MISSION_MAP_DIRECTORY contains unsupported characters." >&2
       exit 2
     }
     [[ "${mission_route_directory}" =~ ^/[A-Za-z0-9._/-]+$ ]] || {
       echo "MISSION_ROUTE_DIRECTORY contains unsupported characters." >&2
+      exit 2
+    }
+    [[ "${mission_nav_config_file}" =~ ^/[A-Za-z0-9._/-]+$ ]] || {
+      echo "MISSION_NAV_CONFIG_FILE contains unsupported characters." >&2
+      exit 2
+    }
+    [[ "${mission_map_config_file}" =~ ^/[A-Za-z0-9._/-]+$ ]] || {
+      echo "MISSION_MAP_CONFIG_FILE contains unsupported characters." >&2
       exit 2
     }
     odom_time_offset_sec="$(resolve_live_odom_time_offset)"
@@ -317,7 +329,7 @@ ${launch_cmd}" bash "$@"
     launch_cmd="set +u
 source \"\${DDDMR_INSTALL_BASE}/setup.bash\"
 set -u
-ros2 launch dddmr_beginner_guide go2_xt16_outdoor_indoor_mission.launch rviz:=${rviz} publish_static_tf:=${publish_static_tf} odom_sync_enabled:=true odom_sync_tolerance_sec:=${ODOM_SYNC_TOLERANCE_SEC_VALUE} odom_sync_wait_timeout_sec:=${ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE} odom_time_offset_sec:=${odom_time_offset_sec} mission_map_directory:=${mission_map_directory} route_directory:=${mission_route_directory} start_sport_dry_run_adapter:=${start_dry_adapter} \"\$@\""
+ros2 launch dddmr_beginner_guide go2_xt16_outdoor_indoor_mission.launch config_file:=${mission_nav_config_file} map_config_file:=${mission_map_config_file} rviz:=${rviz} publish_static_tf:=${publish_static_tf} odom_sync_enabled:=true odom_sync_tolerance_sec:=${ODOM_SYNC_TOLERANCE_SEC_VALUE} odom_sync_wait_timeout_sec:=${ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE} odom_time_offset_sec:=${odom_time_offset_sec} mission_map_directory:=${mission_map_directory} route_directory:=${mission_route_directory} start_sport_dry_run_adapter:=${start_dry_adapter} \"\$@\""
     if [[ -n "${run_seconds}" ]]; then
       run_docker "${IMAGE}" bash -lc "${source_prefix}
 timeout -s TERM -k 5s ${run_seconds}s bash -lc '${launch_cmd}' bash \"\$@\"" bash "$@"

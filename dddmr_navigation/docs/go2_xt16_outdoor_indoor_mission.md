@@ -78,6 +78,27 @@ ros2 topic echo /go2_mission_cmd_mux/status
 
 dry-run 只记录本来会形成的 Sport 请求，不创建 `/api/sport/request` 发布者。
 
+## my_route_a 起点回程测试
+
+专用配置 `go2_xt16_my_route_a_return_test.yaml` 绑定 `my_route_a` 对应的
+2026-07-14 地图，并把 P2P 回程目标固定为路线起点：
+
+```text
+x=0.514610589  y=0.150227532  z=-0.210476711  yaw=-1.741948169
+```
+
+先运行静态检查，再运行完全隔离的零运动状态机测试：
+
+```bash
+./scripts/run_go2_xt16_my_route_a_return_test.sh --check
+./scripts/run_go2_xt16_my_route_a_return_test.sh --dry-run
+```
+
+这里的 `--dry-run` 使用模拟路线控制器、持续零速里程计和模拟 P2P 成功，
+验证巡航完成、交接停车、P2P 回起点及最终停车的完整状态顺序。Docker
+使用 `--network=none`，不启动规划器、速度发布器、Sport adapter 或真实机器狗接口。
+它验证任务编排，不替代后续带真实传感器但断开运动输出的感知/规划验收。
+
 ## 监督真机入口
 
 真机运行复用现有 Sport adapter 探针、人工确认、速度限制和退出时 StopMove 逻辑。只有统一地图、路线指纹和 dry-run 全链路验收后，才可执行：

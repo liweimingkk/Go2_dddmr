@@ -1,0 +1,35 @@
+# Dedicated map and synthetic no-motion scenario for:
+#   my_route_a start -> recorded-route end -> P2P return to route start.
+# This profile deliberately selects the same 2026-07-14 pose graph whose
+# SHA-256 fingerprint is embedded in bags/routes/my_route_a.json.
+dddmr_pg_map_server_manager:
+  ros__parameters:
+    maps: ["map1"]
+
+map1:
+  ros__parameters:
+    pose_graph_dir: "/root/dddmr_bags/go2_xt16_mouth_mapping_20260714_153136_map_2026_07_14_07_31_36"
+    complete_map_voxel_size: 0.2
+    complete_ground_voxel_size: 0.1
+    merge_non_ground_surface_into_mapcloud: true
+    surface_ground_exclusion_radius: 0.10
+    planning_ground_overlay_path: ""
+    planning_ground_overlay_max_distance: 0.32
+    planning_ground_overlay_max_fraction: 0.05
+    planning_ground_voxel_size: 0.10
+
+outdoor_indoor_no_motion:
+  ros__parameters:
+    mission_id: "my-route-a-return-no-motion"
+    route_id: "my_route_a"
+    route_directory: "/root/dddmr_bags/routes"
+    active_map_directory: "/root/dddmr_bags/go2_xt16_mouth_mapping_20260714_153136_map_2026_07_14_07_31_36"
+    expected_frame: "map"
+    return_goal_x: 0.5146105885505676
+    return_goal_y: 0.15022753179073334
+    return_goal_z: -0.21047671139240265
+    return_goal_yaw: -1.741948169
+    route_complete_delay_sec: 0.30
+    p2p_complete_delay_sec: 0.20
+    stop_confirmation_sec: 0.20
+    test_timeout_sec: 12.0

@@ -1,5 +1,6 @@
 <launch>
   <arg name="config_file" default="$(find-pkg-share dddmr_beginner_guide)/config/go2_xt16_navigation.yaml"/>
+  <arg name="map_config_file" default="$(var config_file)"/>
   <arg name="relocalization_config_file" default="$(find-pkg-share dddmr_beginner_guide)/config/go2_xt16_relocalization.yaml"/>
   <arg name="route_config_file" default="$(find-pkg-share dddmr_route_navigation)/config/go2_xt16_recorded_route.yaml"/>
   <arg name="mission_config_file" default="$(find-pkg-share dddmr_route_navigation)/config/go2_xt16_outdoor_indoor_mission.yaml"/>
@@ -23,6 +24,7 @@
   <!-- Start one shared map/localization chain, but no legacy P2P process. -->
   <include file="$(find-pkg-share dddmr_beginner_guide)/launch/go2_xt16_navigation.launch">
     <arg name="config_file" value="$(var config_file)"/>
+    <arg name="map_config_file" value="$(var map_config_file)"/>
     <arg name="relocalization_config_file" value="$(var relocalization_config_file)"/>
     <arg name="rviz" value="$(var rviz)"/>
     <arg name="rviz_config" value="$(var rviz_config)"/>

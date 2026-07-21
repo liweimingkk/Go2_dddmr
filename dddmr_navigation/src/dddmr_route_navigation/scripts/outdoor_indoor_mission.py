@@ -43,8 +43,8 @@ class MissionCanceled(RuntimeError):
 
 
 class OutdoorIndoorMissionServer(Node):
-    def __init__(self) -> None:
-        super().__init__("outdoor_indoor_mission")
+    def __init__(self, **node_kwargs) -> None:
+        super().__init__("outdoor_indoor_mission", **node_kwargs)
         self.callback_group = ReentrantCallbackGroup()
         self.route_directory = Path(self._string_parameter("route_directory", "/root/dddmr_bags/routes"))
         self.active_map_directory = Path(self._string_parameter("active_map_directory", "."))

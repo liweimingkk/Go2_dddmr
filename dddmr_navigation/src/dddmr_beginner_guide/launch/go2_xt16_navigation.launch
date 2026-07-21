@@ -1,5 +1,6 @@
 <launch>
   <arg name="config_file" default="$(find-pkg-share dddmr_beginner_guide)/config/go2_xt16_navigation.yaml"/>
+  <arg name="map_config_file" default="$(var config_file)"/>
   <arg name="relocalization_config_file" default="$(find-pkg-share dddmr_beginner_guide)/config/go2_xt16_relocalization.yaml"/>
   <arg name="rviz" default="true"/>
   <arg name="rviz_config" default="$(find-pkg-share dddmr_beginner_guide)/rviz/go2_xt16_navigation.rviz"/>
@@ -122,7 +123,7 @@
   </node>
 
   <node pkg="dddmr_pg_map_server" exec="dddmr_pg_map_server_node" output="screen" respawn="false">
-    <param from="$(var config_file)" />
+    <param from="$(var map_config_file)" />
     <param name="use_sim_time" value="false"/>
   </node>
 

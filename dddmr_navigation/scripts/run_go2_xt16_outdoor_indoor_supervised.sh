@@ -21,6 +21,7 @@ Required selection:
   MISSION_ROUTE_DIR=<host route JSON directory>      # default: bags/routes
   MISSION_ROUTE_ID=<route file stem>                 # default: my_route_a
   NAV_CONFIG_FILE=<host navigation YAML>
+  MISSION_MAP_CONFIG_FILE=<host map-server YAML>     # default: NAV_CONFIG_FILE
 
 Additional live confirmation:
   GO2_OUTDOOR_INDOOR_LIVE_CONFIRM=I_AM_SUPERVISING_GO2_OUTDOOR_INDOOR_MISSION
@@ -65,6 +66,7 @@ MAP_DIR="${MISSION_MAP_DIR:-${BAGS_DIR}/${DEFAULT_MAP_NAME}}"
 ROUTE_DIR="${MISSION_ROUTE_DIR:-${BAGS_DIR}/routes}"
 ROUTE_ID="${MISSION_ROUTE_ID:-my_route_a}"
 NAV_CONFIG="${NAV_CONFIG_FILE:-${WS_ROOT}/src/dddmr_beginner_guide/config/go2_xt16_navigation.yaml}"
+MAP_CONFIG="${MISSION_MAP_CONFIG_FILE:-${NAV_CONFIG}}"
 MISSION_CONFIG="${WS_ROOT}/src/dddmr_route_navigation/config/go2_xt16_outdoor_indoor_mission.yaml"
 MISSION_LAUNCH="${WS_ROOT}/src/dddmr_beginner_guide/launch/go2_xt16_outdoor_indoor_mission.launch"
 MISSION_LIB="${WS_ROOT}/src/dddmr_route_navigation/scripts/outdoor_indoor_mission_lib.py"
@@ -84,12 +86,28 @@ path_inside() {
   printf '%s\n' "${target#"${base}"/}"
 }
 
+container_file_path() {
+  local target relative
+  target="$(realpath -m -- "$1")"
+  if relative="$(path_inside "${WS_ROOT}" "${target}")"; then
+    printf '/root/dddmr_navigation/%s\n' "${relative}"
+    return 0
+  fi
+  if relative="$(path_inside "${BAGS_DIR}" "${target}")"; then
+    printf '/root/dddmr_bags/%s\n' "${relative}"
+    return 0
+  fi
+  return 1
+}
+
 validate_selection() {
   local map_relative route_relative container_map container_routes
+  local container_nav_config container_map_config
   [[ -f "${MAP_DIR}/poses.pcd" ]] || die "unified map poses.pcd is missing: ${MAP_DIR}"
   [[ -f "${ROUTE_DIR}/${ROUTE_ID}.json" ]] || \
     die "mission route is missing: ${ROUTE_DIR}/${ROUTE_ID}.json"
   [[ -f "${NAV_CONFIG}" ]] || die "navigation config is missing: ${NAV_CONFIG}"
+  [[ -f "${MAP_CONFIG}" ]] || die "map-server config is missing: ${MAP_CONFIG}"
   [[ -f "${MISSION_CONFIG}" ]] || die "mission config is missing: ${MISSION_CONFIG}"
   [[ -f "${MISSION_LAUNCH}" ]] || die "mission launch is missing: ${MISSION_LAUNCH}"
   [[ -f "${MISSION_LIB}" ]] || die "mission validation library is missing: ${MISSION_LIB}"
@@ -100,9 +118,13 @@ validate_selection() {
     die "MISSION_ROUTE_DIR must stay under DDDMR_BAGS_DIR"
   container_map="/root/dddmr_bags/${map_relative}"
   container_routes="/root/dddmr_bags/${route_relative}"
+  container_nav_config="$(container_file_path "${NAV_CONFIG}")" || \
+    die "NAV_CONFIG_FILE must stay under the workspace or DDDMR_BAGS_DIR"
+  container_map_config="$(container_file_path "${MAP_CONFIG}")" || \
+    die "MISSION_MAP_CONFIG_FILE must stay under the workspace or DDDMR_BAGS_DIR"
 
-  grep -Fq "pose_graph_dir: \"${container_map}\"" "${NAV_CONFIG}" || \
-    die "NAV_CONFIG_FILE does not select ${container_map} as pose_graph_dir"
+  grep -Fq "pose_graph_dir: \"${container_map}\"" "${MAP_CONFIG}" || \
+    die "MISSION_MAP_CONFIG_FILE does not select ${container_map} as pose_graph_dir"
   grep -Fq 'goals_enabled: false' "${MISSION_CONFIG}" || \
     die "mission config must start P2P goal execution disabled"
   grep -Fq 'output_command_topic: "/dddmr_go2/dry_run_cmd_vel"' "${MISSION_CONFIG}" || \
@@ -137,8 +159,12 @@ PY
 
   export MISSION_MAP_DIRECTORY="${container_map}"
   export MISSION_ROUTE_DIRECTORY="${container_routes}"
+  export MISSION_NAV_CONFIG_FILE="${container_nav_config}"
+  export MISSION_MAP_CONFIG_FILE="${container_map_config}"
   echo "MISSION_MAP_DIRECTORY=${MISSION_MAP_DIRECTORY}"
   echo "MISSION_ROUTE_DIRECTORY=${MISSION_ROUTE_DIRECTORY}"
+  echo "MISSION_NAV_CONFIG_FILE=${MISSION_NAV_CONFIG_FILE}"
+  echo "MISSION_MAP_CONFIG_FILE=${MISSION_MAP_CONFIG_FILE}"
   echo "MISSION_ROUTE_ID=${ROUTE_ID}"
 }
 
