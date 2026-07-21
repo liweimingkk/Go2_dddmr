@@ -3,6 +3,7 @@
 import pathlib
 import sys
 import unittest
+from dataclasses import replace
 
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
@@ -38,6 +39,7 @@ class PointCloudStreamGateTest(unittest.TestCase):
         evaluation_ros_time=None,
         publisher_count=1,
         topic_types=(POINTCLOUD2_TYPE,),
+        thresholds=None,
     ):
         if header_times is None:
             header_times = receipt_times
@@ -60,7 +62,7 @@ class PointCloudStreamGateTest(unittest.TestCase):
             ),
             publisher_count=publisher_count,
             topic_types=topic_types,
-            thresholds=self.thresholds,
+            thresholds=thresholds or self.thresholds,
         )
 
     def test_stable_ten_hz_stream_passes(self):
@@ -150,6 +152,30 @@ class PointCloudStreamGateTest(unittest.TestCase):
         self.assertFalse(result.passed)
         self.assertAlmostEqual(result.max_header_age_sec, 0.25)
         self.assertTrue(any(reason.startswith("max_header_age=") for reason in result.reasons))
+
+    def test_inter_frame_peak_age_fails_tight_limit_at_callback(self):
+        times = [index / 10.0 for index in range(31)]
+        result = self.evaluate(
+            times,
+            header_age_sec=0.18,
+            evaluation_time=3.0,
+            evaluation_ros_time=3.18,
+        )
+        self.assertFalse(result.passed)
+        self.assertAlmostEqual(result.max_header_age_sec, 0.28)
+        self.assertTrue(any(reason.startswith("max_header_age=") for reason in result.reasons))
+
+    def test_inter_frame_peak_age_passes_bounded_xt16_limit(self):
+        times = [index / 10.0 for index in range(31)]
+        result = self.evaluate(
+            times,
+            header_age_sec=0.18,
+            evaluation_time=3.0,
+            evaluation_ros_time=3.18,
+            thresholds=replace(self.thresholds, max_header_age_sec=0.35),
+        )
+        self.assertTrue(result.passed, result.reasons)
+        self.assertAlmostEqual(result.max_header_age_sec, 0.28)
 
     def test_ros_receipt_count_must_match_samples(self):
         with self.assertRaises(ValueError):

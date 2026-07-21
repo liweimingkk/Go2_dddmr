@@ -16,6 +16,9 @@
   <arg name="odom_sync_tolerance_sec" default="0.05"/>
   <arg name="odom_sync_wait_timeout_sec" default="0.1"/>
   <arg name="odom_time_offset_sec" default="0.0"/>
+  <!-- Keep direct launches conservative. The checked dry-run/supervised
+       runners pass a bounded 0.35s override for XT16 scan-start stamps. -->
+  <arg name="local_lidar_expected_sensor_time_sec" default="0.20"/>
 
   <!-- Reuse map server, MCL, perception prerequisites and the Go2 safety gate,
        but explicitly omit DDDMR global_planner, P2PMoveBase and clicked2goal. -->
@@ -34,6 +37,8 @@
     <arg name="odom_sync_tolerance_sec" value="$(var odom_sync_tolerance_sec)"/>
     <arg name="odom_sync_wait_timeout_sec" value="$(var odom_sync_wait_timeout_sec)"/>
     <arg name="odom_time_offset_sec" value="$(var odom_time_offset_sec)"/>
+    <arg name="local_lidar_expected_sensor_time_sec"
+         value="$(var local_lidar_expected_sensor_time_sec)"/>
     <arg name="start_go2_nav_cmd_gate" value="true"/>
     <arg name="go2_nav_cmd_gate_input_topic" value="/dddmr_go2/dry_run_cmd_vel"/>
     <arg name="start_sport_dry_run_adapter" value="true"/>
@@ -48,6 +53,8 @@
         output="screen" respawn="false">
     <param from="$(var config_file)"/>
     <param from="$(var route_config_file)"/>
+    <param name="lidar.expected_sensor_time"
+           value="$(var local_lidar_expected_sensor_time_sec)" type="float"/>
     <remap from="/cmd_vel" to="/dddmr_go2/dry_run_cmd_vel"/>
     <param name="use_sim_time" value="false"/>
   </node>

@@ -36,6 +36,7 @@ Environment overrides:
   AUTO_MEASURE_ODOM_TIME_OFFSET=true
   ODOM_SYNC_TOLERANCE_SEC=0.05
   ODOM_SYNC_WAIT_TIMEOUT_SEC=0.1
+  LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC=0.35  Hard cap: 0.35s
   RVIZ=true
   PUBLISH_STATIC_TF=true
   BUILD=false              Set true to rebuild navigation before starting.
@@ -96,6 +97,7 @@ GO2_NET_IFACE_VALUE="${GO2_NET_IFACE:-}"
 ODOM_TIME_OFFSET_SEC_VALUE="${ODOM_TIME_OFFSET_SEC:-}"
 ODOM_SYNC_TOLERANCE_SEC_VALUE="${ODOM_SYNC_TOLERANCE_SEC:-0.05}"
 ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE="${ODOM_SYNC_WAIT_TIMEOUT_SEC:-0.1}"
+LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC_VALUE="${LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC:-0.35}"
 ODOM_OFFSET_RESOLVER="${GO2_ODOM_TIME_OFFSET_RESOLVER:-${SCRIPT_DIR}/resolve_go2_odom_time_offset.sh}"
 ODOM_SYNC_CHECKER="${GO2_ODOM_SYNC_CHECKER:-${SCRIPT_DIR}/check_go2_odom_sync.py}"
 BUILD_BASE_VALUE="${DDDMR_BUILD_BASE:-.docker_go2_xt16_build}"
@@ -143,6 +145,10 @@ is_number() {
 
 is_nonnegative_number() {
   is_number "$1" && awk -v value="$1" 'BEGIN { exit !(value >= 0) }'
+}
+
+is_positive_number() {
+  is_number "$1" && awk -v value="$1" 'BEGIN { exit !(value > 0) }'
 }
 
 resolve_odom_time_offset() {
@@ -233,6 +239,33 @@ source /root/dddmr_navigation/${INSTALL_BASE_VALUE}/setup.bash
 set -u
 cd /root/dddmr_navigation
 $*"
+}
+
+read_local_lidar_freshness_limit() {
+  local container="$1"
+  local report value
+  report="$(docker_ros "${container}" \
+    "timeout 10 ros2 param get /perception_3d_local lidar.expected_sensor_time" \
+    2>&1)" || {
+    printf '%s\n' "${report}" >&2
+    die "Could not read the recorded-route local LiDAR freshness limit."
+  }
+  value="$(awk -F': ' '/Double value is:/ {print $2; exit}' <<<"${report}")"
+  is_positive_number "${value}" || \
+    die "Invalid lidar.expected_sensor_time response: ${report}"
+  printf '%s\n' "${value}"
+}
+
+require_local_lidar_freshness_limit() {
+  local container="$1"
+  local value
+  value="$(read_local_lidar_freshness_limit "${container}")"
+  awk \
+    -v actual="${value}" \
+    -v requested="${LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC_VALUE}" \
+    'BEGIN { delta=actual-requested; if(delta<0) delta=-delta; exit !(delta <= 1e-6) }' || \
+    die "Local LiDAR freshness limit ${value}s does not match requested ${LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC_VALUE}s."
+  log "Recorded-route local LiDAR hard freshness limit: ${value}s"
 }
 
 save_and_remove_container() {
@@ -492,6 +525,11 @@ start_dry_run() {
   validate_bool REGENERATE_ROUTE "${REGENERATE_ROUTE_VALUE}"
   require_positive_integer PREFLIGHT_SAMPLES "${PREFLIGHT_SAMPLES_VALUE}"
   require_positive_integer PREFLIGHT_TIMEOUT "${PREFLIGHT_TIMEOUT_VALUE}"
+  is_positive_number "${LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC_VALUE}" || \
+    die "LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC must be a finite positive number."
+  awk -v value="${LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC_VALUE}" \
+    'BEGIN { exit !(value <= 0.35) }' || \
+    die "LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC must not exceed the 0.35s safety cap."
   require_cyclonedds_rmw
 
   GO2_NET_IFACE_VALUE="$(detect_go2_net_iface)"
@@ -578,7 +616,8 @@ exec ros2 launch dddmr_beginner_guide go2_xt16_recorded_route_navigation.launch 
   odom_sync_enabled:=true \
   odom_sync_tolerance_sec:="$5" \
   odom_sync_wait_timeout_sec:="$6" \
-  odom_time_offset_sec:="$7"'
+  odom_time_offset_sec:="$7" \
+  local_lidar_expected_sensor_time_sec:="$8"'
 
   log "Starting fail-closed recorded-route dry-run: ${CONTAINER_NAME}"
   docker run -d "${docker_args[@]}" "${IMAGE}" \
@@ -589,7 +628,8 @@ exec ros2 launch dddmr_beginner_guide go2_xt16_recorded_route_navigation.launch 
     "${PUBLISH_STATIC_TF_VALUE}" \
     "${ODOM_SYNC_TOLERANCE_SEC_VALUE}" \
     "${ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE}" \
-    "${ODOM_TIME_OFFSET_SEC_VALUE}" >/dev/null
+    "${ODOM_TIME_OFFSET_SEC_VALUE}" \
+    "${LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC_VALUE}" >/dev/null
 
   trap 'save_and_remove_container "${CONTAINER_NAME}"; exit 130' INT TERM
   if ! check_odom_sync_runtime "${CONTAINER_NAME}"; then
@@ -601,6 +641,11 @@ exec ros2 launch dddmr_beginner_guide go2_xt16_recorded_route_navigation.launch 
     docker logs --tail 120 "${CONTAINER_NAME}" 2>&1 || true
     save_and_remove_container "${CONTAINER_NAME}"
     die "Timed out waiting for a valid recorded route."
+  fi
+  if ! (require_local_lidar_freshness_limit "${CONTAINER_NAME}"); then
+    docker logs --tail 120 "${CONTAINER_NAME}" 2>&1 || true
+    save_and_remove_container "${CONTAINER_NAME}"
+    die "Recorded-route local LiDAR freshness limit validation failed."
   fi
   trap - INT TERM
 
@@ -615,12 +660,13 @@ exec ros2 launch dddmr_beginner_guide go2_xt16_recorded_route_navigation.launch 
 }
 
 verify_current_observation() {
-  local container
+  local container freshness_limit
   container="$(running_container)"
   check_dry_run_isolation "${container}" || \
     die "Dry-run isolation check failed; refusing observation verification."
 
-  log "Verifying 30 seconds of sustained local current_observation updates..."
+  freshness_limit="$(read_local_lidar_freshness_limit "${container}")"
+  log "Verifying 30 seconds of sustained local current_observation updates against ${freshness_limit}s..."
   docker_ros "${container}" \
     "timeout -s INT -k 1s 45s python3 \
       /root/dddmr_navigation/src/dddmr_beginner_guide/scripts/go2_pointcloud_stream_gate.py \
@@ -631,6 +677,8 @@ verify_current_observation() {
       --min-rate-hz 7.0 \
       --max-header-gap-sec 0.25 \
       --max-receive-gap-sec 0.25 \
+      --max-header-age-sec ${freshness_limit} \
+      --max-future-skew-sec 0.05 \
       --expected-publishers 1"
 }
 

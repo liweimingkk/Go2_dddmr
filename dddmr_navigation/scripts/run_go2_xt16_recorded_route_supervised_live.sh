@@ -42,12 +42,14 @@ Low-speed live policy:
   GO2_RECORDED_ROUTE_START_MAX_XY_ERROR=0.25
   GO2_RECORDED_ROUTE_START_MAX_Z_ERROR=0.20
   GO2_RECORDED_ROUTE_START_MAX_YAW_ERROR=0.35
+  GO2_RECORDED_ROUTE_LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC=0.35
   GO2_RECORDED_ROUTE_OBSERVATION_WINDOW_SEC=20.0
   GO2_RECORDED_ROUTE_OBSERVATION_TIMEOUT_SEC=30.0
   GO2_RECORDED_ROUTE_OBSERVATION_MIN_SAMPLES=140
   GO2_RECORDED_ROUTE_OBSERVATION_MIN_RATE_HZ=7.0
   GO2_RECORDED_ROUTE_OBSERVATION_MAX_HEADER_GAP_SEC=0.25
   GO2_RECORDED_ROUTE_OBSERVATION_MAX_RECEIVE_GAP_SEC=0.25
+  GO2_RECORDED_ROUTE_OBSERVATION_MAX_FUTURE_SKEW_SEC=0.05
   GO2_SPORT_PROBE_MAX_AGE_SEC=3600
   GO2_RECORDED_ROUTE_EXPECTED_REQUEST_BASELINE=10
 
@@ -131,12 +133,14 @@ arm_timeout_sec="${GO2_RECORDED_ROUTE_ARM_TIMEOUT_SEC:-60}"
 start_max_xy_error="${GO2_RECORDED_ROUTE_START_MAX_XY_ERROR:-0.25}"
 start_max_z_error="${GO2_RECORDED_ROUTE_START_MAX_Z_ERROR:-0.20}"
 start_max_yaw_error="${GO2_RECORDED_ROUTE_START_MAX_YAW_ERROR:-0.35}"
+local_lidar_expected_sensor_time_sec="${GO2_RECORDED_ROUTE_LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC:-0.35}"
 observation_window_sec="${GO2_RECORDED_ROUTE_OBSERVATION_WINDOW_SEC:-20.0}"
 observation_timeout_sec="${GO2_RECORDED_ROUTE_OBSERVATION_TIMEOUT_SEC:-30.0}"
 observation_min_samples="${GO2_RECORDED_ROUTE_OBSERVATION_MIN_SAMPLES:-140}"
 observation_min_rate_hz="${GO2_RECORDED_ROUTE_OBSERVATION_MIN_RATE_HZ:-7.0}"
 observation_max_header_gap_sec="${GO2_RECORDED_ROUTE_OBSERVATION_MAX_HEADER_GAP_SEC:-0.25}"
 observation_max_receive_gap_sec="${GO2_RECORDED_ROUTE_OBSERVATION_MAX_RECEIVE_GAP_SEC:-0.25}"
+observation_max_future_skew_sec="${GO2_RECORDED_ROUTE_OBSERVATION_MAX_FUTURE_SKEW_SEC:-0.05}"
 probe_max_age_sec="${GO2_SPORT_PROBE_MAX_AGE_SEC:-3600}"
 expected_request_baseline="${GO2_RECORDED_ROUTE_EXPECTED_REQUEST_BASELINE:-10}"
 probe_summary="${GO2_SPORT_PROBE_SUMMARY:-}"
@@ -168,6 +172,7 @@ live_output_attempted="false"
 cleanup_started="false"
 final_result="NOT_STARTED"
 expected_request_publishers=""
+local_lidar_runtime_freshness_sec=""
 pre_prompt_observation_gate="NOT_RUN"
 pre_enable_observation_gate="NOT_RUN"
 
@@ -230,12 +235,14 @@ validate_low_speed_policy() {
     "${start_max_xy_error}" \
     "${start_max_z_error}" \
     "${start_max_yaw_error}" \
+    "${local_lidar_expected_sensor_time_sec}" \
     "${observation_window_sec}" \
     "${observation_timeout_sec}" \
     "${observation_min_samples}" \
     "${observation_min_rate_hz}" \
     "${observation_max_header_gap_sec}" \
     "${observation_max_receive_gap_sec}" \
+    "${observation_max_future_skew_sec}" \
     "${probe_max_age_sec}" \
     "${MAX_ROUTE_LENGTH_M}" <<'PY'
 import math
@@ -256,12 +263,14 @@ names = [
     "GO2_RECORDED_ROUTE_START_MAX_XY_ERROR",
     "GO2_RECORDED_ROUTE_START_MAX_Z_ERROR",
     "GO2_RECORDED_ROUTE_START_MAX_YAW_ERROR",
+    "GO2_RECORDED_ROUTE_LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC",
     "GO2_RECORDED_ROUTE_OBSERVATION_WINDOW_SEC",
     "GO2_RECORDED_ROUTE_OBSERVATION_TIMEOUT_SEC",
     "GO2_RECORDED_ROUTE_OBSERVATION_MIN_SAMPLES",
     "GO2_RECORDED_ROUTE_OBSERVATION_MIN_RATE_HZ",
     "GO2_RECORDED_ROUTE_OBSERVATION_MAX_HEADER_GAP_SEC",
     "GO2_RECORDED_ROUTE_OBSERVATION_MAX_RECEIVE_GAP_SEC",
+    "GO2_RECORDED_ROUTE_OBSERVATION_MAX_FUTURE_SKEW_SEC",
     "GO2_SPORT_PROBE_MAX_AGE_SEC",
     "GO2_RECORDED_ROUTE_MAX_LENGTH_M",
 ]
@@ -296,12 +305,14 @@ bounded("GO2_RECORDED_ROUTE_ARM_TIMEOUT_SEC", 10.0, 300.0, low_inclusive=True)
 bounded("GO2_RECORDED_ROUTE_START_MAX_XY_ERROR", 0.05, 0.60, low_inclusive=True)
 bounded("GO2_RECORDED_ROUTE_START_MAX_Z_ERROR", 0.05, 0.35, low_inclusive=True)
 bounded("GO2_RECORDED_ROUTE_START_MAX_YAW_ERROR", 0.05, 0.80, low_inclusive=True)
+bounded("GO2_RECORDED_ROUTE_LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC", 0.20, 0.35, low_inclusive=True)
 bounded("GO2_RECORDED_ROUTE_OBSERVATION_WINDOW_SEC", 20.0, 30.0, low_inclusive=True)
 bounded("GO2_RECORDED_ROUTE_OBSERVATION_TIMEOUT_SEC", 21.0, 45.0, low_inclusive=True)
 bounded("GO2_RECORDED_ROUTE_OBSERVATION_MIN_SAMPLES", 10.0, 300.0, low_inclusive=True)
 bounded("GO2_RECORDED_ROUTE_OBSERVATION_MIN_RATE_HZ", 5.0, 15.0, low_inclusive=True)
 bounded("GO2_RECORDED_ROUTE_OBSERVATION_MAX_HEADER_GAP_SEC", 0.05, 0.30, low_inclusive=True)
 bounded("GO2_RECORDED_ROUTE_OBSERVATION_MAX_RECEIVE_GAP_SEC", 0.10, 0.30, low_inclusive=True)
+bounded("GO2_RECORDED_ROUTE_OBSERVATION_MAX_FUTURE_SKEW_SEC", 0.0, 0.10, low_inclusive=True)
 bounded("GO2_SPORT_PROBE_MAX_AGE_SEC", 60.0, 86400.0, low_inclusive=True)
 bounded("GO2_RECORDED_ROUTE_MAX_LENGTH_M", 0.1, 20.0, low_inclusive=True)
 
@@ -428,6 +439,8 @@ validate_fail_closed_source() {
     '<arg name="start_go2_sport_adapter" value="false"/>' \
     '<arg name="go2_sport_enable_output" value="false"/>' \
     '<arg name="go2_sport_allow_real_request_topic" value="false"/>' \
+    '<arg name="local_lidar_expected_sensor_time_sec" default="0.20"/>' \
+    '<param name="lidar.expected_sensor_time"' \
     '<remap from="/cmd_vel" to="/dddmr_go2/dry_run_cmd_vel"/>'
   do
     grep -Fq "${required}" "${ROUTE_LAUNCH}" || \
@@ -689,6 +702,26 @@ set -u
 ${command}"
 }
 
+read_local_lidar_freshness_limit() {
+  local report value
+  report="$(docker_ros \
+    "timeout 10 ros2 param get /perception_3d_local lidar.expected_sensor_time" \
+    2>&1)" || {
+    printf '%s\n' "${report}" >&2
+    die "Could not read the recorded-route local LiDAR freshness limit."
+  }
+  value="$(awk -F': ' '/Double value is:/ {print $2; exit}' <<<"${report}")"
+  [[ "${value}" =~ ^[+]?[0-9]+([.][0-9]*)?([eE][+-]?[0-9]+)?$ ]] || \
+    die "Invalid lidar.expected_sensor_time response: ${report}"
+  awk \
+    -v actual="${value}" \
+    -v requested="${local_lidar_expected_sensor_time_sec}" \
+    'BEGIN { delta=actual-requested; if(delta<0) delta=-delta; exit !(delta <= 1e-6) }' || \
+    die "Local LiDAR freshness limit ${value}s does not match requested ${local_lidar_expected_sensor_time_sec}s."
+  local_lidar_runtime_freshness_sec="${value}"
+  log "Recorded-route local LiDAR hard freshness limit: ${value}s"
+}
+
 require_current_observation_stream() {
   local phase="$1"
   local gate_path output status
@@ -698,6 +731,7 @@ require_current_observation_stream() {
     *) die "Unknown current_observation gate phase: ${phase}" ;;
   esac
 
+  read_local_lidar_freshness_limit
   log "Validating sustained ${CURRENT_OBSERVATION_TOPIC} updates (${phase})..."
   set +e
   output="$(docker_ros \
@@ -709,6 +743,8 @@ require_current_observation_stream() {
       --min-rate-hz '${observation_min_rate_hz}' \
       --max-header-gap-sec '${observation_max_header_gap_sec}' \
       --max-receive-gap-sec '${observation_max_receive_gap_sec}' \
+      --max-header-age-sec '${local_lidar_runtime_freshness_sec}' \
+      --max-future-skew-sec '${observation_max_future_skew_sec}' \
       --expected-publishers 1" 2>&1)"
   status=$?
   set -e
@@ -768,6 +804,7 @@ start_route_source() {
   RUN_LOG_DIR="${log_dir}" \
   RVIZ="${rviz}" \
   PUBLISH_STATIC_TF="${publish_static_tf}" \
+  LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC="${local_lidar_expected_sensor_time_sec}" \
     "${ROUTE_RUNNER}" --start 2>&1 | tee "${source_start_log}"
 }
 
@@ -1156,12 +1193,15 @@ REQUEST_TOPIC=${REAL_REQUEST_TOPIC}
 CURRENT_OBSERVATION_TOPIC=${CURRENT_OBSERVATION_TOPIC}
 CURRENT_OBSERVATION_PRE_PROMPT=${pre_prompt_observation_gate}
 CURRENT_OBSERVATION_PRE_ENABLE=${pre_enable_observation_gate}
+LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC=${local_lidar_expected_sensor_time_sec}
+LOCAL_LIDAR_RUNTIME_FRESHNESS_SEC=${local_lidar_runtime_freshness_sec}
 OBSERVATION_WINDOW_SEC=${observation_window_sec}
 OBSERVATION_TIMEOUT_SEC=${observation_timeout_sec}
 OBSERVATION_MIN_SAMPLES=${observation_min_samples}
 OBSERVATION_MIN_RATE_HZ=${observation_min_rate_hz}
 OBSERVATION_MAX_HEADER_GAP_SEC=${observation_max_header_gap_sec}
 OBSERVATION_MAX_RECEIVE_GAP_SEC=${observation_max_receive_gap_sec}
+OBSERVATION_MAX_FUTURE_SKEW_SEC=${observation_max_future_skew_sec}
 REQUEST_BASELINE_PUBLISHERS=${expected_request_baseline}
 REQUEST_ACTIVE_PUBLISHERS=${expected_request_publishers}
 SPORT_MAX_X=${sport_max_x}
@@ -1244,11 +1284,12 @@ if [[ "${mode}" == "check" ]]; then
     "${start_max_xy_error}" "${start_max_z_error}" "${start_max_yaw_error}"
   printf 'REQUEST_PUBLISHER_POLICY=baseline:%s,active:%s\n' \
     "${expected_request_baseline}" "${expected_request_publishers}"
-  printf 'CURRENT_OBSERVATION_GATE=topic:%s,window:%s,timeout:%s,min_samples:%s,min_rate:%s,max_header_gap:%s,max_receive_gap:%s\n' \
+  printf 'CURRENT_OBSERVATION_GATE=topic:%s,window:%s,timeout:%s,min_samples:%s,min_rate:%s,max_header_gap:%s,max_receive_gap:%s,max_header_age:%s,max_future_skew:%s\n' \
     "${CURRENT_OBSERVATION_TOPIC}" "${observation_window_sec}" \
     "${observation_timeout_sec}" "${observation_min_samples}" \
     "${observation_min_rate_hz}" "${observation_max_header_gap_sec}" \
-    "${observation_max_receive_gap_sec}"
+    "${observation_max_receive_gap_sec}" "${local_lidar_expected_sensor_time_sec}" \
+    "${observation_max_future_skew_sec}"
   printf 'SOURCE_FAIL_CLOSED=PASS\n'
   printf 'PROBE_STATUS=%s\n' "${probe_state}"
   printf 'RESULT=GO2_XT16_RECORDED_ROUTE_OFFLINE_CHECK_PASS\n'

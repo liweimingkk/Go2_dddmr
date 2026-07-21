@@ -140,15 +140,26 @@ def evaluate_stream(
             (receipt_ns - stamp_ns) * 1e-9
             for receipt_ns, stamp_ns in zip(ros_receipts_ns, stamps_ns)
         )
-        # The planner checks freshness after processing, not only at callback
-        # receipt. Include the latest sample's age at evaluation time so a
-        # healthy-rate stream that is consistently delayed cannot pass.
+        # The planner can run anywhere between two sensor callbacks.  Measure
+        # the previous frame's age at the next frame's receipt so a stream that
+        # is fresh only at callback time cannot pass a tighter runtime limit.
+        inter_frame_peak_header_ages_sec = tuple(
+            (ros_receipts_ns[index + 1] - stamps_ns[index]) * 1e-9
+            for index in range(sample_count - 1)
+        )
+        # Also include the final tail at evaluation time so a stopped stream
+        # cannot pass after an initially healthy burst.
         latest_header_age_sec = (evaluation_ros_time_ns - stamps_ns[-1]) * 1e-9
+        observed_header_ages_sec = (
+            *signed_header_ages_sec,
+            *inter_frame_peak_header_ages_sec,
+            latest_header_age_sec,
+        )
         max_header_age_sec = max(
-            0.0, max((*signed_header_ages_sec, latest_header_age_sec))
+            0.0, max(observed_header_ages_sec)
         )
         max_future_skew_sec = max(
-            0.0, -min((*signed_header_ages_sec, latest_header_age_sec))
+            0.0, -min(observed_header_ages_sec)
         )
         if max_header_age_sec > thresholds.max_header_age_sec + 1e-9:
             reasons.append(
