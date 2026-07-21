@@ -20,7 +20,12 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.parameter import Parameter
-from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import (
+    DurabilityPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+    qos_profile_sensor_data,
+)
 from sensor_msgs.msg import PointCloud2
 from std_msgs.msg import Float64, String
 from std_srvs.srv import SetBool
@@ -138,7 +143,9 @@ class NoMotionPlant(Node):
             String, "/localization_health", 10
         )
         self.observation_publisher = self.create_publisher(
-            PointCloud2, "/perception_3d_local/lidar/current_observation", 10
+            PointCloud2,
+            "/perception_3d_local/lidar/current_observation",
+            qos_profile_sensor_data,
         )
         self.odom_publisher = self.create_publisher(
             Odometry, "/dddmr_go2/robot_odom_standard", 10

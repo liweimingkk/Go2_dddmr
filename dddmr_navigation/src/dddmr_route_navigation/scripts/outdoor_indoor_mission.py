@@ -19,7 +19,12 @@ from rclpy.action import ActionClient, ActionServer, CancelResponse, GoalRespons
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import (
+    DurabilityPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+    qos_profile_sensor_data,
+)
 from sensor_msgs.msg import PointCloud2
 from std_msgs.msg import Float64, String
 from std_srvs.srv import SetBool
@@ -181,7 +186,7 @@ class OutdoorIndoorMissionServer(Node):
             PointCloud2,
             self.observation_topic,
             self._observation_callback,
-            10,
+            qos_profile_sensor_data,
             callback_group=self.callback_group,
         )
         self.create_subscription(
