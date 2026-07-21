@@ -63,6 +63,9 @@ RecordedRouteController::RecordedRouteController(const std::string & name)
   route_topic_ = declare_parameter("route_topic", std::string("/recorded_route"));
   localization_status_topic_ = declare_parameter(
     "localization_status_topic", std::string("/localization_status"));
+  command_topic_ = declare_parameter("command_topic", std::string("cmd_vel"));
+  decision_topic_ = declare_parameter(
+    "decision_topic", std::string("/dddmr_go2/p2p_decision"));
   main_generator_ = declare_parameter(
     "main_trajectory_generator", std::string("differential_drive_simple"));
   initial_heading_generator_ = declare_parameter(
@@ -80,15 +83,15 @@ RecordedRouteController::RecordedRouteController(const std::string & name)
     !std::isfinite(max_linear_y_) || max_linear_y_ < 0.0 ||
     !std::isfinite(max_angular_z_) || max_angular_z_ <= 0.0 ||
     route_topic_.empty() || localization_status_topic_.empty() ||
+    command_topic_.empty() || decision_topic_.empty() ||
     main_generator_.empty() || initial_heading_generator_.empty() || goal_heading_generator_.empty())
   {
     throw std::invalid_argument("recorded route controller parameters are invalid");
   }
 
   const auto latched_qos = rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable();
-  command_publisher_ = create_publisher<geometry_msgs::msg::Twist>("cmd_vel", 1);
-  decision_publisher_ = create_publisher<std_msgs::msg::String>(
-    "/dddmr_go2/p2p_decision", 1);
+  command_publisher_ = create_publisher<geometry_msgs::msg::Twist>(command_topic_, 1);
+  decision_publisher_ = create_publisher<std_msgs::msg::String>(decision_topic_, 1);
   status_publisher_ = create_publisher<std_msgs::msg::String>("~/status", latched_qos);
   progress_publisher_ = create_publisher<std_msgs::msg::Float64>("~/progress", 1);
   route_ready_publisher_ = create_publisher<std_msgs::msg::Bool>("~/route_ready", latched_qos);

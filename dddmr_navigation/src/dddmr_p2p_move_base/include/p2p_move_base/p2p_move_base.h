@@ -29,9 +29,11 @@
 * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 /*Debug*/
+#include <atomic>
 #include <chrono>
 #include <p2p_move_base/p2p_state.h>
 #include <std_msgs/msg/string.hpp>
+#include <std_srvs/srv/set_bool.hpp>
 
 //@in enum state, the p_to_p_move_base is included
 #include <dddmr_sys_core/dddmr_enum_states.h>
@@ -71,6 +73,7 @@ class P2PMoveBase : public rclcpp::Node {
     void handle_accepted(const std::shared_ptr<rclcpp_action::ServerGoalHandle<dddmr_sys_core::action::PToPMoveBase>> goal_handle);
     
     rclcpp_action::Server<dddmr_sys_core::action::PToPMoveBase>::SharedPtr action_server_p2p_move_base_;
+    rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr set_enabled_service_;
 
     std::shared_ptr<rclcpp_action::ServerGoalHandle<dddmr_sys_core::action::PToPMoveBase>> current_handle_;
     
@@ -81,6 +84,10 @@ class P2PMoveBase : public rclcpp::Node {
     rclcpp::Clock::SharedPtr clock_;
     
     std::string name_;
+    std::string command_topic_{"cmd_vel"};
+    std::string stamped_command_topic_{"cmd_vel_stamped"};
+    std::string decision_topic_{"/dddmr_go2/p2p_decision"};
+    std::atomic<bool> goals_enabled_{true};
     
     std::shared_ptr<tf2_ros::TransformListener> tfl_;
     std::shared_ptr<tf2_ros::Buffer> tf2Buffer_;  ///< @brief Used for transforming point clouds
@@ -94,6 +101,9 @@ class P2PMoveBase : public rclcpp::Node {
     void publishZeroVelocity();
     void publishVelocity(double vx, double vy, double angular_z);
     void publishDecisionState();
+    void setEnabledCallback(
+      const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
+      std::shared_ptr<std_srvs::srv::SetBool::Response> response);
 
     std::shared_ptr<p2p_move_base::State> STATE_;
     std::shared_ptr<local_planner::Local_Planner> LP_;

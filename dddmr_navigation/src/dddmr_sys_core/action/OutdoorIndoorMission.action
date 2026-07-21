@@ -1,0 +1,18 @@
+# A continuous mission on one shared map. The route_id resolves to a validated
+# dddmr-recorded-route/v1 file on the mission server.
+string mission_id
+string route_id
+geometry_msgs/PoseStamped indoor_goal
+---
+int32 SUCCESS=0
+int32 REJECTED=1
+int32 OUTDOOR_FAILED=2
+int32 TRANSITION_FAILED=3
+int32 INDOOR_FAILED=4
+int32 CANCELED=5
+int32 status
+string message
+---
+string phase
+float32 outdoor_progress
+string detail

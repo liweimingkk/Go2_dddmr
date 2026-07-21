@@ -31,6 +31,7 @@ set(dependencies
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "action/PToPMoveBase.action"
+  "action/OutdoorIndoorMission.action"
   "action/GetPlan.action"
   "action/RecoveryBehaviors.action"
   "action/TagDocking.action"

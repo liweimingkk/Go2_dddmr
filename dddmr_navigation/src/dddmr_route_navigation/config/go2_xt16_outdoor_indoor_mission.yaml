@@ -1,0 +1,70 @@
+p2p_move_base:
+  ros__parameters:
+    # The mission server is the only component allowed to open this gate.
+    goals_enabled: false
+    command_topic: "/dddmr_go2/indoor_cmd_vel"
+    stamped_command_topic: "/dddmr_go2/indoor_cmd_vel_stamped"
+    decision_topic: "/dddmr_go2/indoor_decision"
+
+recorded_route_controller:
+  ros__parameters:
+    command_topic: "/dddmr_go2/outdoor_cmd_vel"
+    decision_topic: "/dddmr_go2/outdoor_decision"
+
+go2_mission_cmd_mux:
+  ros__parameters:
+    outdoor_command_topic: "/dddmr_go2/outdoor_cmd_vel"
+    indoor_command_topic: "/dddmr_go2/indoor_cmd_vel"
+    outdoor_decision_topic: "/dddmr_go2/outdoor_decision"
+    indoor_decision_topic: "/dddmr_go2/indoor_decision"
+    selection_topic: "/outdoor_indoor_mission/control_mode"
+    output_command_topic: "/dddmr_go2/dry_run_cmd_vel"
+    output_decision_topic: "/dddmr_go2/p2p_decision"
+    publish_rate_hz: 50.0
+    mode_timeout_sec: 0.30
+    command_timeout_sec: 0.20
+    decision_timeout_sec: 0.30
+    max_x: 0.35
+    max_y: 0.0
+    max_yaw: 0.50
+    zero_epsilon: 0.001
+    outdoor_allowed_motion_decisions: "d_controlling,d_align_heading,d_align_goal_heading"
+    indoor_allowed_motion_decisions: "d_controlling,d_align_heading,d_align_goal_heading,d_recovery_waitdone"
+
+outdoor_indoor_mission:
+  ros__parameters:
+    route_directory: "/root/dddmr_bags/routes"
+    # Launch overrides this with mission_map_directory. It must name the same
+    # pose-graph directory selected as map1.pose_graph_dir in the nav config.
+    active_map_directory: "/root/dddmr_bags/go2_xt16_mouth_mapping_20260720_155833_map_2026_07_20_07_58_32"
+    expected_frame: "map"
+    route_topic: "/recorded_route"
+    route_status_topic: "/recorded_route_controller/status"
+    route_progress_topic: "/recorded_route_controller/progress"
+    route_enable_service: "/recorded_route_controller/set_enabled"
+    p2p_action_name: "/p2p_move_base"
+    p2p_enable_service: "/p2p_move_base/set_enabled"
+    control_mode_topic: "/outdoor_indoor_mission/control_mode"
+    localization_status_topic: "/localization_status"
+    localization_health_topic: "/localization_health"
+    observation_topic: "/perception_3d_local/lidar/current_observation"
+    odom_topic: "/dddmr_go2/robot_odom_standard"
+    action_name: "/outdoor_indoor_mission"
+    readiness_timeout_sec: 30.0
+    route_ready_timeout_sec: 10.0
+    service_timeout_sec: 5.0
+    outdoor_timeout_sec: 900.0
+    transition_timeout_sec: 15.0
+    indoor_timeout_sec: 300.0
+    transition_stop_duration_sec: 1.0
+    localization_timeout_sec: 0.75
+    localization_health_timeout_sec: 0.75
+    observation_receive_timeout_sec: 0.35
+    observation_sensor_timeout_sec: 0.35
+    observation_future_tolerance_sec: 0.05
+    odom_timeout_sec: 0.75
+    stop_max_linear_speed: 0.03
+    stop_max_angular_speed: 0.05
+    max_route_segment_length: 2.0
+    feedback_period_sec: 0.20
+    mode_heartbeat_period_sec: 0.10

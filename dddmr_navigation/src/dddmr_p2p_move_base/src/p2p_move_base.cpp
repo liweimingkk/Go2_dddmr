@@ -44,6 +44,11 @@ rclcpp_action::GoalResponse P2PMoveBase::handle_goal(
   std::shared_ptr<const dddmr_sys_core::action::PToPMoveBase::Goal> goal)
 {
   (void)uuid;
+  (void)goal;
+  if (!goals_enabled_.load()) {
+    RCLCPP_WARN(this->get_logger(), "Rejecting P2P goal while goal execution is disabled");
+    return rclcpp_action::GoalResponse::REJECT;
+  }
   return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
 }
 
@@ -93,14 +98,29 @@ void P2PMoveBase::initial(const std::shared_ptr<local_planner::Local_Planner>& l
   RCLCPP_INFO(
     this->get_logger(), "local_failure_confirmation_cycles: %ld",
     static_cast<long>(local_failure_confirmation_cycles));
+
+  command_topic_ = this->declare_parameter("command_topic", std::string("cmd_vel"));
+  stamped_command_topic_ = this->declare_parameter(
+    "stamped_command_topic", std::string("cmd_vel_stamped"));
+  decision_topic_ = this->declare_parameter(
+    "decision_topic", std::string("/dddmr_go2/p2p_decision"));
+  goals_enabled_.store(this->declare_parameter("goals_enabled", true));
+  if (command_topic_.empty() || stamped_command_topic_.empty() || decision_topic_.empty()) {
+    throw std::invalid_argument("P2P command and decision topics must not be empty");
+  }
   
   if(STATE_->use_twist_stamped_){
-    stamped_cmd_vel_pub_ = this->create_publisher<geometry_msgs::msg::TwistStamped>("cmd_vel_stamped", 1);
+    stamped_cmd_vel_pub_ = this->create_publisher<geometry_msgs::msg::TwistStamped>(stamped_command_topic_, 1);
   }
   else{
-    cmd_vel_pub_ = this->create_publisher<geometry_msgs::msg::Twist>("cmd_vel", 1);
+    cmd_vel_pub_ = this->create_publisher<geometry_msgs::msg::Twist>(command_topic_, 1);
   }
-  decision_pub_ = this->create_publisher<std_msgs::msg::String>("/dddmr_go2/p2p_decision", 1);
+  decision_pub_ = this->create_publisher<std_msgs::msg::String>(decision_topic_, 1);
+  set_enabled_service_ = this->create_service<std_srvs::srv::SetBool>(
+    "~/set_enabled",
+    std::bind(
+      &P2PMoveBase::setEnabledCallback, this,
+      std::placeholders::_1, std::placeholders::_2));
   
 
   tf_listener_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
@@ -131,6 +151,23 @@ void P2PMoveBase::initial(const std::shared_ptr<local_planner::Local_Planner>& l
 
   RCLCPP_INFO(this->get_logger(), "\033[1;32m---->\033[0m P2P move base launched.");
 
+}
+
+void P2PMoveBase::setEnabledCallback(
+  const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
+  std::shared_ptr<std_srvs::srv::SetBool::Response> response)
+{
+  goals_enabled_.store(request->data);
+  if (!request->data) {
+    if (recovery_behaviors_client_ptr_) {
+      recovery_behaviors_client_ptr_->async_cancel_all_goals();
+    }
+    publishZeroVelocity();
+  }
+  response->success = true;
+  response->message = request->data ?
+    "P2P goal execution enabled" : "P2P goal execution disabled";
+  RCLCPP_WARN(this->get_logger(), "%s", response->message.c_str());
 }
 
 P2PMoveBase::~P2PMoveBase(){
@@ -239,6 +276,15 @@ void P2PMoveBase::executeCb(const std::shared_ptr<rclcpp_action::ServerGoalHandl
   publishDecisionState();
 
   while(rclcpp::ok()){
+
+    if (!goals_enabled_.load()) {
+      result->status = 2;
+      result->result = "P2P goal execution disabled";
+      goal_handle->abort(result);
+      publishZeroVelocity();
+      GPM_->stop();
+      return;
+    }
 
     if(!goal_handle->is_active()){
       

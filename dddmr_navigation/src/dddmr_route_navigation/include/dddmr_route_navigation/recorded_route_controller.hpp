@@ -101,6 +101,8 @@ private:
   double max_angular_z_{0.50};
   std::string route_topic_{"/recorded_route"};
   std::string localization_status_topic_{"/localization_status"};
+  std::string command_topic_{"cmd_vel"};
+  std::string decision_topic_{"/dddmr_go2/p2p_decision"};
   std::string main_generator_{"differential_drive_simple"};
   std::string initial_heading_generator_{"differential_drive_rotate_shortest_angle"};
   std::string goal_heading_generator_{"differential_drive_rotate_shortest_angle"};

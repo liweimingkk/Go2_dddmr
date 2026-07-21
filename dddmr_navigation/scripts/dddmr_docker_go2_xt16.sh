@@ -18,6 +18,11 @@ Commands:
   navigation-live-source
                Run Go2 XT16 DDDMR navigation/RViz as a velocity source only.
                It publishes /dddmr_go2/dry_run_cmd_vel but never publishes /api/sport/request.
+  outdoor-indoor-dry-run
+               Run the one-map outdoor/indoor mission stack with the dry-run Sport logger.
+  outdoor-indoor-live-source
+               Run the mission stack as an isolated velocity source. It never
+               publishes /api/sport/request by itself.
   build-image  Build the official dddmr:x64 Docker image from dddmr_docker.
   build-go2-image
                Build a thin Go2 image layer with CycloneDDS RMW.
@@ -37,6 +42,8 @@ Environment:
   DDDMR_INSTALL_BASE=.docker_go2_xt16_install
   DDDMR_LOG_BASE=.docker_go2_xt16_log
   DDDMR_DOCKER_NAME=<optional docker container name>
+  MISSION_MAP_DIRECTORY=<container pose-graph map directory>
+  MISSION_ROUTE_DIRECTORY=<container route JSON directory>
   RVIZ=false
   PUBLISH_STATIC_TF=true
   RUN_SECONDS=<empty for no timeout>
@@ -279,6 +286,44 @@ ros2 launch dddmr_beginner_guide go2_xt16_navigation.launch rviz:=${rviz} publis
     if [[ -n "${run_seconds}" ]]; then
       run_docker "${IMAGE}" bash -lc "${source_prefix}
 timeout -s TERM -k 5s ${run_seconds}s bash -lc '${launch_cmd}' bash \"\$@\"" bash "$@"
+    else
+      run_docker "${IMAGE}" bash -lc "${source_prefix}
+${launch_cmd}" bash "$@"
+    fi
+    ;;
+
+  outdoor-indoor-dry-run|outdoor-indoor-live-source)
+    rviz="${RVIZ:-true}"
+    publish_static_tf="${PUBLISH_STATIC_TF:-true}"
+    run_seconds="${RUN_SECONDS:-}"
+    mission_map_directory="${MISSION_MAP_DIRECTORY:-/root/dddmr_bags/go2_xt16_mouth_mapping_20260720_155833_map_2026_07_20_07_58_32}"
+    mission_route_directory="${MISSION_ROUTE_DIRECTORY:-/root/dddmr_bags/routes}"
+    [[ "${mission_map_directory}" =~ ^/[A-Za-z0-9._/-]+$ ]] || {
+      echo "MISSION_MAP_DIRECTORY contains unsupported characters." >&2
+      exit 2
+    }
+    [[ "${mission_route_directory}" =~ ^/[A-Za-z0-9._/-]+$ ]] || {
+      echo "MISSION_ROUTE_DIRECTORY contains unsupported characters." >&2
+      exit 2
+    }
+    odom_time_offset_sec="$(resolve_live_odom_time_offset)"
+    start_dry_adapter=true
+    if [[ "${command}" == "outdoor-indoor-live-source" ]]; then
+      start_dry_adapter=false
+    fi
+    if [[ "${rviz}" == "true" && -n "${DISPLAY:-}" ]] && command -v xhost >/dev/null 2>&1; then
+      xhost +local:docker >/dev/null || true
+    fi
+    launch_cmd="set +u
+source \"\${DDDMR_INSTALL_BASE}/setup.bash\"
+set -u
+ros2 launch dddmr_beginner_guide go2_xt16_outdoor_indoor_mission.launch rviz:=${rviz} publish_static_tf:=${publish_static_tf} odom_sync_enabled:=true odom_sync_tolerance_sec:=${ODOM_SYNC_TOLERANCE_SEC_VALUE} odom_sync_wait_timeout_sec:=${ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE} odom_time_offset_sec:=${odom_time_offset_sec} mission_map_directory:=${mission_map_directory} route_directory:=${mission_route_directory} start_sport_dry_run_adapter:=${start_dry_adapter} \"\$@\""
+    if [[ -n "${run_seconds}" ]]; then
+      run_docker "${IMAGE}" bash -lc "${source_prefix}
+timeout -s TERM -k 5s ${run_seconds}s bash -lc '${launch_cmd}' bash \"\$@\"" bash "$@"
+    elif [[ "${command}" == "outdoor-indoor-dry-run" ]]; then
+      run_docker -it "${IMAGE}" bash -lc "${source_prefix}
+${launch_cmd}" bash "$@"
     else
       run_docker "${IMAGE}" bash -lc "${source_prefix}
 ${launch_cmd}" bash "$@"

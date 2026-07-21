@@ -19,6 +19,8 @@ find_package(mpc_critics REQUIRED)
 find_package(trajectory_generators REQUIRED)
 find_package(dddmr_sys_core REQUIRED)
 find_package(base_trajectory REQUIRED)
+find_package(p2p_move_base REQUIRED)
+find_package(recovery_behaviors REQUIRED)
 
 set(route_dependencies
   rclcpp
@@ -34,6 +36,8 @@ set(route_dependencies
   trajectory_generators
   dddmr_sys_core
   base_trajectory
+  p2p_move_base
+  recovery_behaviors
 )
 
 add_library(route_tracker SHARED
@@ -67,10 +71,19 @@ add_executable(recorded_route_move_base_node
 target_link_libraries(recorded_route_move_base_node recorded_route_controller)
 ament_target_dependencies(recorded_route_move_base_node ${route_dependencies})
 
+add_executable(outdoor_indoor_move_base_node
+  src/outdoor_indoor_move_base_node.cpp
+)
+target_link_libraries(outdoor_indoor_move_base_node
+  recorded_route_controller
+)
+ament_target_dependencies(outdoor_indoor_move_base_node ${route_dependencies})
+
 install(TARGETS
   route_tracker
   recorded_route_controller
   recorded_route_move_base_node
+  outdoor_indoor_move_base_node
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}
@@ -81,6 +94,11 @@ install(DIRECTORY include/
 )
 
 install(PROGRAMS
+  scripts/go2_mission_cmd_mux.py
+  scripts/mission_command_mux_policy.py
+  scripts/outdoor_indoor_mission.py
+  scripts/outdoor_indoor_mission_client.py
+  scripts/outdoor_indoor_mission_lib.py
   scripts/route_tool.py
   DESTINATION lib/${PROJECT_NAME}
 )
@@ -103,6 +121,16 @@ if(BUILD_TESTING)
     NAME test_route_tool
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/test/test_route_tool.py
+  )
+  add_test(
+    NAME test_outdoor_indoor_mission_lib
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/test/test_outdoor_indoor_mission_lib.py
+  )
+  add_test(
+    NAME test_mission_command_mux_policy
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/test/test_mission_command_mux_policy.py
   )
 endif()
 

@@ -44,6 +44,8 @@ Environment:
   GO2_MOTION_ALLOWED_DECISIONS=d_controlling,d_align_heading,d_align_goal_heading,d_recovery_waitdone
   GO2_ZERO_YAW_ONLY_WHEN_SHIM_DISALLOWED=true
   GO2_MAX_CONTINUOUS_YAW_ARC_SEC=4.0
+  GO2_NAV_DRY_RUN_COMMAND=navigation-dry-run
+  GO2_NAV_DOCKER_COMMAND=navigation-live-source
 
 Live runtime shape:
   Docker: DDDMR navigation/RViz publishes /dddmr_go2/dry_run_cmd_vel,
@@ -111,6 +113,8 @@ log_dir="${GO2_NAV_LOG_DIR:-/tmp}"
 stamp="$(date +%Y%m%d_%H%M%S)"
 nav_request_id_base="$(date +%s)"
 docker_name="go2_xt16_nav_live_${stamp}"
+docker_dry_run_command="${GO2_NAV_DRY_RUN_COMMAND:-navigation-dry-run}"
+docker_live_command="${GO2_NAV_DOCKER_COMMAND:-navigation-live-source}"
 docker_log="${log_dir}/go2_xt16_nav_live_${stamp}_docker.log"
 adapter_log="${log_dir}/go2_xt16_nav_live_${stamp}_adapter.log"
 request_echo_log="${log_dir}/go2_xt16_nav_live_${stamp}_request_echo.log"
@@ -477,7 +481,7 @@ start_docker_source() {
   DDDMR_DOCKER_NAME="${docker_name}" \
   RVIZ="${rviz}" \
   PUBLISH_STATIC_TF="${publish_static_tf}" \
-    "${DOCKER_WRAPPER}" navigation-live-source \
+    "${DOCKER_WRAPPER}" "${docker_live_command}" \
     >"${docker_log}" 2>&1 &
   docker_pid="$!"
   sleep 1
@@ -534,10 +538,19 @@ start_request_echo() {
 
 assert_no_conflicting_runtime
 
+case "${docker_dry_run_command}" in
+  navigation-dry-run|outdoor-indoor-dry-run) ;;
+  *) die "unsupported GO2_NAV_DRY_RUN_COMMAND=${docker_dry_run_command}" ;;
+esac
+case "${docker_live_command}" in
+  navigation-live-source|outdoor-indoor-live-source) ;;
+  *) die "unsupported GO2_NAV_DOCKER_COMMAND=${docker_live_command}" ;;
+esac
+
 if [[ "${mode}" == "dry-run" ]]; then
   echo "Launching Docker Go2 XT16 navigation in dry-run RViz mode."
   exec env RVIZ="${rviz}" PUBLISH_STATIC_TF="${publish_static_tf}" \
-    "${DOCKER_WRAPPER}" navigation-dry-run
+    "${DOCKER_WRAPPER}" "${docker_dry_run_command}"
 fi
 
 [[ "${GO2_NAV_LIVE_CONFIRM:-}" == "${CONFIRM_PHRASE}" ]] || \
