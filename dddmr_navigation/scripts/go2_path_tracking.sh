@@ -36,7 +36,7 @@ Commands:
   dry-disable       Disable the controller and reset route progress.
   dry-stop          Stop the dry-run container and save its log.
   check             Run the offline route/map/live-policy acceptance gate.
-  probe             Run the supervised 0.05 m/s, 0.6 second physical probe.
+  probe             Verify live Move/StopMove with a 0.05 m/s handshake probe.
   live              Run supervised route tracking on the physical Go2.
   help              Show this help.
 
@@ -50,7 +50,7 @@ Optional environment:
   DDDMR_BAGS_DIR=<host bags directory override>
   NAV_CONFIG_FILE=<navigation YAML override>
   GO2_RECORDED_ROUTE_MAX_LENGTH_M=5.0
-  GO2_SPORT_MAX_X=0.20
+  GO2_SPORT_MAX_X=0.30
   OVERWRITE_ROUTE=false
 
 Safety:
@@ -319,7 +319,7 @@ case "${command}" in
   probe)
     (( $# == 0 )) || die "probe does not take arguments."
     confirm_phrase I_AM_SUPERVISING_GO2 \
-      "This probe will move the physical Go2 at 0.05 m/s for about 0.6 seconds."
+      "This live probe can move the Go2; its 0.05 m/s command verifies Move/StopMove, not physical displacement."
     GO2_SPORT_LIVE_CONFIRM=I_AM_SUPERVISING_GO2 \
     GO2_SPORT_PROBE_X=0.05 \
     GO2_SPORT_PROBE_Y=0.0 \
@@ -348,7 +348,7 @@ case "${command}" in
       "This command can move the physical Go2 along route ${route_id}."
     GO2_RECORDED_ROUTE_LIVE_CONFIRM=I_AM_SUPERVISING_GO2_RECORDED_ROUTE \
     GO2_SPORT_PROBE_SUMMARY="${probe_summary}" \
-    GO2_SPORT_MAX_X="${GO2_SPORT_MAX_X:-0.20}" \
+    GO2_SPORT_MAX_X="${GO2_SPORT_MAX_X:-0.30}" \
     GO2_RECORDED_ROUTE_EXPECTED_ID="${route_id}" \
     GO2_RECORDED_ROUTE_MAX_LENGTH_M="${GO2_RECORDED_ROUTE_MAX_LENGTH_M:-5.0}" \
     ROUTE_FILE="${route_file}" \
