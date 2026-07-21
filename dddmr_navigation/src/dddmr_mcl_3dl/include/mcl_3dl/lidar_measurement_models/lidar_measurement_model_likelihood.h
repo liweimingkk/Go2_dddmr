@@ -30,6 +30,8 @@
 #ifndef MCL_3DL_LIDAR_MEASUREMENT_MODELS_LIDAR_MEASUREMENT_MODEL_LIKELIHOOD_H
 #define MCL_3DL_LIDAR_MEASUREMENT_MODELS_LIDAR_MEASUREMENT_MODEL_LIKELIHOOD_H
 
+#include <limits>
+
 #include "utilities.h"
 
 #include <pcl/point_types.h>
@@ -50,10 +52,27 @@ struct LidarMeasurementResult
 {
   float likelihood;
   float quality;
+  float residual;
+  bool ground_valid;
+  float ground_z;
+  Vec3 ground_normal;
+  float ground_roughness;
 
-  LidarMeasurementResult(const float likelihood_value, const float quality_value)
+  LidarMeasurementResult(
+      const float likelihood_value,
+      const float quality_value,
+      const float residual_value,
+      const bool ground_valid_value = false,
+      const float ground_z_value = std::numeric_limits<float>::quiet_NaN(),
+      const Vec3& ground_normal_value = Vec3(0.0, 0.0, 1.0),
+      const float ground_roughness_value = std::numeric_limits<float>::infinity())
     : likelihood(likelihood_value)
     , quality(quality_value)
+    , residual(residual_value)
+    , ground_valid(ground_valid_value)
+    , ground_z(ground_z_value)
+    , ground_normal(ground_normal_value)
+    , ground_roughness(ground_roughness_value)
   {
   }
 };
@@ -75,6 +94,8 @@ private:
 
   float match_dist_min_;
   float match_dist_flat_;
+  bool flat_ground_mode_{false};
+  double base_link_height_{0.0};
 
 public:
 
@@ -84,6 +105,11 @@ public:
   void setGlobalLocalizationStatus(
       const int num_particles,
       const int current_num_particles);
+  void setFlatGroundConfig(const bool enabled, const double base_link_height)
+  {
+    flat_ground_mode_ = enabled;
+    base_link_height_ = std::max(0.0, base_link_height);
+  }
   LidarMeasurementResult measure(
       pcl::KdTreeFLANN<mcl_3dl::pcl_t>& kdtree,
       pcl::KdTreeFLANN<mcl_3dl::pcl_t>& kdtree_ground,

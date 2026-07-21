@@ -10,6 +10,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 from go2_nav_gate_policy import (  # noqa: E402
     RECOVERY_ROTATION_DECISION,
     localization_block_reason,
+    localization_health_block_reason,
     recovery_rotation_gate,
 )
 
@@ -39,6 +40,32 @@ class LocalizationGatePolicyTest(unittest.TestCase):
         self.assertEqual(
             localization_block_reason(True, "LOST", 0.1, 0.5),
             "localization_lost",
+        )
+
+
+class LocalizationHealthGatePolicyTest(unittest.TestCase):
+    def test_optional_health_never_blocks(self):
+        self.assertIsNone(
+            localization_health_block_reason(False, None, None, 0.5)
+        )
+
+    def test_missing_stale_and_unhealthy_values_block(self):
+        self.assertEqual(
+            localization_health_block_reason(True, None, None, 0.5),
+            "localization_no_health",
+        )
+        self.assertEqual(
+            localization_health_block_reason(True, "HEALTHY", 0.6, 0.5),
+            "localization_health_stale",
+        )
+        self.assertEqual(
+            localization_health_block_reason(True, "MAP_ODOM_TILT", 0.1, 0.5),
+            "localization_health_map_odom_tilt",
+        )
+
+    def test_only_fresh_healthy_value_allows_motion(self):
+        self.assertIsNone(
+            localization_health_block_reason(True, " healthy ", 0.1, 0.5)
         )
 
 

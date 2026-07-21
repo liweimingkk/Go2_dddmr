@@ -12,6 +12,10 @@
   <arg name="raw_odom_topic" default="/utlidar/robot_odom"/>
   <arg name="odom_topic" default="/dddmr_go2/robot_odom_standard"/>
   <arg name="lidar_topic" default="/lidar_points"/>
+  <arg name="odom_sync_enabled" default="true"/>
+  <arg name="odom_sync_tolerance_sec" default="0.05"/>
+  <arg name="odom_sync_wait_timeout_sec" default="0.1"/>
+  <arg name="odom_time_offset_sec" default="0.0"/>
 
   <!-- Reuse map server, MCL, perception prerequisites and the Go2 safety gate,
        but explicitly omit DDDMR global_planner, P2PMoveBase and clicked2goal. -->
@@ -26,6 +30,10 @@
     <arg name="raw_odom_topic" value="$(var raw_odom_topic)"/>
     <arg name="odom_topic" value="$(var odom_topic)"/>
     <arg name="lidar_topic" value="$(var lidar_topic)"/>
+    <arg name="odom_sync_enabled" value="$(var odom_sync_enabled)"/>
+    <arg name="odom_sync_tolerance_sec" value="$(var odom_sync_tolerance_sec)"/>
+    <arg name="odom_sync_wait_timeout_sec" value="$(var odom_sync_wait_timeout_sec)"/>
+    <arg name="odom_time_offset_sec" value="$(var odom_time_offset_sec)"/>
     <arg name="start_go2_nav_cmd_gate" value="true"/>
     <arg name="go2_nav_cmd_gate_input_topic" value="/dddmr_go2/dry_run_cmd_vel"/>
     <arg name="start_sport_dry_run_adapter" value="true"/>

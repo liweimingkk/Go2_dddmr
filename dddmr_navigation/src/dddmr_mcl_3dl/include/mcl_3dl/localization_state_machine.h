@@ -19,6 +19,7 @@
 #define MCL_3DL_LOCALIZATION_STATE_MACHINE_H
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <string>
 
@@ -54,9 +55,26 @@ struct LocalizationStateConfig
   double tracking_match_ratio{0.15};
   double lost_match_ratio{0.08};
   double tracking_max_xy_std{0.75};
+  double tracking_max_z_std{1.0e6};
+  double tracking_max_roll_std{1.0e6};
+  double tracking_max_pitch_std{1.0e6};
   double tracking_max_yaw_std{0.35};
+  double tracking_max_residual{1.0e6};
+  double tracking_max_map_odom_tilt{3.2};
+  double tracking_max_ground_normal_error{3.2};
+  double tracking_max_base_height_error{1.0e6};
+  double tracking_max_pose_height_error{1.0e6};
   double lost_max_xy_std{1.50};
+  double lost_max_z_std{1.0e6};
+  double lost_max_roll_std{1.0e6};
+  double lost_max_pitch_std{1.0e6};
   double lost_max_yaw_std{0.80};
+  double lost_max_residual{1.0e6};
+  double lost_max_map_odom_tilt{3.2};
+  double lost_max_ground_normal_error{3.2};
+  double lost_max_base_height_error{1.0e6};
+  double lost_max_pose_height_error{1.0e6};
+  bool require_ground_health{false};
   std::size_t tracking_good_frames{4};
   std::size_t lost_bad_frames{3};
 };
@@ -65,7 +83,16 @@ struct LocalizationObservation
 {
   double match_ratio{0.0};
   double xy_std{0.0};
+  double z_std{0.0};
+  double roll_std{0.0};
+  double pitch_std{0.0};
   double yaw_std{0.0};
+  double residual{0.0};
+  double map_odom_tilt{0.0};
+  double ground_normal_error{0.0};
+  double base_height_error{0.0};
+  double pose_height_error{0.0};
+  bool ground_valid{true};
   bool particle_count_converged{false};
 };
 
@@ -116,13 +143,36 @@ public:
 
   bool observe(const LocalizationObservation& observation)
   {
+    const bool observation_finite =
+        std::isfinite(observation.match_ratio) &&
+        std::isfinite(observation.xy_std) &&
+        std::isfinite(observation.z_std) &&
+        std::isfinite(observation.roll_std) &&
+        std::isfinite(observation.pitch_std) &&
+        std::isfinite(observation.yaw_std) &&
+        std::isfinite(observation.residual) &&
+        std::isfinite(observation.map_odom_tilt) &&
+        std::isfinite(observation.ground_normal_error) &&
+        std::isfinite(observation.base_height_error) &&
+        std::isfinite(observation.pose_height_error);
+
     if (state_ == LocalizationState::LOCALIZING)
     {
       const bool good =
+        observation_finite &&
         observation.particle_count_converged &&
         observation.match_ratio >= config_.tracking_match_ratio &&
         observation.xy_std <= config_.tracking_max_xy_std &&
-        observation.yaw_std <= config_.tracking_max_yaw_std;
+        observation.z_std <= config_.tracking_max_z_std &&
+        observation.roll_std <= config_.tracking_max_roll_std &&
+        observation.pitch_std <= config_.tracking_max_pitch_std &&
+        observation.yaw_std <= config_.tracking_max_yaw_std &&
+        observation.residual <= config_.tracking_max_residual &&
+        observation.map_odom_tilt <= config_.tracking_max_map_odom_tilt &&
+        observation.ground_normal_error <= config_.tracking_max_ground_normal_error &&
+        observation.base_height_error <= config_.tracking_max_base_height_error &&
+        observation.pose_height_error <= config_.tracking_max_pose_height_error &&
+        (!config_.require_ground_health || observation.ground_valid);
 
       good_frames_ = good ? good_frames_ + 1 : 0;
       bad_frames_ = 0;
@@ -136,9 +186,19 @@ public:
     if (state_ == LocalizationState::TRACKING)
     {
       const bool bad =
+        !observation_finite ||
         observation.match_ratio < config_.lost_match_ratio ||
         observation.xy_std > config_.lost_max_xy_std ||
-        observation.yaw_std > config_.lost_max_yaw_std;
+        observation.z_std > config_.lost_max_z_std ||
+        observation.roll_std > config_.lost_max_roll_std ||
+        observation.pitch_std > config_.lost_max_pitch_std ||
+        observation.yaw_std > config_.lost_max_yaw_std ||
+        observation.residual > config_.lost_max_residual ||
+        observation.map_odom_tilt > config_.lost_max_map_odom_tilt ||
+        observation.ground_normal_error > config_.lost_max_ground_normal_error ||
+        observation.base_height_error > config_.lost_max_base_height_error ||
+        observation.pose_height_error > config_.lost_max_pose_height_error ||
+        (config_.require_ground_health && !observation.ground_valid);
 
       bad_frames_ = bad ? bad_frames_ + 1 : 0;
       good_frames_ = 0;

@@ -28,6 +28,7 @@
  */
 
 #include <mcl_3dl/lidar_measurement_models/lidar_measurement_model_likelihood.h>
+#include <mcl_3dl/flat_ground.h>
 
 namespace mcl_3dl
 {
@@ -90,164 +91,124 @@ LidarMeasurementResult LidarMeasurementModelLikelihood::measure(
     std::map<std::string, pcl::PointCloud<mcl_3dl::pcl_t>::Ptr> pcl_segmentations,
     const State6DOF& s) const
 {
-
   pcl::PointCloud<mcl_3dl::pcl_t>::Ptr pc_flat_new_type(new pcl::PointCloud<mcl_3dl::pcl_t>);
   pcl::PointCloud<mcl_3dl::pcl_t>::Ptr pc_less_sharp_new_type(new pcl::PointCloud<mcl_3dl::pcl_t>);
 
-  float score_like = 0;
+  float score_like = 0.0f;
   *pc_flat_new_type = (*pcl_segmentations[std::string("flat")]);
   s.transform(*pc_flat_new_type);
 
   *pc_less_sharp_new_type = (*pcl_segmentations[std::string("less_sharp")]);
   s.transform(*pc_less_sharp_new_type);
 
-  /*Must find a pose stick with ground*/
-  mcl_3dl::pcl_t particle_pose;
-  particle_pose.x = s.pos_.x_;
-  particle_pose.y = s.pos_.y_;
-  particle_pose.z = s.pos_.z_;
-  float pos_weight = 1.0;
-
-  /*Kd-tree to find nn point for planar equation*/
-  std::vector<int> pointIdxRadiusSearch;
-  std::vector<float> pointRadiusSquaredDistance;
-  kdtree_ground.radiusSearch(particle_pose, radius_of_ground_search_, pointIdxRadiusSearch, pointRadiusSquaredDistance);
-  RCLCPP_DEBUG(logger_->get_logger(), "%lu", pointIdxRadiusSearch.size());
-  bool is_ground_health = false;
-  if(pointIdxRadiusSearch.size()>=threshold_for_trusted_ground_){
-
-    is_ground_health = true;
-    float avg_nx, avg_ny, avg_nz;
-    avg_nx = avg_ny = avg_nz = 0;
-    for(auto it = pointIdxRadiusSearch.begin(); it!=pointIdxRadiusSearch.end();it++){
-      avg_nx += normals.points[(*it)].normal_x;
-      avg_ny += normals.points[(*it)].normal_y;
-      avg_nz += fabs(normals.points[(*it)].normal_z); //@ z might not point to sky but underground 
+  // In 2.5D the ground reference is below base_link. Treating base_link itself
+  // as the ground point is what previously pulled the estimate down by the
+  // robot's clearance and allowed map normals to tilt roll/pitch.
+  const double expected_ground_z = s.pos_.z_ -
+      (flat_ground_mode_ ? base_link_height_ : 0.0);
+  const FlatGroundEstimate ground = estimateFlatGround(
+      kdtree_ground, normals, s.pos_.x_, s.pos_.y_, expected_ground_z,
+      radius_of_ground_search_,
+      static_cast<std::size_t>(std::max(1, threshold_for_trusted_ground_)));
+  float pos_weight = 1.0f;
+  if (ground.valid)
+  {
+    const double height_error = std::abs(expected_ground_z - ground.z);
+    if (flat_ground_mode_)
+    {
+      pos_weight = static_cast<float>(std::max(0.01, 1.0 - std::min(1.0, height_error)));
     }
-    //@ Normalize by number of points
-    avg_nx/=pointIdxRadiusSearch.size();
-    avg_ny/=pointIdxRadiusSearch.size();
-    avg_nz/=pointIdxRadiusSearch.size();
-    RCLCPP_DEBUG(logger_->get_logger(), "Nx: %f, Ny: %f, Nz: %f", avg_nx, avg_ny, avg_nz);
-    //Check the normal of closest point is pointing sky
-    if(fabs(avg_nx)>=3.*fabs(avg_nz) || fabs(avg_ny)>=3.*fabs(avg_nz) )
-      pos_weight = 0.2;//maybe better than not even found?so set it larger than nothing found
-    else{
-
-      /*Ready to examine roll and pitch*/
-      tf2::Vector3 axis_vector(avg_nx, avg_ny, avg_nz);
-
-      tf2::Vector3 up_vector(0.0, 0.0, 1.0);
-      tf2::Vector3 right_vector = axis_vector.cross(up_vector);
-      right_vector.normalized();
-      tf2::Quaternion q_normal(right_vector, -1.0*acos(axis_vector.dot(up_vector)));
-      q_normal.normalize();
-
-      tf2::Quaternion q_pose(s.rot_.x_, s.rot_.y_, s.rot_.z_, s.rot_.w_);
-      tf2::Quaternion q_new;
-
-      q_new = q_pose*q_normal;  // Calculate the new orientation
-      q_new.normalize();
-
-      /*transform to RPY for weighting*/
-      double roll, pitch, yaw;
-      tf2::Matrix3x3(q_new).getRPY(roll, pitch, yaw);
-      RCLCPP_DEBUG(logger_->get_logger(), "R: %f, P: %f, Y: %f", roll, pitch, yaw);
-      double roll_diff = 0;
-      if(fabs(roll)>2.6 && fabs(roll)<3.1415926)
-        roll_diff = 3.1415926-fabs(roll);
-      else if(fabs(roll)>=0 and fabs(roll)<0.5)
-        roll_diff = fabs(roll);
-      else
-        roll_diff = 0.55;
-      RCLCPP_DEBUG(logger_->get_logger(), "roll diff: %f", roll_diff);
-      /*better score when roll_diff close to zero*/
-
-      /*kdtree ground --> Now find the point on the ground to make sure the pose is stick with ground*/
-      std::vector<int> pointIdxNKNSearch(1);
-      std::vector<float> pointNKNSquaredDistance(1);
-      if(kdtree_ground.nearestKSearch(particle_pose, 1, pointIdxNKNSearch, pointNKNSquaredDistance))
-        pos_weight = (1.0-std::sqrt(pointNKNSquaredDistance[0])) * (1-roll_diff);
-      else{
-        RCLCPP_ERROR(logger_->get_logger(), "mcl lidar_measurement_model_likelihood.cpp: not possible!!!");
-        pos_weight = 0.1;
-      }
-      if(pos_weight<0)
-        pos_weight = 0.01;
+    else
+    {
+      const Vec3 pose_up = s.rot_.normalized() * Vec3(0.0, 0.0, 1.0);
+      const double alignment = std::clamp(
+          static_cast<double>(pose_up.dot(ground.normal)), -1.0, 1.0);
+      const double normal_error = std::acos(alignment);
+      pos_weight = static_cast<float>(std::max(
+          0.01,
+          (1.0 - std::min(1.0, height_error)) *
+          (1.0 - std::min(1.0, normal_error))));
     }
   }
-  else{
-    RCLCPP_DEBUG(logger_->get_logger(), 
-        "Not enough ground information: %lu, expected at least: %d, @ location: %.2f, %.2f, %.2f, ignore ground weighting mechanism.", 
-        pointIdxRadiusSearch.size(), threshold_for_trusted_ground_, particle_pose.x, particle_pose.y, particle_pose.z);
-    /*kdtree --> Now find the point on the ground to make sure the pose is stick with ground*/
-    std::vector<int> pointIdxNKNSearch(1);
-    std::vector<float> pointNKNSquaredDistance(1);
-    if(kdtree.nearestKSearch(particle_pose, 1, pointIdxNKNSearch, pointNKNSquaredDistance))
-      pos_weight = (1.0-std::sqrt(pointNKNSquaredDistance[0]));
+  else if (flat_ground_mode_)
+  {
+    pos_weight = 0.01f;
+  }
+  else
+  {
+    pcl_t particle_pose;
+    particle_pose.x = s.pos_.x_;
+    particle_pose.y = s.pos_.y_;
+    particle_pose.z = s.pos_.z_;
+    std::vector<int> nearest_index(1);
+    std::vector<float> nearest_squared_distance(1);
+    if (kdtree.nearestKSearch(
+          particle_pose, 1, nearest_index, nearest_squared_distance) > 0)
+    {
+      pos_weight = std::max(0.01f, 1.0f - std::sqrt(nearest_squared_distance[0]));
+    }
     else
-      pos_weight = 0.01;
-    if(pos_weight<0)
-      pos_weight = 0.01;
+    {
+      pos_weight = 0.01f;
+    }
   }
 
   size_t num = 0;
-  std::vector<int> id(1);
-  std::vector<float> sqdist(1);
+  double residual_sum = 0.0;
 
   for (auto& p : pc_flat_new_type->points)
   {
-    if(is_ground_health){
-      kdtree_ground.radiusSearch(p, match_dist_min_, id, sqdist, 1);
-    }
-    else{
-      kdtree.radiusSearch(p, match_dist_min_, id, sqdist, 1);
-    }
-
-    if (sqdist.size()>0)
+    std::vector<int> id;
+    std::vector<float> sqdist;
+    const int found = ground.valid ?
+        kdtree_ground.radiusSearch(p, match_dist_min_, id, sqdist, 1) :
+        kdtree.radiusSearch(p, match_dist_min_, id, sqdist, 1);
+    const float nearest_distance = found > 0 ?
+        std::sqrt(sqdist.front()) : match_dist_min_;
+    residual_sum += std::min(nearest_distance, match_dist_min_);
+    if (found > 0)
     {
-      const float dist = match_dist_min_ - std::max(std::sqrt(sqdist[0]), match_dist_flat_);
+      const float dist = match_dist_min_ - std::max(nearest_distance, match_dist_flat_);
       if (dist < 0.0)
+      {
         continue;
-
+      }
       score_like += dist * dist;
       num++;
     }
   }
-  /*
-  id.clear();
-  sqdist.clear();
+
   for (auto& p : pc_less_sharp_new_type->points)
   {
-    if (kdtree->radiusSearch(p, match_dist_min_, id, sqdist, 1))
+    std::vector<int> id;
+    std::vector<float> sqdist;
+    const int found = kdtree.radiusSearch(p, match_dist_min_, id, sqdist, 1);
+    const float nearest_distance = found > 0 ?
+        std::sqrt(sqdist.front()) : match_dist_min_;
+    residual_sum += std::min(nearest_distance, match_dist_min_);
+    if (found > 0)
     {
-      const float dist = match_dist_min_ - std::max(std::sqrt(sqdist[0]), match_dist_flat_);
+      const float dist = match_dist_min_ - std::max(nearest_distance, match_dist_flat_);
       if (dist < 0.0)
+      {
         continue;
-
-      score_like += dist * dist;
+      }
+      const float point_weight = std::max(0.05f, std::abs(p.intensity));
+      score_like += dist * dist / point_weight;
       num++;
     }
   }
-  */
-  id.clear();
-  sqdist.clear();
-  for (auto& p : pc_less_sharp_new_type->points)
-  {
-    float pt_segmentation_weight = p.intensity;
+  const std::size_t total_points =
+      pc_flat_new_type->points.size() + pc_less_sharp_new_type->points.size();
+  const float match_ratio = total_points > 0 ?
+      static_cast<float>(num) / static_cast<float>(total_points) : 0.0f;
+  const float residual = total_points > 0 ?
+      static_cast<float>(residual_sum / static_cast<double>(total_points)) :
+      std::numeric_limits<float>::infinity();
 
-    if (kdtree.radiusSearch(p, match_dist_min_, id, sqdist, 1))
-    {
-      const float dist = match_dist_min_ - std::max(std::sqrt(sqdist[0]), match_dist_flat_);
-      if (dist < 0.0)
-        continue;
-
-      score_like += dist * dist / pt_segmentation_weight;
-      num++;
-    }
-  }
-  const float match_ratio = static_cast<float>(num) / (pc_flat_new_type->points.size() + pc_less_sharp_new_type->points.size());
-
-  return LidarMeasurementResult(score_like*pos_weight, match_ratio);
+  return LidarMeasurementResult(
+      score_like * pos_weight, match_ratio, residual, ground.valid,
+      static_cast<float>(ground.z), ground.normal,
+      static_cast<float>(ground.roughness));
 }
 }  // namespace mcl_3dl

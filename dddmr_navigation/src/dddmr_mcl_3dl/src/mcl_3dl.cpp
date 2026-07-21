@@ -50,6 +50,7 @@ MCL3dlNode::MCL3dlNode(std::string name) : Node(name)
   , last_global_attempt_ns_(0)
   , localizing_started_ns_(0)
   , latest_match_ratio_(0.0f)
+  , latest_residual_(std::numeric_limits<float>::infinity())
   , feature_sequence_(0)
   , last_measured_feature_sequence_(0)
 {
@@ -69,14 +70,39 @@ bool MCL3dlNode::configure(const std::shared_ptr<mcl_3dl::SubMaps>& sub_maps)
   params_ = std::make_shared<Parameters>(this->get_node_logging_interface(), this->get_node_parameters_interface());
   lidar_measurements_ = std::make_shared<LidarMeasurementModelLikelihood>();
   lidar_measurements_->loadConfig(this->get_node_logging_interface(), this->get_node_parameters_interface());
+  lidar_measurements_->setFlatGroundConfig(
+      params_->flat_ground_enabled_, params_->flat_ground_base_link_height_);
 
   LocalizationStateConfig state_config;
   state_config.tracking_match_ratio = params_->localization_tracking_match_ratio_;
   state_config.lost_match_ratio = params_->localization_lost_match_ratio_;
   state_config.tracking_max_xy_std = params_->localization_tracking_max_xy_std_;
+  state_config.tracking_max_z_std = params_->localization_tracking_max_z_std_;
+  state_config.tracking_max_roll_std = params_->localization_tracking_max_roll_std_;
+  state_config.tracking_max_pitch_std = params_->localization_tracking_max_pitch_std_;
   state_config.tracking_max_yaw_std = params_->localization_tracking_max_yaw_std_;
+  state_config.tracking_max_residual = params_->localization_tracking_max_residual_;
+  state_config.tracking_max_map_odom_tilt = params_->localization_tracking_max_map_odom_tilt_;
+  state_config.tracking_max_ground_normal_error =
+      params_->localization_tracking_max_ground_normal_error_;
+  state_config.tracking_max_base_height_error =
+      params_->localization_tracking_max_base_height_error_;
+  state_config.tracking_max_pose_height_error =
+      params_->localization_tracking_max_pose_height_error_;
   state_config.lost_max_xy_std = params_->localization_lost_max_xy_std_;
+  state_config.lost_max_z_std = params_->localization_lost_max_z_std_;
+  state_config.lost_max_roll_std = params_->localization_lost_max_roll_std_;
+  state_config.lost_max_pitch_std = params_->localization_lost_max_pitch_std_;
   state_config.lost_max_yaw_std = params_->localization_lost_max_yaw_std_;
+  state_config.lost_max_residual = params_->localization_lost_max_residual_;
+  state_config.lost_max_map_odom_tilt = params_->localization_lost_max_map_odom_tilt_;
+  state_config.lost_max_ground_normal_error =
+      params_->localization_lost_max_ground_normal_error_;
+  state_config.lost_max_base_height_error =
+      params_->localization_lost_max_base_height_error_;
+  state_config.lost_max_pose_height_error =
+      params_->localization_lost_max_pose_height_error_;
+  state_config.require_ground_health = params_->localization_require_ground_health_;
   state_config.tracking_good_frames = params_->localization_tracking_good_frames_;
   state_config.lost_bad_frames = params_->localization_lost_bad_frames_;
   localization_state_machine_ = std::make_unique<LocalizationStateMachine>(state_config);
@@ -149,8 +175,13 @@ bool MCL3dlNode::configure(const std::shared_ptr<mcl_3dl::SubMaps>& sub_maps)
   pub_localization_status_ = this->create_publisher<std_msgs::msg::String>(
       "localization_status",
       rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable());
+  pub_localization_health_ = this->create_publisher<std_msgs::msg::String>(
+      "localization_health",
+      rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable());
   pub_localization_quality_ =
       this->create_publisher<std_msgs::msg::Float32>("localization_quality", 1);
+  pub_localization_residual_ =
+      this->create_publisher<std_msgs::msg::Float32>("localization_residual", 1);
 
   srv_global_localization_ = this->create_service<std_srvs::srv::Trigger>(
       "global_localization",
@@ -353,6 +384,22 @@ void MCL3dlNode::cbOdom(const nav_msgs::msg::Odometry::SharedPtr msg){
             params_->resample_var_pitch_,
             params_->resample_var_yaw_)));
 
+  if (params_->flat_ground_enabled_)
+  {
+    const bool use_global_ground = sub_maps_->isGlobalReady() &&
+        (use_global_map_.load() || localizationState() != LocalizationState::TRACKING);
+    if (use_global_ground)
+    {
+      constrainParticles2p5D(
+          sub_maps_->kdtree_ground_global_, sub_maps_->normals_ground_global_);
+    }
+    else if (sub_maps_->isCurrentReady())
+    {
+      constrainParticles2p5D(
+          sub_maps_->kdtree_ground_current_, sub_maps_->normals_ground_current_);
+    }
+  }
+
   std::normal_distribution<float> noise(0.0, 1.0);
   auto update_noise_func = [this, &noise](State6DOF& s)
   {
@@ -431,6 +478,8 @@ void MCL3dlNode::cbLeGoFeatureCloud(const sensor_msgs::msg::PointCloud2::SharedP
   pcl::transformPointCloud(*pc_less_sharp, *pc_less_sharp, trans_b2s_af3);
   pcl::transformPointCloud(*pc_flat, *pc_flat, trans_b2s_af3);
   pcl::transformPointCloud(*pc_less_flat, *pc_less_flat, trans_b2s_af3);
+
+  observation_ground_ = estimateObservationGround(*pc_flat);
   
   //*pc_less_sharp+=*pc_less_flat;
 
@@ -606,6 +655,135 @@ void MCL3dlNode::cbLeGoFeatureCloud(const sensor_msgs::msg::PointCloud2::SharedP
   
 }
 
+MCL3dlNode::ObservationGround MCL3dlNode::estimateObservationGround(
+    const pcl::PointCloud<mcl_3dl::pcl_t>& flat_cloud) const
+{
+  ObservationGround estimate;
+  auto candidates = std::make_shared<pcl::PointCloud<mcl_3dl::pcl_t>>();
+  candidates->reserve(flat_cloud.size());
+  const double expected_ground_z = -params_->flat_ground_base_link_height_;
+  for (const auto& point : flat_cloud.points)
+  {
+    if (std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z) &&
+        std::abs(static_cast<double>(point.z) - expected_ground_z) <=
+          params_->flat_ground_observation_height_tolerance_)
+    {
+      candidates->push_back(point);
+    }
+  }
+  if (candidates->size() < static_cast<std::size_t>(params_->flat_ground_min_points_))
+  {
+    return estimate;
+  }
+
+  pcl::SACSegmentation<mcl_3dl::pcl_t> segmentation;
+  segmentation.setOptimizeCoefficients(true);
+  segmentation.setModelType(pcl::SACMODEL_PERPENDICULAR_PLANE);
+  segmentation.setMethodType(pcl::SAC_RANSAC);
+  segmentation.setAxis(Eigen::Vector3f::UnitZ());
+  segmentation.setEpsAngle(params_->flat_ground_observation_max_tilt_);
+  segmentation.setDistanceThreshold(params_->flat_ground_observation_plane_distance_);
+  segmentation.setMaxIterations(100);
+  segmentation.setInputCloud(candidates);
+  pcl::PointIndices inliers;
+  pcl::ModelCoefficients coefficients;
+  segmentation.segment(inliers, coefficients);
+  if (inliers.indices.size() < static_cast<std::size_t>(params_->flat_ground_min_points_) ||
+      coefficients.values.size() < 4)
+  {
+    return estimate;
+  }
+
+  Vec3 normal(
+      coefficients.values[0], coefficients.values[1], coefficients.values[2]);
+  double offset = coefficients.values[3];
+  if (normal.norm() < 1e-6)
+  {
+    return estimate;
+  }
+  const double original_norm = normal.norm();
+  normal /= original_norm;
+  offset /= original_norm;
+  if (normal.z_ < 0.0)
+  {
+    normal *= -1.0;
+    offset *= -1.0;
+  }
+  if (normal.z_ < std::cos(params_->flat_ground_observation_max_tilt_))
+  {
+    return estimate;
+  }
+
+  estimate.base_height = offset / normal.z_;
+  estimate.normal = normal;
+  std::vector<double> distances;
+  distances.reserve(inliers.indices.size());
+  for (const int index : inliers.indices)
+  {
+    if (index < 0 || static_cast<std::size_t>(index) >= candidates->size())
+    {
+      continue;
+    }
+    const auto& point = candidates->points[static_cast<std::size_t>(index)];
+    distances.push_back(std::abs(
+        normal.x_ * point.x + normal.y_ * point.y + normal.z_ * point.z + offset));
+  }
+  estimate.roughness = median(distances);
+  estimate.valid = std::isfinite(estimate.base_height) &&
+      std::isfinite(estimate.roughness) && estimate.base_height > 0.0;
+  return estimate;
+}
+
+bool MCL3dlNode::constrainState2p5D(
+    State6DOF& state,
+    pcl::KdTreeFLANN<mcl_3dl::pcl_t>& ground_tree,
+    const pcl::PointCloud<pcl::Normal>& ground_normals) const
+{
+  if (!params_->flat_ground_enabled_)
+  {
+    return true;
+  }
+  if (!has_odom_)
+  {
+    return false;
+  }
+
+  const FlatGroundEstimate ground = estimateFlatGround(
+      ground_tree, ground_normals, state.pos_.x_, state.pos_.y_,
+      state.pos_.z_ - params_->flat_ground_base_link_height_,
+      params_->flat_ground_search_radius_,
+      static_cast<std::size_t>(params_->flat_ground_min_points_));
+  if (!ground.valid)
+  {
+    return false;
+  }
+
+  const double desired_map_yaw = state.rot_.getRPY().z_;
+  const double odom_yaw = odom_.rot_.getRPY().z_;
+  const double map_to_odom_yaw = std::atan2(
+      std::sin(desired_map_yaw - odom_yaw),
+      std::cos(desired_map_yaw - odom_yaw));
+  state.rot_ = Quat(Vec3(0.0, 0.0, map_to_odom_yaw)) * odom_.rot_;
+  state.rot_.normalize();
+  state.pos_.z_ = ground.z + params_->flat_ground_base_link_height_;
+  return true;
+}
+
+void MCL3dlNode::constrainParticles2p5D(
+    pcl::KdTreeFLANN<mcl_3dl::pcl_t>& ground_tree,
+    const pcl::PointCloud<pcl::Normal>& ground_normals)
+{
+  if (!params_->flat_ground_enabled_)
+  {
+    return;
+  }
+  auto constrain = [this, &ground_tree, &ground_normals](State6DOF& state)
+  {
+    constrainState2p5D(state, ground_tree, ground_normals);
+  };
+  pf_->predict(constrain);
+}
+
 std::vector<State6DOF> MCL3dlNode::buildGlobalCandidates() const
 {
   const auto key_poses = sub_maps_->getKeyPoses();
@@ -624,7 +802,9 @@ std::vector<State6DOF> MCL3dlNode::buildGlobalCandidates() const
     const double dx = pose.position.x - previous.x;
     const double dy = pose.position.y - previous.y;
     const double dz = pose.position.z - previous.z;
-    if (std::sqrt(dx * dx + dy * dy + dz * dz) >=
+    const double distance = params_->flat_ground_enabled_ ?
+        std::hypot(dx, dy) : std::sqrt(dx * dx + dy * dy + dz * dz);
+    if (distance >=
         params_->global_localization_grid_)
     {
       position_seeds.push_back(pose);
@@ -638,7 +818,9 @@ std::vector<State6DOF> MCL3dlNode::buildGlobalCandidates() const
     const double dx = last_key_pose.position.x - last_selected.x;
     const double dy = last_key_pose.position.y - last_selected.y;
     const double dz = last_key_pose.position.z - last_selected.z;
-    if (std::sqrt(dx * dx + dy * dy + dz * dz) > 1e-3)
+    const double distance = params_->flat_ground_enabled_ ?
+        std::hypot(dx, dy) : std::sqrt(dx * dx + dy * dy + dz * dz);
+    if (distance > 1e-3)
     {
       position_seeds.push_back(last_key_pose);
     }
@@ -731,6 +913,12 @@ void MCL3dlNode::initializeGlobalParticles(
         candidate.state, params_->global_localization_seed_std_);
     particle->state_ = State6DOF::generateNoise<State6DOF>(engine_, noise_generator);
     particle->state_.normalize();
+    if (params_->flat_ground_enabled_)
+    {
+      constrainState2p5D(
+          particle->state_, sub_maps_->kdtree_ground_global_,
+          sub_maps_->normals_ground_global_);
+    }
     particle->probability_ = probability;
     particle->probability_bias_ = 1.0f;
     particle->accum_probability_ = 0.0f;
@@ -769,33 +957,76 @@ bool MCL3dlNode::attemptGlobalLocalization(
   #pragma omp parallel for
   for (std::size_t i = 0; i < candidate_states.size(); ++i)
   {
+    State6DOF candidate = candidate_states[i];
+    if (!constrainState2p5D(
+          candidate, sub_maps_->kdtree_ground_global_,
+          sub_maps_->normals_ground_global_))
+    {
+      scored[i].state = candidate;
+      continue;
+    }
     const auto result = lidar_measurements_->measure(
         sub_maps_->kdtree_map_global_, sub_maps_->kdtree_ground_global_,
-        sub_maps_->normals_ground_global_, sparse_observation, candidate_states[i]);
-    scored[i].state = candidate_states[i];
+        sub_maps_->normals_ground_global_, sparse_observation, candidate);
+    scored[i].state = candidate;
     scored[i].quality = std::isfinite(result.quality) ? result.quality : 0.0f;
     scored[i].likelihood = std::isfinite(result.likelihood) ? result.likelihood : 0.0f;
+    scored[i].residual =
+        (!params_->flat_ground_enabled_ || result.ground_valid) &&
+        std::isfinite(result.residual) ?
+        result.residual : std::numeric_limits<float>::infinity();
+  }
+
+  const std::size_t evaluated_candidates = scored.size();
+  const auto best_quality_it = std::max_element(
+      scored.begin(), scored.end(),
+      [](const GlobalCandidate& lhs, const GlobalCandidate& rhs)
+      {
+        return lhs.quality < rhs.quality;
+      });
+  const auto best_residual_it = std::min_element(
+      scored.begin(), scored.end(),
+      [](const GlobalCandidate& lhs, const GlobalCandidate& rhs)
+      {
+        return lhs.residual < rhs.residual;
+      });
+  const float best_observed_quality = best_quality_it->quality;
+  const float best_observed_residual = best_residual_it->residual;
+  scored.erase(
+      std::remove_if(
+          scored.begin(), scored.end(),
+          [this](const GlobalCandidate& candidate)
+          {
+            return candidate.quality < params_->global_localization_min_match_ratio_ ||
+                candidate.residual > params_->global_localization_max_residual_;
+          }),
+      scored.end());
+
+  if (scored.empty())
+  {
+    RCLCPP_WARN(
+        this->get_logger(),
+        "Global localization rejected %lu candidates: best observed match=%.3f "
+        "(min %.3f), best observed residual=%.3f (max %.3f)",
+        evaluated_candidates, best_observed_quality,
+        params_->global_localization_min_match_ratio_, best_observed_residual,
+        params_->global_localization_max_residual_);
+    return false;
   }
 
   std::sort(scored.begin(), scored.end(),
       [](const GlobalCandidate& lhs, const GlobalCandidate& rhs)
       {
+        if (lhs.residual != rhs.residual)
+        {
+          return lhs.residual < rhs.residual;
+        }
         if (lhs.quality != rhs.quality)
         {
           return lhs.quality > rhs.quality;
         }
         return lhs.likelihood > rhs.likelihood;
       });
-
-  if (scored.front().quality < params_->global_localization_min_match_ratio_)
-  {
-    RCLCPP_WARN(
-        this->get_logger(),
-        "Global localization rejected %lu candidates: best match %.3f is below %.3f",
-        scored.size(), scored.front().quality,
-        params_->global_localization_min_match_ratio_);
-    return false;
-  }
 
   scored.resize(std::min<std::size_t>(
       scored.size(), static_cast<std::size_t>(params_->global_localization_top_candidates_)));
@@ -823,22 +1054,26 @@ bool MCL3dlNode::attemptGlobalLocalization(
 
   startLocalizing(
       "global coarse match accepted with quality " +
-      std::to_string(scored.front().quality));
+      std::to_string(scored.front().quality) + " residual " +
+      std::to_string(scored.front().residual));
   publishParticles();
   RCLCPP_WARN(
       this->get_logger(),
       "Global localization seeded %d particles from %lu/%lu candidates; best pose "
-      "(%.2f, %.2f, %.2f) quality=%.3f",
+      "(%.2f, %.2f, %.2f) quality=%.3f residual=%.3f",
       params_->global_localization_num_particles_, scored.size(), candidate_states.size(),
       scored.front().state.pos_.x_, scored.front().state.pos_.y_,
-      scored.front().state.pos_.z_, scored.front().quality);
+      scored.front().state.pos_.z_, scored.front().quality, scored.front().residual);
   return true;
 }
 
-std::pair<double, double> MCL3dlNode::particleSpread(const State6DOF& mean) const
+MCL3dlNode::ParticleSpread MCL3dlNode::particleSpread(const State6DOF& mean) const
 {
-  const double mean_yaw = mean.rot_.getRPY().z_;
+  const Vec3 mean_rpy = mean.rot_.getRPY();
   double xy_variance = 0.0;
+  double z_variance = 0.0;
+  double roll_variance = 0.0;
+  double pitch_variance = 0.0;
   double yaw_variance = 0.0;
   double probability_sum = 0.0;
   for (std::size_t i = 0; i < pf_->getParticleSize(); ++i)
@@ -847,22 +1082,107 @@ std::pair<double, double> MCL3dlNode::particleSpread(const State6DOF& mean) cons
     const double probability = pf_->getParticleProbability(i);
     const double dx = particle.pos_.x_ - mean.pos_.x_;
     const double dy = particle.pos_.y_ - mean.pos_.y_;
-    const double yaw = particle.rot_.getRPY().z_;
-    const double yaw_error = std::atan2(
-        std::sin(yaw - mean_yaw), std::cos(yaw - mean_yaw));
+    const double dz = particle.pos_.z_ - mean.pos_.z_;
+    const Vec3 rpy = particle.rot_.getRPY();
+    const auto angle_error = [](const double value, const double reference)
+    {
+      return std::atan2(std::sin(value - reference), std::cos(value - reference));
+    };
+    const double roll_error = angle_error(rpy.x_, mean_rpy.x_);
+    const double pitch_error = angle_error(rpy.y_, mean_rpy.y_);
+    const double yaw_error = angle_error(rpy.z_, mean_rpy.z_);
     xy_variance += probability * (dx * dx + dy * dy);
+    z_variance += probability * dz * dz;
+    roll_variance += probability * roll_error * roll_error;
+    pitch_variance += probability * pitch_error * pitch_error;
     yaw_variance += probability * yaw_error * yaw_error;
     probability_sum += probability;
   }
 
   if (probability_sum <= 0.0)
   {
-    return {std::numeric_limits<double>::infinity(),
-            std::numeric_limits<double>::infinity()};
+    return {};
   }
-  return {
-    std::sqrt(std::max(0.0, xy_variance / probability_sum)),
-    std::sqrt(std::max(0.0, yaw_variance / probability_sum))};
+  ParticleSpread spread;
+  spread.xy = std::sqrt(std::max(0.0, xy_variance / probability_sum));
+  spread.z = std::sqrt(std::max(0.0, z_variance / probability_sum));
+  spread.roll = std::sqrt(std::max(0.0, roll_variance / probability_sum));
+  spread.pitch = std::sqrt(std::max(0.0, pitch_variance / probability_sum));
+  spread.yaw = std::sqrt(std::max(0.0, yaw_variance / probability_sum));
+  return spread;
+}
+
+std::string MCL3dlNode::localizationHealthReason(
+    const LocalizationObservation& observation) const
+{
+  const auto invalid_or_above = [](const double value, const double limit)
+  {
+    return !std::isfinite(value) || value > limit;
+  };
+  if (!observation.particle_count_converged)
+  {
+    return "PARTICLES_NOT_CONVERGED";
+  }
+  if (!std::isfinite(observation.match_ratio) ||
+      observation.match_ratio < params_->localization_tracking_match_ratio_)
+  {
+    return "MATCH_RATIO";
+  }
+  if (invalid_or_above(
+        observation.residual, params_->localization_tracking_max_residual_))
+  {
+    return "FINAL_RESIDUAL";
+  }
+  if (invalid_or_above(observation.xy_std, params_->localization_tracking_max_xy_std_))
+  {
+    return "PARTICLE_XY_SPREAD";
+  }
+  if (invalid_or_above(observation.z_std, params_->localization_tracking_max_z_std_))
+  {
+    return "PARTICLE_Z_SPREAD";
+  }
+  if (invalid_or_above(
+        observation.roll_std, params_->localization_tracking_max_roll_std_))
+  {
+    return "PARTICLE_ROLL_SPREAD";
+  }
+  if (invalid_or_above(
+        observation.pitch_std, params_->localization_tracking_max_pitch_std_))
+  {
+    return "PARTICLE_PITCH_SPREAD";
+  }
+  if (invalid_or_above(observation.yaw_std, params_->localization_tracking_max_yaw_std_))
+  {
+    return "PARTICLE_YAW_SPREAD";
+  }
+  if (params_->localization_require_ground_health_ && !observation.ground_valid)
+  {
+    return "GROUND_UNAVAILABLE";
+  }
+  if (invalid_or_above(
+        observation.map_odom_tilt, params_->localization_tracking_max_map_odom_tilt_))
+  {
+    return "MAP_ODOM_TILT";
+  }
+  if (invalid_or_above(
+        observation.ground_normal_error,
+        params_->localization_tracking_max_ground_normal_error_))
+  {
+    return "GROUND_NORMAL";
+  }
+  if (invalid_or_above(
+        observation.base_height_error,
+        params_->localization_tracking_max_base_height_error_))
+  {
+    return "BASE_HEIGHT";
+  }
+  if (invalid_or_above(
+        observation.pose_height_error,
+        params_->localization_tracking_max_pose_height_error_))
+  {
+    return "POSE_HEIGHT";
+  }
+  return "HEALTHY";
 }
 
 bool MCL3dlNode::measure(
@@ -892,29 +1212,17 @@ bool MCL3dlNode::measure(
   auto& ground_normals = use_global ?
       sub_maps_->normals_ground_global_ : sub_maps_->normals_ground_current_;
 
+  constrainParticles2p5D(ground_tree, ground_normals);
+
   const auto ts = std::chrono::high_resolution_clock::now();
   lidar_measurements_->setGlobalLocalizationStatus(
       params_->num_particles_, pf_->getParticleSize());
 
-  std::atomic<float> match_ratio_min(1.0f);
-  std::atomic<float> match_ratio_max(0.0f);
   auto measure_func = [this, &pcl_segmentations, &map_tree, &ground_tree,
-                        &ground_normals, &match_ratio_min,
-                        &match_ratio_max](const State6DOF& s) -> float
+                        &ground_normals](const State6DOF& s) -> float
   {
     const LidarMeasurementResult result = lidar_measurements_->measure(
         map_tree, ground_tree, ground_normals, pcl_segmentations, s);
-
-    float observed_min = match_ratio_min.load();
-    while (observed_min > result.quality &&
-           !match_ratio_min.compare_exchange_weak(observed_min, result.quality))
-    {
-    }
-    float observed_max = match_ratio_max.load();
-    while (observed_max < result.quality &&
-           !match_ratio_max.compare_exchange_weak(observed_max, result.quality))
-    {
-    }
     return result.likelihood;
   };
 
@@ -951,7 +1259,8 @@ bool MCL3dlNode::measure(
 
   //@ Weight particle based on the observation weight and p.probability_bias_
   auto e = pf_->expectationBiased();
-  const auto e_max = pf_->max();
+  const bool final_ground_constraint =
+      constrainState2p5D(e, ground_tree, ground_normals);
 
   assert(std::isfinite(e.pos_.x_));
   assert(std::isfinite(e.pos_.y_));
@@ -963,10 +1272,25 @@ bool MCL3dlNode::measure(
 
   e.rot_.normalize();
 
+  // Evaluate the actual pose that will be published. Previously TRACKING used
+  // the maximum hit ratio seen on any particle, which could hide a poor final
+  // weighted pose or a wrong global-search basin.
+  const LidarMeasurementResult final_result = lidar_measurements_->measure(
+      map_tree, ground_tree, ground_normals, pcl_segmentations, e);
+
   Vec3 map_pos;
   Quat map_rot;
   map_pos = e.pos_ - e.rot_ * odom_.rot_.inv() * odom_.pos_;
   map_rot = e.rot_ * odom_.rot_.inv();
+  double raw_map_odom_tilt = 0.0;
+  if (params_->flat_ground_enabled_)
+  {
+    const Vec3 raw_map_up = map_rot * Vec3(0.0, 0.0, 1.0);
+    raw_map_odom_tilt = std::acos(std::clamp(
+        static_cast<double>(
+          raw_map_up.z_ / std::max(1e-9f, raw_map_up.norm())),
+        -1.0, 1.0));
+  }
 
   bool jump = false;
   if (static_cast<int>(pf_->getParticleSize()) > params_->num_particles_)
@@ -1000,13 +1324,24 @@ bool MCL3dlNode::measure(
   map2odom_trans_.header.stamp = laser_header_.stamp;
   map2odom_trans_.header.frame_id = params_->frame_ids_["map"];
   map2odom_trans_.child_frame_id = params_->frame_ids_["odom"];
-  const auto rpy = map_rot.getRPY();
+  Vec3 rpy = map_rot.getRPY();
+  if (params_->flat_ground_enabled_)
+  {
+    rpy.x_ = 0.0;
+    rpy.y_ = 0.0;
+  }
   if (jump)
   {
     f_ang_->set(rpy);
     f_pos_->set(map_pos);
   }
-  map_rot.setRPY(f_ang_->in(rpy));
+  Vec3 filtered_rpy = f_ang_->in(rpy);
+  if (params_->flat_ground_enabled_)
+  {
+    filtered_rpy.x_ = 0.0;
+    filtered_rpy.y_ = 0.0;
+  }
+  map_rot.setRPY(filtered_rpy);
   map_pos = f_pos_->in(map_pos);
   map2odom_trans_.transform.translation = tf2::toMsg(tf2::Vector3(map_pos.x_, map_pos.y_, map_pos.z_));
   map2odom_trans_.transform.rotation = tf2::toMsg(tf2::Quaternion(map_rot.x_, map_rot.y_, map_rot.z_, map_rot.w_));
@@ -1019,21 +1354,95 @@ bool MCL3dlNode::measure(
           0.1f, static_cast<float>(params_->num_particles_) / pf_->getParticleSize()));
 
   const auto spread = particleSpread(e);
-  const float best_match_ratio = match_ratio_max.load();
-  latest_match_ratio_.store(best_match_ratio);
+  const float final_match_ratio =
+      std::isfinite(final_result.quality) ? final_result.quality : 0.0f;
+  const float final_residual = std::isfinite(final_result.residual) ?
+      final_result.residual : std::numeric_limits<float>::infinity();
+  latest_match_ratio_.store(final_match_ratio);
+  latest_residual_.store(final_residual);
   std_msgs::msg::Float32 quality_msg;
-  quality_msg.data = best_match_ratio;
+  quality_msg.data = final_match_ratio;
   pub_localization_quality_->publish(quality_msg);
+  std_msgs::msg::Float32 residual_msg;
+  residual_msg.data = final_residual;
+  pub_localization_residual_->publish(residual_msg);
+
+  LocalizationObservation observation;
+  observation.match_ratio = final_match_ratio;
+  observation.xy_std = spread.xy;
+  observation.z_std = spread.z;
+  observation.roll_std = spread.roll;
+  observation.pitch_std = spread.pitch;
+  observation.yaw_std = spread.yaw;
+  observation.residual = final_residual;
+  observation.particle_count_converged =
+      static_cast<int>(pf_->getParticleSize()) <= params_->num_particles_;
+
+  if (params_->flat_ground_enabled_)
+  {
+    // Check the estimator output before the published transform is projected
+    // to yaw-only; otherwise this safety metric would be zero by construction.
+    observation.map_odom_tilt = raw_map_odom_tilt;
+    observation.ground_valid = final_ground_constraint && final_result.ground_valid &&
+        observation_ground_.valid;
+    if (observation.ground_valid)
+    {
+      Vec3 observed_normal_map = e.rot_ * observation_ground_.normal;
+      observed_normal_map = observed_normal_map.normalized();
+      Vec3 map_ground_normal = final_result.ground_normal.normalized();
+      if (observed_normal_map.z_ < 0.0)
+      {
+        observed_normal_map *= -1.0;
+      }
+      if (map_ground_normal.z_ < 0.0)
+      {
+        map_ground_normal *= -1.0;
+      }
+      observation.ground_normal_error = std::acos(std::clamp(
+          static_cast<double>(observed_normal_map.dot(map_ground_normal)), -1.0, 1.0));
+      observation.base_height_error = std::abs(
+          observation_ground_.base_height - params_->flat_ground_base_link_height_);
+      observation.pose_height_error = std::abs(
+          static_cast<double>(e.pos_.z_) -
+          (static_cast<double>(final_result.ground_z) +
+           params_->flat_ground_base_link_height_));
+    }
+    else
+    {
+      observation.ground_normal_error = std::numeric_limits<double>::infinity();
+      observation.base_height_error = std::numeric_limits<double>::infinity();
+      observation.pose_height_error = std::numeric_limits<double>::infinity();
+    }
+  }
+  else
+  {
+    observation.ground_valid = true;
+  }
+
+  const std::string health_reason = localizationHealthReason(observation);
+  if (health_reason != "HEALTHY")
+  {
+    RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *clock_, 3000,
+        "Localization health %s: match=%.3f residual=%.3f xyz_std=%.3f/%.3f "
+        "rpy_std=%.3f/%.3f/%.3f map_odom_tilt=%.3f ground_valid=%d "
+        "ground_normal_error=%.3f observed_base_height=%.3f configured_base_height=%.3f "
+        "base_height_error=%.3f pose_height_error=%.3f map_ground_z=%.3f pose_z=%.3f",
+        health_reason.c_str(), observation.match_ratio, observation.residual,
+        observation.xy_std, observation.z_std, observation.roll_std,
+        observation.pitch_std, observation.yaw_std, observation.map_odom_tilt,
+        observation.ground_valid, observation.ground_normal_error,
+        observation_ground_.base_height, params_->flat_ground_base_link_height_,
+        observation.base_height_error, observation.pose_height_error,
+        final_result.ground_z, e.pos_.z_);
+  }
 
   bool state_changed = false;
   LocalizationState new_state;
   {
     std::lock_guard<std::mutex> state_lock(localization_state_mutex_);
-    state_changed = localization_state_machine_->observe(LocalizationObservation{
-        best_match_ratio,
-        spread.first,
-        spread.second,
-        static_cast<int>(pf_->getParticleSize()) <= params_->num_particles_});
+    localization_health_ = health_reason;
+    state_changed = localization_state_machine_->observe(observation);
     new_state = localization_state_machine_->state();
     if (state_changed && new_state == LocalizationState::TRACKING)
     {
@@ -1041,7 +1450,8 @@ bool MCL3dlNode::measure(
     }
     else if (state_changed && new_state == LocalizationState::LOST)
     {
-      localization_state_reason_ = "match quality or particle spread exceeded lost thresholds";
+      localization_state_reason_ =
+          "final pose residual, geometry health, or particle spread exceeded lost thresholds";
     }
   }
 
@@ -1058,9 +1468,15 @@ bool MCL3dlNode::measure(
   {
     RCLCPP_WARN(
         this->get_logger(),
-        "Localization state changed to %s: match=%.3f xy_std=%.3f yaw_std=%.3f particles=%lu",
-        localizationStateName(new_state), best_match_ratio, spread.first,
-        spread.second, pf_->getParticleSize());
+        "Localization state changed to %s: match=%.3f residual=%.3f "
+        "xyz_std=%.3f/%.3f rpy_std=%.3f/%.3f/%.3f map_odom_tilt=%.3f "
+        "ground_normal_error=%.3f base_height_error=%.3f pose_height_error=%.3f "
+        "health=%s particles=%lu",
+        localizationStateName(new_state), final_match_ratio, final_residual,
+        spread.xy, spread.z, spread.roll, spread.pitch, spread.yaw,
+        observation.map_odom_tilt, observation.ground_normal_error,
+        observation.base_height_error, observation.pose_height_error,
+        health_reason.c_str(), pf_->getParticleSize());
     publishLocalizationStatus();
     if (new_state == LocalizationState::LOST)
     {
@@ -1088,7 +1504,7 @@ bool MCL3dlNode::measure(
   pose.pose.covariance[14] = cov[2][2];
   pose.pose.covariance[21] = cov[3][3];
   pose.pose.covariance[28] = cov[4][4];
-  pose.pose.covariance[35] = spread.second * spread.second;
+  pose.pose.covariance[35] = spread.yaw * spread.yaw;
   pub_pose_->publish(pose);
 
   if (new_state == LocalizationState::TRACKING)
@@ -1108,32 +1524,16 @@ bool MCL3dlNode::measure(
   const auto tnow = std::chrono::high_resolution_clock::now();
   RCLCPP_DEBUG(this->get_logger(), "MCL (%0.3f sec.)",
             std::chrono::duration<float>(tnow - ts).count());
-  const auto err_integ_map = e_max.rot_ * e_max.odom_err_integ_lin_;
-  RCLCPP_DEBUG(this->get_logger(),"odom error integral lin: %0.3f, %0.3f, %0.3f, "
-            "ang: %0.3f, %0.3f, %0.3f, "
-            "pos: %0.3f, %0.3f, %0.3f, "
-            "err on map: %0.3f, %0.3f, %0.3f",
-            e_max.odom_err_integ_lin_.x_,
-            e_max.odom_err_integ_lin_.y_,
-            e_max.odom_err_integ_lin_.z_,
-            e_max.odom_err_integ_ang_.x_,
-            e_max.odom_err_integ_ang_.y_,
-            e_max.odom_err_integ_ang_.z_,
-            e_max.pos_.x_,
-            e_max.pos_.y_,
-            e_max.pos_.z_,
-            err_integ_map.x_,
-            err_integ_map.y_,
-            err_integ_map.z_);
-  RCLCPP_DEBUG(this->get_logger(),"match ratio min: %0.3f, max: %0.3f, pos: %0.3f, %0.3f, %0.3f",
-            match_ratio_min.load(),
-            best_match_ratio,
+  RCLCPP_DEBUG(this->get_logger(),
+            "final pose match ratio: %0.3f residual: %0.3f pos: %0.3f, %0.3f, %0.3f",
+            final_match_ratio,
+            final_residual,
             e.pos_.x_,
             e.pos_.y_,
             e.pos_.z_);
 
   if (new_state != LocalizationState::LOST &&
-      best_match_ratio < params_->match_ratio_thresh_)
+      final_match_ratio < params_->match_ratio_thresh_)
   {
     RCLCPP_WARN_THROTTLE(this->get_logger(), *clock_, 3000, "Low match_ratio. Expansion resetting.");
     pf_->noise(State6DOF(
@@ -1144,6 +1544,8 @@ bool MCL3dlNode::measure(
               params_->expansion_var_pitch_,
               params_->expansion_var_yaw_)));
   }
+
+  constrainParticles2p5D(ground_tree, ground_normals);
 
   if (static_cast<int>(pf_->getParticleSize()) > params_->num_particles_)
   {
@@ -1201,6 +1603,7 @@ void MCL3dlNode::startLocalizing(const std::string& reason)
     std::lock_guard<std::mutex> lock(localization_state_mutex_);
     changed = localization_state_machine_->startLocalizing();
     localization_state_reason_ = reason;
+    localization_health_ = "NOT_TRACKING";
   }
   localizing_started_ns_.store(clock_->now().nanoseconds());
   tf_ready_.store(false);
@@ -1219,6 +1622,7 @@ void MCL3dlNode::markLocalizationLost(const std::string& reason)
     std::lock_guard<std::mutex> lock(localization_state_mutex_);
     changed = localization_state_machine_->markLost();
     localization_state_reason_ = reason;
+    localization_health_ = "NOT_TRACKING";
   }
   tf_ready_.store(false);
   first_tf_.store(false);
@@ -1254,16 +1658,25 @@ void MCL3dlNode::cbGlobalLocalization(
 
 void MCL3dlNode::publishLocalizationStatus()
 {
-  if (!pub_localization_status_)
+  if (!pub_localization_status_ || !pub_localization_health_)
   {
     return;
   }
   std_msgs::msg::String status;
+  std_msgs::msg::String health;
   {
     std::lock_guard<std::mutex> lock(localization_state_mutex_);
     status.data = localization_state_machine_->stateName();
+    health.data = localization_health_;
   }
   pub_localization_status_->publish(status);
+  pub_localization_health_->publish(health);
+  if (pub_localization_residual_)
+  {
+    std_msgs::msg::Float32 residual;
+    residual.data = latest_residual_.load();
+    pub_localization_residual_->publish(residual);
+  }
 }
 
 void MCL3dlNode::publishLocalizationStatusThread()
@@ -1336,11 +1749,6 @@ void MCL3dlNode::cbPosition(const geometry_msgs::msg::PoseWithCovarianceStamped:
     return;
   }
 
-  {
-    std::unique_lock<mcl_3dl::SubMaps::sub_maps_mutex_t> lock(*(sub_maps_->getMutex()));
-    sub_maps_->setInitialPose(*msg);
-  }
-  
   //@Try to find the ground
   geometry_msgs::msg::PoseStamped pose;
   mcl_3dl::pcl_t initial_pose_pt;
@@ -1355,16 +1763,48 @@ void MCL3dlNode::cbPosition(const geometry_msgs::msg::PoseWithCovarianceStamped:
   pose.pose.orientation = msg->pose.pose.orientation;
 
   pcl::KdTreeFLANN<mcl_3dl::pcl_t>* ground_tree = nullptr;
+  pcl::PointCloud<pcl::Normal>* ground_normals = nullptr;
   if (sub_maps_->isGlobalReady())
   {
     ground_tree = &sub_maps_->kdtree_ground_global_;
+    ground_normals = &sub_maps_->normals_ground_global_;
   }
   else if (sub_maps_->isCurrentReady())
   {
     ground_tree = &sub_maps_->kdtree_ground_current_;
+    ground_normals = &sub_maps_->normals_ground_current_;
   }
 
-  if (ground_tree != nullptr)
+  State6DOF mean(
+      Vec3(pose.pose.position.x, pose.pose.position.y, pose.pose.position.z),
+      Quat(pose.pose.orientation.x, pose.pose.orientation.y,
+           pose.pose.orientation.z, pose.pose.orientation.w));
+  if (params_->flat_ground_enabled_)
+  {
+    if (ground_tree == nullptr || ground_normals == nullptr)
+    {
+      RCLCPP_ERROR(
+          this->get_logger(),
+          "Discarded initial pose: 2.5D mode requires a ready map-ground tree");
+      return;
+    }
+    if (!constrainState2p5D(mean, *ground_tree, *ground_normals))
+    {
+      RCLCPP_ERROR(
+          this->get_logger(),
+          "Discarded initial pose: no trusted local map ground for 2.5D base height");
+      return;
+    }
+    pose.pose.position.z = mean.pos_.z_;
+    pose.pose.orientation.x = mean.rot_.x_;
+    pose.pose.orientation.y = mean.rot_.y_;
+    pose.pose.orientation.z = mean.rot_.z_;
+    pose.pose.orientation.w = mean.rot_.w_;
+    RCLCPP_INFO(
+        this->get_logger(), "2.5D base_link z set to ground + %.3f m",
+        params_->flat_ground_base_link_height_);
+  }
+  else if (ground_tree != nullptr)
   {
     const auto ground_cloud = ground_tree->getInputCloud();
     bool ground_found = false;
@@ -1387,19 +1827,30 @@ void MCL3dlNode::cbPosition(const geometry_msgs::msg::PoseWithCovarianceStamped:
       }
     }
   }
+
+  mean = State6DOF(
+      Vec3(pose.pose.position.x, pose.pose.position.y, pose.pose.position.z),
+      Quat(pose.pose.orientation.x, pose.pose.orientation.y,
+           pose.pose.orientation.z, pose.pose.orientation.w));
+
+  geometry_msgs::msg::PoseWithCovarianceStamped adjusted_pose = *msg;
+  adjusted_pose.pose.pose = pose.pose;
+  {
+    std::unique_lock<mcl_3dl::SubMaps::sub_maps_mutex_t> lock(*(sub_maps_->getMutex()));
+    sub_maps_->setInitialPose(adjusted_pose);
+  }
   
   RCLCPP_INFO(this->get_logger(), "Set initial pose at: %.2f, %.2f, %.2f", pose.pose.position.x, pose.pose.position.y, pose.pose.position.z);
-  const State6DOF mean(Vec3(pose.pose.position.x, pose.pose.position.y, pose.pose.position.z),
-                        Quat(pose.pose.orientation.x,
-                            pose.pose.orientation.y,
-                            pose.pose.orientation.z,
-                            pose.pose.orientation.w));
   const MultivariateNoiseGenerator<float> noise_gen(mean, msg->pose.covariance);
   if (static_cast<int>(pf_->getParticleSize()) != params_->num_particles_)
   {
     pf_->resizeParticle(params_->num_particles_);
   }
   pf_->initUsingNoiseGenerator(noise_gen);
+  if (ground_tree != nullptr && ground_normals != nullptr)
+  {
+    constrainParticles2p5D(*ground_tree, *ground_normals);
+  }
 
   auto integ_reset_func = [](State6DOF& s)
   {

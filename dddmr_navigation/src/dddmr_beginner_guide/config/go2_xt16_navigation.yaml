@@ -74,7 +74,7 @@ dddmr_pg_map_server_manager:
 map1:
   ros__parameters:
     # Active flat-ground map captured and validated on 2026-07-20.
-    pose_graph_dir: "/root/dddmr_bags/go2_xt16_mouth_mapping_20260720_135842_map_2026_07_20_05_58_42"
+    pose_graph_dir: "/root/dddmr_bags/go2_xt16_mouth_mapping_20260720_155833_map_2026_07_20_07_58_32"
     complete_map_voxel_size: 0.2
     complete_ground_voxel_size: 0.1
     merge_non_ground_surface_into_mapcloud: true

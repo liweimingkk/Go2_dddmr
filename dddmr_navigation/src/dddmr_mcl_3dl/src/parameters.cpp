@@ -139,12 +139,56 @@ Parameters::Parameters(const rclcpp::node_interfaces::NodeLoggingInterface::Shar
       logger_->get_logger(), "global_localization_min_match_ratio: %.3f",
       global_localization_min_match_ratio_);
 
+  parameter_->declare_parameter(
+      "global_localization_max_residual", rclcpp::ParameterValue(1.0e6));
+  global_localization_max_residual_ = std::max(
+      0.0, parameter_->get_parameter("global_localization_max_residual").as_double());
+  RCLCPP_INFO(
+      logger_->get_logger(), "global_localization_max_residual: %.3f",
+      global_localization_max_residual_);
+
   parameter_->declare_parameter("global_localization_retry_sec", rclcpp::ParameterValue(2.0));
   global_localization_retry_sec_ =
       std::max(0.1, parameter_->get_parameter("global_localization_retry_sec").as_double());
   RCLCPP_INFO(
       logger_->get_logger(), "global_localization_retry_sec: %.2f",
       global_localization_retry_sec_);
+
+  parameter_->declare_parameter("flat_ground.enabled", rclcpp::ParameterValue(false));
+  flat_ground_enabled_ = parameter_->get_parameter("flat_ground.enabled").as_bool();
+  parameter_->declare_parameter(
+      "flat_ground.base_link_height", rclcpp::ParameterValue(0.30));
+  flat_ground_base_link_height_ = std::max(
+      0.0, parameter_->get_parameter("flat_ground.base_link_height").as_double());
+  parameter_->declare_parameter(
+      "flat_ground.ground_search_radius", rclcpp::ParameterValue(0.80));
+  flat_ground_search_radius_ = std::max(
+      0.10, parameter_->get_parameter("flat_ground.ground_search_radius").as_double());
+  parameter_->declare_parameter("flat_ground.min_points", rclcpp::ParameterValue(4));
+  flat_ground_min_points_ = std::max(
+      1, static_cast<int>(parameter_->get_parameter("flat_ground.min_points").as_int()));
+  parameter_->declare_parameter(
+      "flat_ground.observation_height_tolerance", rclcpp::ParameterValue(0.25));
+  flat_ground_observation_height_tolerance_ = std::max(
+      0.05,
+      parameter_->get_parameter("flat_ground.observation_height_tolerance").as_double());
+  parameter_->declare_parameter(
+      "flat_ground.observation_plane_distance", rclcpp::ParameterValue(0.06));
+  flat_ground_observation_plane_distance_ = std::max(
+      0.01,
+      parameter_->get_parameter("flat_ground.observation_plane_distance").as_double());
+  parameter_->declare_parameter(
+      "flat_ground.observation_max_tilt", rclcpp::ParameterValue(0.35));
+  flat_ground_observation_max_tilt_ = std::clamp(
+      parameter_->get_parameter("flat_ground.observation_max_tilt").as_double(),
+      0.01, 1.50);
+  RCLCPP_INFO(
+      logger_->get_logger(),
+      "flat_ground: enabled=%d base_link_height=%.3f search_radius=%.2f min_points=%d "
+      "observation_height_tolerance=%.2f plane_distance=%.2f max_tilt=%.2f",
+      flat_ground_enabled_, flat_ground_base_link_height_, flat_ground_search_radius_,
+      flat_ground_min_points_, flat_ground_observation_height_tolerance_,
+      flat_ground_observation_plane_distance_, flat_ground_observation_max_tilt_);
 
   parameter_->declare_parameter("global_localization_seed_std_x", rclcpp::ParameterValue(0.35));
   parameter_->declare_parameter("global_localization_seed_std_y", rclcpp::ParameterValue(0.35));
@@ -345,17 +389,66 @@ Parameters::Parameters(const rclcpp::node_interfaces::NodeLoggingInterface::Shar
   parameter_->declare_parameter("localization_tracking_max_xy_std", rclcpp::ParameterValue(0.75));
   localization_tracking_max_xy_std_ = std::max(
       0.01, parameter_->get_parameter("localization_tracking_max_xy_std").as_double());
+  const auto declare_nonnegative = [this](const std::string& name, const double default_value)
+  {
+    parameter_->declare_parameter(name, rclcpp::ParameterValue(default_value));
+    return std::max(0.0, parameter_->get_parameter(name).as_double());
+  };
+  localization_tracking_max_z_std_ =
+      declare_nonnegative("localization_tracking_max_z_std", 1.0e6);
+  localization_tracking_max_roll_std_ =
+      declare_nonnegative("localization_tracking_max_roll_std", 1.0e6);
+  localization_tracking_max_pitch_std_ =
+      declare_nonnegative("localization_tracking_max_pitch_std", 1.0e6);
   parameter_->declare_parameter("localization_tracking_max_yaw_std", rclcpp::ParameterValue(0.35));
   localization_tracking_max_yaw_std_ = std::max(
       0.01, parameter_->get_parameter("localization_tracking_max_yaw_std").as_double());
+  localization_tracking_max_residual_ =
+      declare_nonnegative("localization_tracking_max_residual", 1.0e6);
+  localization_tracking_max_map_odom_tilt_ =
+      declare_nonnegative("localization_tracking_max_map_odom_tilt", 3.2);
+  localization_tracking_max_ground_normal_error_ =
+      declare_nonnegative("localization_tracking_max_ground_normal_error", 3.2);
+  localization_tracking_max_base_height_error_ =
+      declare_nonnegative("localization_tracking_max_base_height_error", 1.0e6);
+  localization_tracking_max_pose_height_error_ =
+      declare_nonnegative("localization_tracking_max_pose_height_error", 1.0e6);
   parameter_->declare_parameter("localization_lost_max_xy_std", rclcpp::ParameterValue(1.50));
   localization_lost_max_xy_std_ = std::max(
       localization_tracking_max_xy_std_,
       parameter_->get_parameter("localization_lost_max_xy_std").as_double());
+  localization_lost_max_z_std_ = std::max(
+      localization_tracking_max_z_std_,
+      declare_nonnegative("localization_lost_max_z_std", 1.0e6));
+  localization_lost_max_roll_std_ = std::max(
+      localization_tracking_max_roll_std_,
+      declare_nonnegative("localization_lost_max_roll_std", 1.0e6));
+  localization_lost_max_pitch_std_ = std::max(
+      localization_tracking_max_pitch_std_,
+      declare_nonnegative("localization_lost_max_pitch_std", 1.0e6));
   parameter_->declare_parameter("localization_lost_max_yaw_std", rclcpp::ParameterValue(0.80));
   localization_lost_max_yaw_std_ = std::max(
       localization_tracking_max_yaw_std_,
       parameter_->get_parameter("localization_lost_max_yaw_std").as_double());
+  localization_lost_max_residual_ = std::max(
+      localization_tracking_max_residual_,
+      declare_nonnegative("localization_lost_max_residual", 1.0e6));
+  localization_lost_max_map_odom_tilt_ = std::max(
+      localization_tracking_max_map_odom_tilt_,
+      declare_nonnegative("localization_lost_max_map_odom_tilt", 3.2));
+  localization_lost_max_ground_normal_error_ = std::max(
+      localization_tracking_max_ground_normal_error_,
+      declare_nonnegative("localization_lost_max_ground_normal_error", 3.2));
+  localization_lost_max_base_height_error_ = std::max(
+      localization_tracking_max_base_height_error_,
+      declare_nonnegative("localization_lost_max_base_height_error", 1.0e6));
+  localization_lost_max_pose_height_error_ = std::max(
+      localization_tracking_max_pose_height_error_,
+      declare_nonnegative("localization_lost_max_pose_height_error", 1.0e6));
+  parameter_->declare_parameter(
+      "localization_require_ground_health", rclcpp::ParameterValue(false));
+  localization_require_ground_health_ =
+      parameter_->get_parameter("localization_require_ground_health").as_bool();
   parameter_->declare_parameter("localization_tracking_good_frames", rclcpp::ParameterValue(4));
   localization_tracking_good_frames_ =
       std::max(1, static_cast<int>(
@@ -376,12 +469,14 @@ Parameters::Parameters(const rclcpp::node_interfaces::NodeLoggingInterface::Shar
 
   RCLCPP_INFO(
       logger_->get_logger(),
-      "localization thresholds: tracking ratio %.3f xy_std %.2f yaw_std %.2f for %d frames; "
-      "lost ratio %.3f xy_std %.2f yaw_std %.2f for %d frames",
-      localization_tracking_match_ratio_, localization_tracking_max_xy_std_,
+      "localization thresholds: tracking ratio %.3f residual %.3f xyz_std %.2f/%.2f "
+      "rpy_std %.2f/%.2f/%.2f for %d frames; lost ratio %.3f residual %.3f for %d frames",
+      localization_tracking_match_ratio_, localization_tracking_max_residual_,
+      localization_tracking_max_xy_std_, localization_tracking_max_z_std_,
+      localization_tracking_max_roll_std_, localization_tracking_max_pitch_std_,
       localization_tracking_max_yaw_std_, localization_tracking_good_frames_,
-      localization_lost_match_ratio_, localization_lost_max_xy_std_,
-      localization_lost_max_yaw_std_, localization_lost_bad_frames_);
+      localization_lost_match_ratio_, localization_lost_max_residual_,
+      localization_lost_bad_frames_);
   
 
   double x, y, z;
