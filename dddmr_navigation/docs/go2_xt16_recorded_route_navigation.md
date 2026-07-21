@@ -353,3 +353,31 @@ summary 日志。第一次真实验证仅限平地短距离；该入口不会自
 
 `route.corridor_*` 与 `route_corridor.*` 应保持一致。不要只放大其中一个，也不要用
 放宽高度走廊来掩盖楼梯地图、TF 或 MCL 的高度错误。
+
+## 简化命令入口
+
+`scripts/go2_path_tracking.sh` 会自动读取导航 YAML 当前选择的地图，并把路线文件
+放到 `bags/routes/<ROUTE_ID>.json`。重新录制和 dry-run 的最短流程为：
+
+```bash
+cd /home/kkkkkkq/new2_success/new22/new2/dddmr_navigation
+export ROUTE_ID=path_follow_YYYYMMDD_a
+
+./scripts/go2_path_tracking.sh config
+./scripts/go2_path_tracking.sh buffers
+./scripts/go2_path_tracking.sh build        # 代码未变化时可跳过
+./scripts/go2_path_tracking.sh record-new
+
+# 用原厂遥控器回到路线起点后执行
+./scripts/go2_path_tracking.sh dry-test
+
+# 人工沿路线检查完成后执行
+./scripts/go2_path_tracking.sh dry-disable
+./scripts/go2_path_tracking.sh check
+./scripts/go2_path_tracking.sh dry-stop
+```
+
+`record-new` 会依次启动禁用真实输出的定位栈、录制、检查路线、重新加载新路线；
+录制时仍只允许使用原厂遥控器。`dry-test` 只启用 dry-run 计算，不连接实体 Sport
+输出。实机探针和运行必须分别显式执行 `probe`、`live`，两者仍要求交互式监督
+确认；运行 `./scripts/go2_path_tracking.sh help` 可查看完整参数。
