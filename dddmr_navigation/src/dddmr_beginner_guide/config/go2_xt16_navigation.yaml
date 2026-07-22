@@ -441,15 +441,13 @@ perception_3d_global:
       map_topic: "map1/mapcloud"
       ground_topic: "map1/planning_ground"
       traversed_stair_clearance:
-        # The 2026-07-22 key poses are a continuous, physically traversed run
-        # through the main gate and into the meeting room. Exempt only this
-        # 0.10 m centerline from false static-map votes; live lidar remains
-        # authoritative for a closed door, people, and changed obstacles.
-        enabled: true
+        # The active route has no stairs. Do not block static-layer readiness
+        # on a recorded stair trajectory or exempt a route corridor from map
+        # votes. Static-map and live-lidar obstacle checks remain enabled.
+        enabled: false
         trajectory_topic: "map1/key_poses"
         minimum_pose_count: 6
-        # Reject an unrelated/partial trajectory before granting the narrow
-        # exemption. This map's recorded base-height span is about 0.63 m.
+        # Retained for a future route that explicitly enables stair clearance.
         minimum_total_height_change: 0.50
         xy_radius: 0.10
         # The saved Go2 base_link trajectory is 0.2-0.5 m above observed
