@@ -138,20 +138,29 @@ void MapDeletePanel::saveSelectedPC()
   }
   else{
 
-    if(output_map_cloud_->points.empty() || output_ground_cloud_->points.empty()){
-      RCLCPP_INFO(rclcpp::get_logger("map_delete_panel"), "Map/Ground points is empty.");
+    if(output_map_cloud_->points.empty() || output_ground_cloud_->points.empty() || sub_pc_->points.empty()){
+      RCLCPP_INFO(rclcpp::get_logger("map_delete_panel"), "Map/Ground/deleted points is empty.");
       return;
     }
-    
-    std::string export_dir_string = dir + "/" + currentDateTime()+ "_remaining_map.pcd";
+
+    const std::string timestamp = currentDateTime();
+    std::string export_dir_string = dir + "/" + timestamp + "_remaining_map.pcd";
     RCLCPP_INFO(rclcpp::get_logger("map_delete_panel"), "Save modified point cloud to: %s", export_dir_string.c_str());
     pcl::PCDWriter w;
     w.writeASCII (export_dir_string, *output_map_cloud_, 3);
 
-    std::string export_dir_string2 = dir + "/" + currentDateTime()+ "_remaining_ground.pcd";
+    std::string export_dir_string2 = dir + "/" + timestamp + "_remaining_ground.pcd";
     RCLCPP_INFO(rclcpp::get_logger("map_delete_panel"), "Save modified point cloud to: %s", export_dir_string2.c_str());
     pcl::PCDWriter w2;
     w2.writeASCII (export_dir_string2, *output_ground_cloud_, 3);
+
+    // The aggregate remaining clouds are useful for visual review, but the
+    // pose-graph cleaner needs the selected global points to map the deletion
+    // back into every keyframe's local coordinate system.
+    std::string deleted_points_path = dir + "/" + timestamp + "_deleted_points.pcd";
+    RCLCPP_INFO(rclcpp::get_logger("map_delete_panel"), "Save deleted point selection to: %s", deleted_points_path.c_str());
+    pcl::PCDWriter deleted_points_writer;
+    deleted_points_writer.writeASCII(deleted_points_path, *sub_pc_, 6);
 
     std_msgs::msg::String tmp_str;
     tmp_str.data = "clear";

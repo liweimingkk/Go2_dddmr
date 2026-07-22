@@ -13,6 +13,8 @@ Commands:
   mapping-bag  Run offline Go2 XT16 LeGO-LOAM mapping from a rosbag2 directory.
   build-navigation
                Build the Go2 XT16 DDDMR navigation test chain inside Docker.
+  pose-graph-editor <editor_map.pcd> <editor_ground.pcd>
+               Open the no-motion RViz point selector for exported pose-graph clouds.
   navigation-dry-run
                Run Go2 XT16 DDDMR navigation with /cmd_vel remapped to dry-run topics.
   navigation-live-source
@@ -172,6 +174,12 @@ source /root/dddmr_navigation/scripts/setup_go2_dds_env.sh
 set -u
 cd /root/dddmr_navigation'
 
+offline_source_prefix='set -eo pipefail
+set +u
+source /opt/ros/humble/setup.bash
+set -u
+cd /root/dddmr_navigation'
+
 case "${command}" in
   shell)
     if [[ -n "${DISPLAY:-}" ]] && command -v xhost >/dev/null 2>&1; then
@@ -192,7 +200,36 @@ colcon --log-base \"\${DDDMR_LOG_BASE}\" build --base-paths src --symlink-instal
 
   build-navigation)
     run_docker "${IMAGE}" bash -lc "${source_prefix}
-colcon --log-base \"\${DDDMR_LOG_BASE}\" build --base-paths src --symlink-install --packages-up-to lego_loam_bor dddmr_pg_map_server mcl_3dl global_planner p2p_move_base perception_3d dddmr_beginner_guide dddmr_rviz_default_plugins --build-base \"\${DDDMR_BUILD_BASE}\" --install-base \"\${DDDMR_INSTALL_BASE}\" --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPython3_EXECUTABLE=/usr/bin/python3"
+colcon --log-base \"\${DDDMR_LOG_BASE}\" build --base-paths src --symlink-install --packages-up-to lego_loam_bor dddmr_pg_map_server mcl_3dl global_planner p2p_move_base perception_3d dddmr_beginner_guide dddmr_rviz_default_plugins map_delete_panel --build-base \"\${DDDMR_BUILD_BASE}\" --install-base \"\${DDDMR_INSTALL_BASE}\" --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPython3_EXECUTABLE=/usr/bin/python3"
+    ;;
+
+  pose-graph-editor)
+    if (( $# != 2 )); then
+      echo "Usage: $0 pose-graph-editor <editor_map.pcd> <editor_ground.pcd>" >&2
+      exit 2
+    fi
+    if [[ -z "${DISPLAY:-}" ]]; then
+      echo "DISPLAY is empty; the RViz pose-graph editor requires a graphical session." >&2
+      exit 1
+    fi
+    if command -v xhost >/dev/null 2>&1; then
+      xhost +local:docker >/dev/null || true
+    fi
+    run_docker -it "${IMAGE}" bash -lc "${offline_source_prefix}
+set +u
+source \"\${DDDMR_INSTALL_BASE}/setup.bash\"
+set -u
+editor_map=\"\$1\"
+editor_ground=\"\$2\"
+[[ -f \"\${editor_map}\" ]] || { echo \"Editor map PCD not found: \${editor_map}\" >&2; exit 1; }
+[[ -f \"\${editor_ground}\" ]] || { echo \"Editor ground PCD not found: \${editor_ground}\" >&2; exit 1; }
+ros2 pkg prefix map_delete_panel >/dev/null 2>&1 || {
+  echo \"map_delete_panel is not installed; run build-navigation first.\" >&2
+  exit 1
+}
+ros2 launch perception_3d pose_graph_pc_delete_utils.launch \\
+  map_dir:=\"\${editor_map}\" ground_dir:=\"\${editor_ground}\" \\
+  map_down_sample:=0.10 ground_down_sample:=0.10" bash "$1" "$2"
     ;;
 
   mapping)
