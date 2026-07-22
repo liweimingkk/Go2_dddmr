@@ -58,7 +58,12 @@ protected:
 
   void SetUp() override
   {
-    node_ = std::make_shared<rclcpp::Node>("route_corridor_model_test");
+    rclcpp::NodeOptions options;
+    options.parameter_overrides({
+      rclcpp::Parameter("route_corridor.max_xy_distance", 0.15),
+      rclcpp::Parameter("route_corridor.max_z_distance", 0.35)});
+    node_ = std::make_shared<rclcpp::Node>(
+      "route_corridor_model_test", options);
     buffer_ = std::make_shared<tf2_ros::Buffer>(node_->get_clock());
     shared_data_ = std::make_shared<ModelSharedData>(buffer_);
     model_.setSharedData(shared_data_);
@@ -85,15 +90,20 @@ protected:
 
 TEST_F(RouteCorridorModelTest, AcceptsTrajectoryInsideHorizontalAndVerticalBounds)
 {
-  setRoute({point(0.0, 0.0, 0.0), point(1.0, 0.0, 0.2)});
-  auto trajectory = makeTrajectory({point(0.2, 0.4, 0.1), point(0.9, 0.5, 0.3)});
+  // Runtime global paths are interpolated at about 0.10 m spacing. Include
+  // representative samples so this checks lateral/vertical corridor bounds,
+  // not the deliberately sparse two-point route used by other unit tests.
+  setRoute({
+    point(0.0, 0.0, 0.0), point(0.2, 0.0, 0.1),
+    point(0.9, 0.0, 0.2), point(1.0, 0.0, 0.2)});
+  auto trajectory = makeTrajectory({point(0.2, 0.10, 0.1), point(0.9, 0.14, 0.3)});
   EXPECT_DOUBLE_EQ(model_.scoreTrajectory(trajectory), 0.0);
 }
 
 TEST_F(RouteCorridorModelTest, RejectsHorizontalDeparture)
 {
   setRoute({point(0.0, 0.0, 0.0), point(1.0, 0.0, 0.0)});
-  auto trajectory = makeTrajectory({point(0.5, 0.61, 0.0)});
+  auto trajectory = makeTrajectory({point(0.0, 0.16, 0.0)});
   EXPECT_LT(model_.scoreTrajectory(trajectory), 0.0);
 }
 

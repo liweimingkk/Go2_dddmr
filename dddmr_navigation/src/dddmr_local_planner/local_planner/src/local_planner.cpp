@@ -478,16 +478,19 @@ geometry_msgs::msg::TransformStamped Local_Planner::getGlobalPose(){
 
 void Local_Planner::prunePlan(double forward_distance, double backward_distance){
 
-  if(pcl_global_plan_->points.size()<3){
+  // Never leave a previous cycle's route in place after the current route is
+  // found unusable. In particular, heading alignment must not rotate against
+  // a stale prune plan while a new global plan is unavailable.
+  prune_plan_.poses.clear();
+  pcl_prune_plan_.clear();
+
+  if(!pcl_global_plan_ || pcl_global_plan_->points.size()<3){
     RCLCPP_WARN_THROTTLE(
       this->get_logger().get_child(name_), *clock_, 1000,
       "prune_plan_empty reason=global_plan_too_small pcl_global_plan_size=%zu",
-      pcl_global_plan_->points.size());
+      pcl_global_plan_ ? pcl_global_plan_->points.size() : 0U);
     return;
   }
-
-  prune_plan_.poses.clear();
-  pcl_prune_plan_.clear();
 
   std::vector<int> pointIdxNKNSearch(1);
   std::vector<float> pointNKNSquaredDistance(1);
@@ -733,8 +736,13 @@ dddmr_sys_core::PlannerState Local_Planner::computeVelocityCommand(std::string t
   perception_3d_ros_->getSharedDataPtr()->pcl_prune_plan_ = pcl_prune_plan_;
   //perception_3d_ros_->getStackedPerception()->determineIsPathBlock(pcl_prune_plan_);
 
-  if((clock_->now()-last_valid_prune_plan_).seconds()>=prune_plane_timeout_){
-    RCLCPP_FATAL(this->get_logger().get_child(name_), "Deviate global plan too much, computeVelocityCommand() returns false.");
+  if(prune_plan_.poses.size()<3 || pcl_prune_plan_.points.size()<3){
+    const double invalid_duration =
+      (clock_->now()-last_valid_prune_plan_).seconds();
+    RCLCPP_ERROR_THROTTLE(
+      this->get_logger().get_child(name_), *clock_, 1000,
+      "Current prune plan is invalid (%.3f s since last valid); stopping before "
+      "trajectory generation.", invalid_duration);
     return dddmr_sys_core::PRUNE_PLAN_FAIL;
   }
 

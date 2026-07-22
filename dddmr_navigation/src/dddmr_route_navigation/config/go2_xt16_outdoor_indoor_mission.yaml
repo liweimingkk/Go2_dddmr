@@ -36,7 +36,7 @@ outdoor_indoor_mission:
     route_directory: "/root/dddmr_bags/routes"
     # Launch overrides this with mission_map_directory. It must name the same
     # pose-graph directory selected as map1.pose_graph_dir in the nav config.
-    active_map_directory: "/root/dddmr_bags/go2_xt16_mouth_mapping_20260720_155833_map_2026_07_20_07_58_32"
+    active_map_directory: "/root/dddmr_bags/go2_xt16_mouth_mapping_20260722_132433_map_2026_07_22_05_24_32"
     expected_frame: "map"
     route_topic: "/recorded_route"
     route_status_topic: "/recorded_route_controller/status"

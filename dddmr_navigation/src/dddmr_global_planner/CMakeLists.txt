@@ -160,6 +160,20 @@ install(PROGRAMS
   DESTINATION lib/${PROJECT_NAME}
 )
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_dwa_path_stitcher
+    test/test_dwa_path_stitcher.cpp
+  )
+  target_include_directories(test_dwa_path_stitcher PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+  ament_target_dependencies(test_dwa_path_stitcher
+    geometry_msgs
+    nav_msgs
+  )
+endif()
+
 ament_export_include_directories(include)
 ament_export_libraries(a_star_on_graph global_planner dynamic_window_aware_global_planner)
 ament_export_dependencies(${dependencies})

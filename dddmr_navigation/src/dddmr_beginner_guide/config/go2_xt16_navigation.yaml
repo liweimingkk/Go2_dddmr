@@ -12,6 +12,9 @@ p2p_move_base:
     # Confirm across three stopped decisions (about 0.20 s from first to third)
     # before escalating. Every failed decision still publishes StopMove.
     local_failure_confirmation_cycles: 3
+    # A lost plan at a narrow gate is fail-closed. Rotating the Go2 can sweep
+    # its legs into a door frame and cannot repair an invalid static-map start.
+    rotate_recovery_enabled: false
     no_plan_retry_num: 10
     waiting_patience: 10.0
     # Pure yaw is responsive on this Go2; the previous 0.10 m/s heading arc
@@ -73,8 +76,8 @@ dddmr_pg_map_server_manager:
 
 map1:
   ros__parameters:
-    # Active flat-ground map captured and validated on 2026-07-20.
-    pose_graph_dir: "/root/dddmr_bags/go2_xt16_mouth_mapping_20260720_155833_map_2026_07_20_07_58_32"
+    # Active single-map outdoor-to-meeting-room run captured on 2026-07-22.
+    pose_graph_dir: "/root/dddmr_bags/go2_xt16_mouth_mapping_20260722_132433_map_2026_07_22_05_24_32"
     complete_map_voxel_size: 0.2
     complete_ground_voxel_size: 0.1
     merge_non_ground_surface_into_mapcloud: true
@@ -173,8 +176,8 @@ local_planner:
     prune_plane_timeout: 3.0
     # The Go2 cannot reliably execute forward speeds below about 0.30 m/s.
     # Capture a close pass before that minimum speed carries the base past the
-    # goal and into another replanning loop; camera/arm control performs the
-    # final object-relative correction.
+    # goal and into another replanning loop. Cargo-basket delivery does not
+    # require arm-level endpoint precision.
     xy_goal_tolerance: 0.30
     yaw_goal_tolerance: 0.15
     controller_frequency: 10.0
@@ -319,11 +322,19 @@ trajectory_generators:
 
 mpc_critics:
   ros__parameters:
-    plugins: ["collision", "stick_path", "pure_pursuit", "toward_global_plan", "collision_rotate", "collision_rotate_shortest", "prefer_rotate_shortest", "collision_go2_heading_arc", "prefer_go2_heading_arc"]
+    plugins: ["collision", "route_corridor", "stick_path", "pure_pursuit", "toward_global_plan", "collision_rotate", "collision_rotate_shortest", "prefer_rotate_shortest", "collision_go2_heading_arc", "prefer_go2_heading_arc"]
     collision:
       plugin: "mpc_critics::CollisionModel"
       trajectory_generator: differential_drive_simple
       weight: 1.0
+    route_corridor:
+      plugin: "mpc_critics::RouteCorridorModel"
+      trajectory_generator: differential_drive_simple
+      # The global path is sampled at roughly 0.10 m. Keep every predicted
+      # body centre within a narrow hard corridor so local live-lidar avoidance
+      # cannot cut the gate corner into a static-map wall.
+      max_xy_distance: 0.15
+      max_z_distance: 0.35
     stick_path:
       plugin: "mpc_critics::StickPathModel"
       trajectory_generator: differential_drive_simple
@@ -427,11 +438,15 @@ perception_3d_global:
       map_topic: "map1/mapcloud"
       ground_topic: "map1/planning_ground"
       traversed_stair_clearance:
-        # Keep disabled on the flat-ground mainline. Enable only on a dedicated
-        # branch after validating a map with a real traversed stair trajectory.
-        enabled: false
+        # The 2026-07-22 key poses are a continuous, physically traversed run
+        # through the main gate and into the meeting room. Exempt only this
+        # 0.10 m centerline from false static-map votes; live lidar remains
+        # authoritative for a closed door, people, and changed obstacles.
+        enabled: true
         trajectory_topic: "map1/key_poses"
         minimum_pose_count: 6
+        # Reject an unrelated/partial trajectory before granting the narrow
+        # exemption. This map's recorded base-height span is about 0.63 m.
         minimum_total_height_change: 0.50
         xy_radius: 0.10
         # The saved Go2 base_link trajectory is 0.2-0.5 m above observed
@@ -476,15 +491,30 @@ global_planner:
     find_start_tolerance: 0.50
     find_goal_tolerance: 0.20
     project_start_goal_to_traversable_ground: true
-    # Fail planning instead of silently shifting a grasp pose too far away.
+    # Backwards-compatible endpoint defaults; start and delivery-goal limits
+    # are overridden separately below.
     max_endpoint_projection_xy: 0.10
     # Allow the normal vertical base_link-to-ground offset while keeping XY
     # endpoint projection tightly bounded.
     max_endpoint_projection_z: 0.55
+    # Keep start projection bounded to the robot base-to-floor offset.
+    max_start_projection_xy: 0.10
+    max_start_projection_z: 0.55
+    # Coffee is delivered in the Go2 cargo basket, not by an arm. The endpoint
+    # may therefore snap up to 0.35 m horizontally to the closest safe floor
+    # node instead of requiring grasp-pose precision. Static/live obstacle
+    # clearance remains unchanged.
+    max_goal_projection_xy: 0.35
+    max_goal_projection_z: 0.90
 
 #if we use get_dwa_plan in global_plan_manager, we setup parameters for dwa_global_planner
 dynamic_window_aware_global_planner:
   ros__parameters:
     look_ahead_distance: 2.0
     recompute_frequency: 10.0
+    # Reject a dynamically recomputed route unless its robot-to-pivot
+    # connector actually exists and joins the retained global tail
+    # continuously. This prevents the path from jumping metres ahead.
+    max_path_join_xy: 0.15
+    max_path_join_z: 0.35
     

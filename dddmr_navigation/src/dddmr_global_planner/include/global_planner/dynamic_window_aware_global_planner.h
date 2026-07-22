@@ -66,6 +66,8 @@
 #include <geometry_msgs/msg/point_stamped.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 
+#include <mutex>
+
 namespace global_planner
 {
 
@@ -115,6 +117,9 @@ class DWA_GlobalPlanner : public rclcpp::Node {
       nav_msgs::msg::Path global_dwa_path_;
       double look_ahead_distance_;
       double recompute_frequency_;
+      double max_path_join_xy_;
+      double max_path_join_z_;
+      std::mutex path_mutex_;
       
       pcl::KdTreeFLANN<pcl::PointXYZ>::Ptr kdtree_global_path_; 
       pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_global_path_;

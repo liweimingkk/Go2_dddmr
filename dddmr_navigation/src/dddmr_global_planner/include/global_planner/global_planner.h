@@ -136,6 +136,10 @@ class GlobalPlanner : public rclcpp::Node {
       bool project_start_goal_to_traversable_ground_;
       double max_endpoint_projection_xy_;
       double max_endpoint_projection_z_;
+      double max_start_projection_xy_;
+      double max_start_projection_z_;
+      double max_goal_projection_xy_;
+      double max_goal_projection_z_;
       
       /*Original point cloud*/
       pcl::PointCloud<pcl::PointXYZI>::Ptr pcl_ground_;
@@ -175,6 +179,8 @@ class GlobalPlanner : public rclcpp::Node {
       bool selectTraversableGround(
         const pcl::PointXYZI & requested,
         double search_radius,
+        double max_projection_xy,
+        double max_projection_z,
         const char * endpoint_name,
         unsigned int & selected_id);
 

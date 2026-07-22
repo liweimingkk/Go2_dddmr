@@ -4,7 +4,7 @@
   <arg name="relocalization_config_file" default="$(find-pkg-share dddmr_beginner_guide)/config/go2_xt16_relocalization.yaml"/>
   <arg name="route_config_file" default="$(find-pkg-share dddmr_route_navigation)/config/go2_xt16_recorded_route.yaml"/>
   <arg name="mission_config_file" default="$(find-pkg-share dddmr_route_navigation)/config/go2_xt16_outdoor_indoor_mission.yaml"/>
-  <arg name="mission_map_directory" default="/root/dddmr_bags/go2_xt16_mouth_mapping_20260720_155833_map_2026_07_20_07_58_32"/>
+  <arg name="mission_map_directory" default="/root/dddmr_bags/go2_xt16_mouth_mapping_20260722_132433_map_2026_07_22_05_24_32"/>
   <arg name="route_directory" default="/root/dddmr_bags/routes"/>
   <arg name="rviz" default="true"/>
   <arg name="rviz_config" default="$(find-pkg-share dddmr_beginner_guide)/rviz/go2_xt16_navigation.rviz"/>

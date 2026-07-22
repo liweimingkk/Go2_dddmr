@@ -29,6 +29,11 @@
 * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 #include <global_planner/dynamic_window_aware_global_planner.h>
+#include <global_planner/dwa_path_stitcher.h>
+
+#include <cmath>
+#include <stdexcept>
+#include <utility>
 
 using namespace std::chrono_literals;
 
@@ -84,7 +89,22 @@ void DWA_GlobalPlanner::initial(const std::shared_ptr<perception_3d::Perception3
   RCLCPP_INFO(this->get_logger(), "look_ahead_distance: %.2f", look_ahead_distance_);    
   declare_parameter("recompute_frequency", rclcpp::ParameterValue(10.0));
   this->get_parameter("recompute_frequency", recompute_frequency_);
-  RCLCPP_INFO(this->get_logger(), "recompute_frequency: %.2f", recompute_frequency_);     
+  RCLCPP_INFO(this->get_logger(), "recompute_frequency: %.2f", recompute_frequency_);
+  declare_parameter("max_path_join_xy", rclcpp::ParameterValue(0.15));
+  this->get_parameter("max_path_join_xy", max_path_join_xy_);
+  declare_parameter("max_path_join_z", rclcpp::ParameterValue(0.35));
+  this->get_parameter("max_path_join_z", max_path_join_z_);
+  if (!std::isfinite(look_ahead_distance_) || look_ahead_distance_ <= 0.0 ||
+    !std::isfinite(recompute_frequency_) || recompute_frequency_ <= 0.0 ||
+    !std::isfinite(max_path_join_xy_) || max_path_join_xy_ <= 0.0 ||
+    !std::isfinite(max_path_join_z_) || max_path_join_z_ <= 0.0)
+  {
+    throw std::invalid_argument(
+            "DWA look-ahead, frequency, and path-join limits must be finite and positive");
+  }
+  RCLCPP_INFO(
+    this->get_logger(), "DWA path join limits: XY %.2f m / Z %.2f m",
+    max_path_join_xy_, max_path_join_z_);
   
   pub_path_ = this->create_publisher<nav_msgs::msg::Path>("awared_global_path", 1);
 
@@ -149,7 +169,8 @@ void DWA_GlobalPlanner::makePlan(const std::shared_ptr<rclcpp_action::ServerGoal
   }
   
   if(isNewGoal()){
-    
+    threading_timer_->cancel();
+    std::lock_guard<std::mutex> path_lock(path_mutex_);
     geometry_msgs::msg::PoseStamped start;
     perception_3d_ros_->getGlobalPose(start);
 
@@ -158,6 +179,9 @@ void DWA_GlobalPlanner::makePlan(const std::shared_ptr<rclcpp_action::ServerGoal
     result->path = global_path_;
 
     if(global_path_.poses.empty()){
+      global_dwa_path_ = nav_msgs::msg::Path{};
+      pcl_global_path_->clear();
+      kdtree_global_path_.reset();
       goal_handle->abort(result);
     }
     else{
@@ -176,21 +200,43 @@ void DWA_GlobalPlanner::makePlan(const std::shared_ptr<rclcpp_action::ServerGoal
       kdtree_global_path_.reset(new pcl::KdTreeFLANN<pcl::PointXYZ>());
       kdtree_global_path_->setInputCloud(pcl_global_path_); 
 
+      // Until the first dynamic recomputation completes, the original global
+      // path remains a valid continuous fallback.
+      global_dwa_path_ = global_path_;
       threading_timer_->reset();
     }
     pub_path_->publish(global_path_);
-    global_dwa_path_.poses.clear();
   }
   else{
     auto result = std::make_shared<dddmr_sys_core::action::GetPlan::Result>();
-    result->path = global_dwa_path_;
-    goal_handle->succeed(result);
-    pub_path_->publish(global_dwa_path_);
+    nav_msgs::msg::Path path_snapshot;
+    {
+      std::lock_guard<std::mutex> path_lock(path_mutex_);
+      path_snapshot = global_dwa_path_;
+    }
+    result->path = path_snapshot;
+    if (path_snapshot.poses.empty()) {
+      goal_handle->abort(result);
+    } else {
+      goal_handle->succeed(result);
+    }
+    pub_path_->publish(path_snapshot);
   }
   
 }
 
 void DWA_GlobalPlanner::determineDWAPlan(){
+
+  std::lock_guard<std::mutex> path_lock(path_mutex_);
+  if (!kdtree_global_path_ || !pcl_global_path_ || pcl_global_path_->empty() ||
+    global_path_.poses.empty())
+  {
+    global_dwa_path_.poses.clear();
+    RCLCPP_ERROR_THROTTLE(
+      this->get_logger(), *clock_, 1000,
+      "Cannot recompute DWA path because the reference path is unavailable.");
+    return;
+  }
 
   geometry_msgs::msg::PoseStamped start;
   perception_3d_ros_->getGlobalPose(start);
@@ -201,7 +247,12 @@ void DWA_GlobalPlanner::determineDWAPlan(){
   kdtree_global_path_->nearestKSearch(start_pt, 1, indices, resultant_distances);
 
   if(indices.empty()){
-    RCLCPP_INFO(this->get_logger(), "k-NN search fail, something wrong.");
+    global_dwa_path_ = nav_msgs::msg::Path{};
+    global_dwa_path_.header.frame_id = global_frame_;
+    global_dwa_path_.header.stamp = clock_->now();
+    RCLCPP_ERROR_THROTTLE(
+      this->get_logger(), *clock_, 1000,
+      "Cannot find the robot on the reference path; publishing no DWA path.");
     return;
   }
   //@protect kdtree_ground
@@ -283,12 +334,32 @@ void DWA_GlobalPlanner::determineDWAPlan(){
         dwa_pivot, dwa_goal.pose.position.x, dwa_goal.pose.position.y, dwa_goal.pose.position.z,
         start.pose.position.x, start.pose.position.y, start.pose.position.z);
 
-  nav_msgs::msg::Path dwa_path = global_planner_->makeROSPlan(start, dwa_goal);
-  for(size_t i=dwa_pivot; i<pcl_global_path_->points.size(); i++){
-    dwa_path.poses.push_back(global_path_.poses[i]);
+  const nav_msgs::msg::Path connector =
+    global_planner_->makeROSPlan(start, dwa_goal);
+  nav_msgs::msg::Path stitched_path;
+  std::string failure_reason;
+  if (!stitchDwaPath(
+      connector, global_path_, static_cast<std::size_t>(dwa_pivot),
+      max_path_join_xy_, max_path_join_z_, stitched_path, &failure_reason))
+  {
+    // Fail closed. The old implementation appended the remote reference tail
+    // even when connector planning failed, producing a path whose first point
+    // was about three metres ahead of the robot at the meeting-room gate.
+    global_dwa_path_ = nav_msgs::msg::Path{};
+    global_dwa_path_.header.frame_id = global_frame_;
+    global_dwa_path_.header.stamp = clock_->now();
+    RCLCPP_ERROR_THROTTLE(
+      this->get_logger(), *clock_, 1000,
+      "DWA connector rejected (%s); publishing no path instead of a remote tail. "
+      "start=(%.2f, %.2f, %.2f) pivot=%d goal=(%.2f, %.2f, %.2f)",
+      failure_reason.c_str(),
+      start.pose.position.x, start.pose.position.y, start.pose.position.z,
+      dwa_pivot,
+      dwa_goal.pose.position.x, dwa_goal.pose.position.y,
+      dwa_goal.pose.position.z);
+    return;
   }
-  dwa_path.poses.push_back(global_path_.poses.back());
-  global_dwa_path_ = dwa_path;
+  global_dwa_path_ = std::move(stitched_path);
 }
 
 }

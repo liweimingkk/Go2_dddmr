@@ -43,6 +43,7 @@
 
 //@for call global planner action
 #include "dddmr_sys_core/action/get_plan.hpp"
+#include "p2p_move_base/global_plan_recovery_guard.h"
 #include "p2p_move_base/local_failure_debounce.h"
 #include "p2p_move_base/p2p_global_plan_manager.h"
 //@for call recovery action
@@ -124,7 +125,9 @@ class P2PMoveBase : public rclcpp::Node {
     void recovery_behaviors_client_result_callback(const rclcpp_action::ClientGoalHandle<dddmr_sys_core::action::RecoveryBehaviors>::WrappedResult & result);
     bool is_recoverying_;
     bool is_recoverying_succeed_;
+    bool rotate_recovery_enabled_{true};
     void startRecoveryBehaviors(std::string behavior_name);
+    GlobalPlanRecoveryGuard global_plan_recovery_guard_;
     LocalFailureDebounce local_failure_debounce_;
 
 

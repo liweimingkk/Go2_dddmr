@@ -139,10 +139,37 @@ void GlobalPlanner::initial(const std::shared_ptr<perception_3d::Perception3D_RO
     this->get_logger(), "max_endpoint_projection_z: %.2f",
     max_endpoint_projection_z_);
 
+  // Keep the endpoint parameters as backwards-compatible defaults while
+  // allowing an RViz ground goal and the robot's base-frame start pose to use
+  // different vertical projection limits.
+  declare_parameter(
+    "max_start_projection_xy",
+    rclcpp::ParameterValue(max_endpoint_projection_xy_));
+  this->get_parameter("max_start_projection_xy", max_start_projection_xy_);
+  declare_parameter(
+    "max_start_projection_z",
+    rclcpp::ParameterValue(max_endpoint_projection_z_));
+  this->get_parameter("max_start_projection_z", max_start_projection_z_);
+  declare_parameter(
+    "max_goal_projection_xy",
+    rclcpp::ParameterValue(max_endpoint_projection_xy_));
+  this->get_parameter("max_goal_projection_xy", max_goal_projection_xy_);
+  declare_parameter(
+    "max_goal_projection_z",
+    rclcpp::ParameterValue(max_endpoint_projection_z_));
+  this->get_parameter("max_goal_projection_z", max_goal_projection_z_);
+  RCLCPP_INFO(
+    this->get_logger(),
+    "endpoint projection limits: start XY %.2f m / Z %.2f m, goal XY %.2f m / Z %.2f m",
+    max_start_projection_xy_, max_start_projection_z_,
+    max_goal_projection_xy_, max_goal_projection_z_);
+
   if (
     a_star_expanding_radius_ <= 0.0 || maximum_ground_connection_z_ <= 0.0 ||
     find_start_tolerance_ <= 0.0 || find_goal_tolerance_ <= 0.0 ||
-    max_endpoint_projection_xy_ <= 0.0 || max_endpoint_projection_z_ <= 0.0)
+    max_endpoint_projection_xy_ <= 0.0 || max_endpoint_projection_z_ <= 0.0 ||
+    max_start_projection_xy_ <= 0.0 || max_start_projection_z_ <= 0.0 ||
+    max_goal_projection_xy_ <= 0.0 || max_goal_projection_z_ <= 0.0)
   {
     throw std::invalid_argument("global planner endpoint tolerances must be positive");
   }
@@ -444,86 +471,112 @@ void GlobalPlanner::getROSPath(std::vector<unsigned int>& path_id, nav_msgs::msg
 
 bool GlobalPlanner::selectTraversableGround(
   const pcl::PointXYZI & requested, double search_radius,
+  double max_projection_xy, double max_projection_z,
   const char * endpoint_name, unsigned int & selected_id)
 {
   const double inscribed_radius =
     perception_3d_ros_->getGlobalUtils()->getInscribedRadius();
+  double best_xy_distance = std::numeric_limits<double>::infinity();
+  double best_z_distance = std::numeric_limits<double>::infinity();
   double best_squared_distance = std::numeric_limits<double>::infinity();
   int best_id = -1;
   int nearest_id = -1;
   double nearest_squared_distance = std::numeric_limits<double>::infinity();
   double nearest_clearance = 0.0;
+  std::size_t bounded_candidate_count = 0U;
+  int best_clearance_id = -1;
+  double best_bounded_clearance = -std::numeric_limits<double>::infinity();
 
-  const auto select_candidate = [&](const std::vector<int> & candidate_ids) {
-    for (const int candidate_id : candidate_ids) {
-      const auto & candidate = pcl_ground_->points[candidate_id];
-      const double dx = static_cast<double>(candidate.x - requested.x);
-      const double dy = static_cast<double>(candidate.y - requested.y);
-      const double dz = static_cast<double>(candidate.z - requested.z);
-      const double xy_distance = std::hypot(dx, dy);
-      const double squared_distance = dx * dx + dy * dy + dz * dz;
-      const double clearance =
-        perception_3d_ros_->get_min_dGraphValue(candidate_id);
-
-      if (squared_distance < nearest_squared_distance) {
-        nearest_squared_distance = squared_distance;
-        nearest_id = candidate_id;
-        nearest_clearance = clearance;
-      }
-
-      if (
-        xy_distance > max_endpoint_projection_xy_ ||
-        std::abs(dz) > max_endpoint_projection_z_)
-      {
-        continue;
-      }
-      if (
-        project_start_goal_to_traversable_ground_ &&
-        clearance < inscribed_radius)
-      {
-        continue;
-      }
-      if (squared_distance < best_squared_distance) {
-        best_squared_distance = squared_distance;
-        best_id = candidate_id;
-      }
-    }
-  };
-
+  const double projection_search_radius =
+    std::hypot(max_projection_xy, max_projection_z);
+  const double effective_search_radius =
+    std::max(search_radius, projection_search_radius);
   std::vector<int> candidate_ids;
   std::vector<float> candidate_squared_distances;
   kdtree_ground_->radiusSearch(
-    requested, search_radius, candidate_ids, candidate_squared_distances);
-  select_candidate(candidate_ids);
+    requested, effective_search_radius,
+    candidate_ids, candidate_squared_distances);
 
-  bool used_projection_search = false;
-  const double projection_search_radius = std::hypot(
-    max_endpoint_projection_xy_, max_endpoint_projection_z_);
-  if (best_id < 0 && projection_search_radius > search_radius) {
-    candidate_ids.clear();
-    candidate_squared_distances.clear();
-    kdtree_ground_->radiusSearch(
-      requested, projection_search_radius, candidate_ids,
-      candidate_squared_distances);
-    select_candidate(candidate_ids);
-    used_projection_search = true;
+  for (const int candidate_id : candidate_ids) {
+    const auto & candidate = pcl_ground_->points[candidate_id];
+    const double dx = static_cast<double>(candidate.x - requested.x);
+    const double dy = static_cast<double>(candidate.y - requested.y);
+    const double dz = static_cast<double>(candidate.z - requested.z);
+    const double xy_distance = std::hypot(dx, dy);
+    const double z_distance = std::abs(dz);
+    const double squared_distance = dx * dx + dy * dy + dz * dz;
+    const double clearance =
+      perception_3d_ros_->get_min_dGraphValue(candidate_id);
+
+    if (squared_distance < nearest_squared_distance) {
+      nearest_squared_distance = squared_distance;
+      nearest_id = candidate_id;
+      nearest_clearance = clearance;
+    }
+
+    if (
+      xy_distance > max_projection_xy ||
+      z_distance > max_projection_z)
+    {
+      continue;
+    }
+    ++bounded_candidate_count;
+    if (clearance > best_bounded_clearance) {
+      best_bounded_clearance = clearance;
+      best_clearance_id = candidate_id;
+    }
+    if (
+      project_start_goal_to_traversable_ground_ &&
+      clearance < inscribed_radius)
+    {
+      continue;
+    }
+
+    // A navigation goal's Z commonly comes from RViz's fixed plane rather
+    // than the mapped floor. Prefer the closest horizontal ground sample;
+    // use vertical distance only as the tie-breaker.
+    if (
+      xy_distance < best_xy_distance ||
+      (xy_distance == best_xy_distance && z_distance < best_z_distance))
+    {
+      best_xy_distance = xy_distance;
+      best_z_distance = z_distance;
+      best_squared_distance = squared_distance;
+      best_id = candidate_id;
+    }
   }
 
   if (nearest_id < 0) {
     RCLCPP_WARN(
       this->get_logger(),
       "%s has no mapground candidate within XY %.2f m / Z %.2f m.",
-      endpoint_name, max_endpoint_projection_xy_, max_endpoint_projection_z_);
+      endpoint_name, max_projection_xy, max_projection_z);
     return false;
   }
 
   if (best_id < 0) {
-    RCLCPP_WARN(
-      this->get_logger(),
-      "%s has no traversable mapground candidate within XY %.2f m / Z %.2f m; "
-      "nearest id=%d clearance=%.3f m (required %.3f m).",
-      endpoint_name, max_endpoint_projection_xy_, max_endpoint_projection_z_,
-      nearest_id, nearest_clearance, inscribed_radius);
+    const auto & nearest = pcl_ground_->points[nearest_id];
+    const double nearest_xy = std::hypot(
+      static_cast<double>(nearest.x - requested.x),
+      static_cast<double>(nearest.y - requested.y));
+    const double nearest_z =
+      std::abs(static_cast<double>(nearest.z - requested.z));
+    if (bounded_candidate_count == 0U) {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "%s has no mapground candidate within XY %.2f m / Z %.2f m; "
+        "closest searched id=%d is at XY %.3f m / Z %.3f m.",
+        endpoint_name, max_projection_xy, max_projection_z,
+        nearest_id, nearest_xy, nearest_z);
+    } else {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "%s has no traversable mapground candidate within XY %.2f m / Z %.2f m; "
+        "%zu bounded candidates, best id=%d clearance=%.3f m (required %.3f m).",
+        endpoint_name, max_projection_xy, max_projection_z,
+        bounded_candidate_count, best_clearance_id,
+        best_bounded_clearance, inscribed_radius);
+    }
     return false;
   }
 
@@ -536,13 +589,40 @@ bool GlobalPlanner::selectTraversableGround(
     std::abs(static_cast<double>(selected.z - requested.z));
   const double selected_clearance =
     perception_3d_ros_->get_min_dGraphValue(selected_id);
+  const bool used_projection_search =
+    std::sqrt(best_squared_distance) > search_radius;
   if (best_id != nearest_id) {
-    RCLCPP_WARN(
-      this->get_logger(),
-      "%s nearest ground id=%d is not traversable (clearance %.3f m); "
-      "projected to id=%u by XY %.3f m / Z %.3f m (clearance %.3f m).",
-      endpoint_name, nearest_id, nearest_clearance, selected_id,
-      projection_xy, projection_z, selected_clearance);
+    const auto & nearest = pcl_ground_->points[nearest_id];
+    const double nearest_xy = std::hypot(
+      static_cast<double>(nearest.x - requested.x),
+      static_cast<double>(nearest.y - requested.y));
+    const double nearest_z =
+      std::abs(static_cast<double>(nearest.z - requested.z));
+    if (nearest_xy > max_projection_xy || nearest_z > max_projection_z) {
+      RCLCPP_INFO_THROTTLE(
+        this->get_logger(), *clock_, 5000,
+        "%s nearest 3-D ground id=%d is outside projection bounds at XY %.3f m / "
+        "Z %.3f m; selected id=%u at XY %.3f m / Z %.3f m (clearance %.3f m).",
+        endpoint_name, nearest_id, nearest_xy, nearest_z, selected_id,
+        projection_xy, projection_z, selected_clearance);
+    } else if (
+      project_start_goal_to_traversable_ground_ &&
+      nearest_clearance < inscribed_radius)
+    {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "%s nearest ground id=%d is not traversable (clearance %.3f m); "
+        "projected to id=%u by XY %.3f m / Z %.3f m (clearance %.3f m).",
+        endpoint_name, nearest_id, nearest_clearance, selected_id,
+        projection_xy, projection_z, selected_clearance);
+    } else if (enable_detail_log_) {
+      RCLCPP_INFO(
+        this->get_logger(),
+        "%s selected closest-horizontal ground id=%u at XY %.3f m / Z %.3f m "
+        "instead of nearest-3D id=%d (clearance %.3f m).",
+        endpoint_name, selected_id, projection_xy, projection_z,
+        nearest_id, selected_clearance);
+    }
   } else if (used_projection_search) {
     RCLCPP_INFO_THROTTLE(
       this->get_logger(), *clock_, 5000,
@@ -577,9 +657,13 @@ bool GlobalPlanner::getStartGoalID(
 
   return
     selectTraversableGround(
-      pcl_start, find_start_tolerance_, "Start", start_id) &&
+      pcl_start, find_start_tolerance_,
+      max_start_projection_xy_, max_start_projection_z_,
+      "Start", start_id) &&
     selectTraversableGround(
-      pcl_goal, find_goal_tolerance_, "Goal", goal_id);
+      pcl_goal, find_goal_tolerance_,
+      max_goal_projection_xy_, max_goal_projection_z_,
+      "Goal", goal_id);
 }
 
 void GlobalPlanner::makePlan(const std::shared_ptr<rclcpp_action::ServerGoalHandle<dddmr_sys_core::action::GetPlan>> goal_handle){

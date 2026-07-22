@@ -99,6 +99,12 @@ void P2PMoveBase::initial(const std::shared_ptr<local_planner::Local_Planner>& l
     this->get_logger(), "local_failure_confirmation_cycles: %ld",
     static_cast<long>(local_failure_confirmation_cycles));
 
+  rotate_recovery_enabled_ = this->declare_parameter(
+    "rotate_recovery_enabled", true);
+  RCLCPP_WARN(
+    this->get_logger(), "rotate_recovery_enabled: %s",
+    rotate_recovery_enabled_ ? "true" : "false");
+
   command_topic_ = this->declare_parameter("command_topic", std::string("cmd_vel"));
   stamped_command_topic_ = this->declare_parameter(
     "stamped_command_topic", std::string("cmd_vel_stamped"));
@@ -269,6 +275,7 @@ void P2PMoveBase::executeCb(const std::shared_ptr<rclcpp_action::ServerGoalHandl
   //@ the rclcpp::Time initial are all done in FSM class
   STATE_->initialParams(LP_->getGlobalPose(), clock_->now());
   LP_->resetInPlaceRotationHysteresis();
+  global_plan_recovery_guard_.reset();
   local_failure_debounce_.reset();
   STATE_->current_goal_ = move_base_goal->target_pose;
   GPM_->setGoal(STATE_->current_goal_);
@@ -374,6 +381,7 @@ bool P2PMoveBase::executeCycle(const std::shared_ptr<rclcpp_action::ServerGoalHa
         else{
           RCLCPP_DEBUG(this->get_logger(), "Found a plan with its final position: (%.2f, %.2f, %.2f)", 
               plan.back().pose.position.x, plan.back().pose.position.y, plan.back().pose.position.z);
+          global_plan_recovery_guard_.recordValidPlan();
           STATE_->last_valid_plan_ = clock_->now();
           LP_->setPlan(plan);
           STATE_->setDecision("d_align_heading");  
@@ -384,6 +392,18 @@ bool P2PMoveBase::executeCycle(const std::shared_ptr<rclcpp_action::ServerGoalHa
         RCLCPP_WARN(this->get_logger(), "Time out to find a plan to point (%.2f, %.2f, %.2f)", 
             STATE_->current_goal_.pose.position.x, STATE_->current_goal_.pose.position.y, STATE_->current_goal_.pose.position.z);
         publishZeroVelocity();
+        if (!global_plan_recovery_guard_.shouldAttemptRecovery()) {
+          RCLCPP_ERROR(
+            this->get_logger(),
+            "Aborting goal without recovery motion because it never produced a valid global plan.");
+          auto result =
+            std::make_shared<dddmr_sys_core::action::PToPMoveBase::Result>();
+          result->status = 2;
+          result->result =
+            "No valid global plan; recovery rotation suppressed";
+          goal_handle->abort(result);
+          return true;
+        }
         startRecoveryBehaviors("rotate_inplace");
         STATE_->setDecision("d_recovery_waitdone");
         return false;
@@ -828,6 +848,20 @@ bool P2PMoveBase::executeCycle(const std::shared_ptr<rclcpp_action::ServerGoalHa
 }
 
 void P2PMoveBase::startRecoveryBehaviors(std::string behavior_name){
+
+  if (behavior_name == "rotate_inplace" && !rotate_recovery_enabled_) {
+    // A doorway plan loss can mean that the static map already places the
+    // body inside the wall envelope. Rotating there cannot repair the route
+    // and can sweep the legs into the frame. Let the existing recovery state
+    // abort on the next cycle without sending a recovery action.
+    is_recoverying_ = false;
+    is_recoverying_succeed_ = false;
+    publishZeroVelocity();
+    RCLCPP_ERROR(
+      this->get_logger(),
+      "rotate_inplace recovery is disabled; stopping and aborting without recovery motion");
+    return;
+  }
 
   auto goal_msg = dddmr_sys_core::action::RecoveryBehaviors::Goal();
   goal_msg.behavior_name = behavior_name;
