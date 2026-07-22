@@ -197,17 +197,18 @@ local_planner:
     in_place_direction_allow_cost_switch: true
     in_place_direction_unavailable_grace_sec: 0.10
     
-    # Swept Go2 stance envelope. base_footprint is 0.24 m below base_link;
-    # leave 0.04 m ground tolerance while protecting the legs and lower body.
+    # Go2 standing dimensions are 0.70 x 0.31 x 0.40 m. Keep a 0.055 m
+    # lateral allowance per side (0.21 m half-width); preserve the existing
+    # fore/aft and vertical envelope for the legs and lower body.
     cuboid:
-      flb: [0.42, 0.30, -0.20] #front left bottom
-      frb: [0.42, -0.30, -0.20]
-      flt: [0.42, 0.30, 0.60] #front left top
-      frt: [0.42, -0.30, 0.60]
-      blb: [-0.35, 0.30, -0.20] #back left bottom
-      brb: [-0.35, -0.30, -0.20]
-      blt: [-0.35, 0.30, 0.60]
-      brt: [-0.35, -0.30, 0.60]
+      flb: [0.42, 0.21, -0.20] #front left bottom
+      frb: [0.42, -0.21, -0.20]
+      flt: [0.42, 0.21, 0.60] #front left top
+      frt: [0.42, -0.21, 0.60]
+      blb: [-0.35, 0.21, -0.20] #back left bottom
+      brb: [-0.35, -0.21, -0.20]
+      blt: [-0.35, 0.21, 0.60]
+      brt: [-0.35, -0.21, 0.60]
 
 recovery_behaviors:
   ros__parameters:
@@ -237,14 +238,14 @@ trajectory_generators:
       # 2 s / 0.8 rad, not an unnecessarily conservative full 360-degree sweep.
       simulate_full_rotation_for_pure_yaw: false
       cuboid:
-        flb: [0.42, 0.30, -0.20] #front left bottom
-        frb: [0.42, -0.30, -0.20]
-        flt: [0.42, 0.30, 0.60] #front left top
-        frt: [0.42, -0.30, 0.60]
-        blb: [-0.35, 0.30, -0.20] #back left bottom
-        brb: [-0.35, -0.30, -0.20]
-        blt: [-0.35, 0.30, 0.60]
-        brt: [-0.35, -0.30, 0.60]
+        flb: [0.42, 0.21, -0.20] #front left bottom
+        frb: [0.42, -0.21, -0.20]
+        flt: [0.42, 0.21, 0.60] #front left top
+        frt: [0.42, -0.21, 0.60]
+        blb: [-0.35, 0.21, -0.20] #back left bottom
+        brb: [-0.35, -0.21, -0.20]
+        blt: [-0.35, 0.21, 0.60]
+        brt: [-0.35, -0.21, 0.60]
 
     differential_drive_rotate_inplace:
       plugin: "trajectory_generators::DDRotateInplaceTheory"
@@ -252,14 +253,14 @@ trajectory_generators:
       rotation_speed: 0.50
       rotation_forward_x: 0.0
       cuboid:
-        flb: [0.42, 0.30, -0.20] #front left bottom
-        frb: [0.42, -0.30, -0.20]
-        flt: [0.42, 0.30, 0.60] #front left top
-        frt: [0.42, -0.30, 0.60]
-        blb: [-0.35, 0.30, -0.20] #back left bottom
-        brb: [-0.35, -0.30, -0.20]
-        blt: [-0.35, 0.30, 0.60]
-        brt: [-0.35, -0.30, 0.60]
+        flb: [0.42, 0.21, -0.20] #front left bottom
+        frb: [0.42, -0.21, -0.20]
+        flt: [0.42, 0.21, 0.60] #front left top
+        frt: [0.42, -0.21, 0.60]
+        blb: [-0.35, 0.21, -0.20] #back left bottom
+        brb: [-0.35, -0.21, -0.20]
+        blt: [-0.35, 0.21, 0.60]
+        brt: [-0.35, -0.21, 0.60]
 
     differential_drive_go2_heading_arc:
       plugin: "trajectory_generators::DDRotateInplaceTheory"
@@ -270,14 +271,14 @@ trajectory_generators:
       linear_x_sample: 1.0
       angular_z_sample: 2.0
       cuboid:
-        flb: [0.42, 0.30, -0.20] #front left bottom
-        frb: [0.42, -0.30, -0.20]
-        flt: [0.42, 0.30, 0.60] #front left top
-        frt: [0.42, -0.30, 0.60]
-        blb: [-0.35, 0.30, -0.20] #back left bottom
-        brb: [-0.35, -0.30, -0.20]
-        blt: [-0.35, 0.30, 0.60]
-        brt: [-0.35, -0.30, 0.60]
+        flb: [0.42, 0.21, -0.20] #front left bottom
+        frb: [0.42, -0.21, -0.20]
+        flt: [0.42, 0.21, 0.60] #front left top
+        frt: [0.42, -0.21, 0.60]
+        blb: [-0.35, 0.21, -0.20] #back left bottom
+        brb: [-0.35, -0.21, -0.20]
+        blt: [-0.35, 0.21, 0.60]
+        brt: [-0.35, -0.21, 0.60]
     
     differential_drive_simple:
       plugin: "trajectory_generators::DDSimpleTrajectoryGeneratorTheory"
@@ -311,14 +312,14 @@ trajectory_generators:
       angular_sim_granularity: 0.025
 
       cuboid:
-        flb: [0.42, 0.30, -0.20] #front left bottom
-        frb: [0.42, -0.30, -0.20]
-        flt: [0.42, 0.30, 0.60] #front left top
-        frt: [0.42, -0.30, 0.60]
-        blb: [-0.35, 0.30, -0.20] #back left bottom
-        brb: [-0.35, -0.30, -0.20]
-        blt: [-0.35, 0.30, 0.60]
-        brt: [-0.35, -0.30, 0.60]
+        flb: [0.42, 0.21, -0.20] #front left bottom
+        frb: [0.42, -0.21, -0.20]
+        flt: [0.42, 0.21, 0.60] #front left top
+        frt: [0.42, -0.21, 0.60]
+        blb: [-0.35, 0.21, -0.20] #back left bottom
+        brb: [-0.35, -0.21, -0.20]
+        blt: [-0.35, 0.21, 0.60]
+        brt: [-0.35, -0.21, 0.60]
 
 mpc_critics:
   ros__parameters:
@@ -377,11 +378,14 @@ perception_3d_local:
     global_frame: "map"
     robot_base_frame: "base_link"
     max_obstacle_distance: 9999.0
-    # Centerline hard clearance. A 0.40 m radius requires roughly 0.8 m of
-    # usable passage width before localization and tracking tolerances.
-    inscribed_radius: 0.40
+    # Centerline hard-collision clearance. 0.26 m preserves a 0.05 m buffer
+    # beyond the 0.21 m trajectory half-width while admitting the narrow-route
+    # profile; the local planner still checks the full oriented cuboid.
+    inscribed_radius: 0.26
     inflation_descending_rate: 2.0
-    inflation_radius: 1.5
+    # Keep a soft obstacle buffer beyond the hard-collision radius without
+    # rejecting the narrow free space observed on this route.
+    inflation_radius: 1.3
     sensors_collected_frequency: 10.0
     plugins: ["map", "path_blocked_strategy", "lidar"]
     map:
@@ -419,11 +423,11 @@ perception_3d_global:
     global_frame: "map"
     robot_base_frame: "base_link"
     max_obstacle_distance: 9999.0
-    # Match the local centerline clearance; static walls retain measured
+    # Match the local hard-collision clearance; static walls retain measured
     # horizontal distance and the local planner checks the oriented cuboid.
-    inscribed_radius: 0.40
+    inscribed_radius: 0.26
     inflation_descending_rate: 2.0
-    inflation_radius: 1.5
+    inflation_radius: 1.3
     sensors_collected_frequency: 10.0
     plugins: ["map", "lidar"]
     dgraph_publish_frequency: 1.0

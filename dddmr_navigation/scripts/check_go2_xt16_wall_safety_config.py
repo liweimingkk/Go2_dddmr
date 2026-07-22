@@ -16,6 +16,12 @@ DEFAULT_CONFIG = (
     / "src/dddmr_beginner_guide/config/go2_xt16_navigation.yaml"
 )
 
+# The narrow-route Go2 profile keeps a 5 cm centerline margin beyond the
+# configured 0.21 m trajectory half-width (0.155 m standing body half-width
+# plus lateral allowance). The local collision critic still checks the
+# complete oriented cuboid, including its longer fore/aft extent.
+NARROW_ROUTE_CENTERLINE_MARGIN_M = 0.05
+
 
 def require_mapping(value: Any, path: str) -> dict[str, Any]:
     if not isinstance(value, dict):
@@ -60,7 +66,7 @@ def perception_params(config: dict[str, Any], node: str) -> dict[str, Any]:
 def validate(config: dict[str, Any]) -> dict[str, float]:
     body_radius = robot_xy_radius(config)
     half_width = robot_half_width(config)
-    minimum_centerline_clearance = half_width + 0.10
+    minimum_centerline_clearance = half_width + NARROW_ROUTE_CENTERLINE_MARGIN_M
     report: dict[str, float] = {
         "robot_xy_radius": body_radius,
         "robot_half_width": half_width,
