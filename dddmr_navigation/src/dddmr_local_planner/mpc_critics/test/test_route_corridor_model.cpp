@@ -61,7 +61,7 @@ protected:
     rclcpp::NodeOptions options;
     options.parameter_overrides({
       rclcpp::Parameter("route_corridor.max_xy_distance", 0.15),
-      rclcpp::Parameter("route_corridor.max_z_distance", 0.35)});
+      rclcpp::Parameter("route_corridor.max_z_distance", 0.60)});
     node_ = std::make_shared<rclcpp::Node>(
       "route_corridor_model_test", options);
     buffer_ = std::make_shared<tf2_ros::Buffer>(node_->get_clock());
@@ -107,10 +107,18 @@ TEST_F(RouteCorridorModelTest, RejectsHorizontalDeparture)
   EXPECT_LT(model_.scoreTrajectory(trajectory), 0.0);
 }
 
+TEST_F(RouteCorridorModelTest, AcceptsGo2BaseHeightAboveGroundPath)
+{
+  setRoute({point(0.0, 0.0, 0.0), point(0.2, 0.0, 0.0)});
+  auto trajectory = makeTrajectory({
+    point(0.0, 0.0, 0.445), point(0.2, 0.0, 0.445)});
+  EXPECT_DOUBLE_EQ(model_.scoreTrajectory(trajectory), 0.0);
+}
+
 TEST_F(RouteCorridorModelTest, RejectsVerticalDeparture)
 {
   setRoute({point(0.0, 0.0, 0.0), point(1.0, 0.0, 0.0)});
-  auto trajectory = makeTrajectory({point(0.5, 0.0, 0.36)});
+  auto trajectory = makeTrajectory({point(0.0, 0.0, 0.61)});
   EXPECT_LT(model_.scoreTrajectory(trajectory), 0.0);
 }
 

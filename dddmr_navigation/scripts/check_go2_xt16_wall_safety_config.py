@@ -159,6 +159,11 @@ def validate(config: dict[str, Any]) -> dict[str, float]:
             "mpc_critics.route_corridor.max_xy_distance must be no greater "
             "than 0.15 m for the gate profile"
         )
+    if corridor_z > 0.60 + 1e-9:
+        raise ValueError(
+            "mpc_critics.route_corridor.max_z_distance must be no greater "
+            "than 0.60 m for the gate profile"
+        )
     report["route_corridor.max_xy_distance"] = corridor_xy
     report["route_corridor.max_z_distance"] = corridor_z
 
@@ -196,12 +201,23 @@ def validate(config: dict[str, Any]) -> dict[str, float]:
         "max_goal_projection_xy",
         "global_planner",
     )
+    start_projection_z = require_positive(
+        global_planner_params,
+        "max_start_projection_z",
+        "global_planner",
+    )
+    if corridor_z + 1e-9 < start_projection_z:
+        raise ValueError(
+            "mpc_critics.route_corridor.max_z_distance must cover the normal "
+            "base_link-to-ground start projection"
+        )
     if goal_projection_xy > 0.35 + 1e-9:
         raise ValueError(
             "global_planner.max_goal_projection_xy exceeds the 0.35 m "
             "cargo-delivery bound"
         )
     report["global_planner.max_goal_projection_xy"] = goal_projection_xy
+    report["global_planner.max_start_projection_z"] = start_projection_z
     return report
 
 
