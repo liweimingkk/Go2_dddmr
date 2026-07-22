@@ -66,6 +66,13 @@ inline bool stitchDwaPath(
   for (std::size_t index = pivot; index < reference.poses.size(); ++index) {
     const auto & pose = reference.poses[index];
     if (index == pivot && join_xy <= 1e-6 && join_z <= 1e-6) {
+      // The connector and reference pivot represent the same waypoint, but
+      // the connector was planned against an intermediate goal whose
+      // orientation may be unset.  Keep one position while retaining the
+      // reference orientation.  This is especially important when the pivot
+      // is the final RViz goal: otherwise the requested goal yaw is replaced
+      // by the connector's default yaw and the robot rotates after arrival.
+      output.poses.back().pose.orientation = pose.pose.orientation;
       continue;
     }
     output.poses.push_back(pose);

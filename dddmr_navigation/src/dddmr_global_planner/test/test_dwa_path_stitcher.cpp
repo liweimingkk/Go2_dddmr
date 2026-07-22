@@ -67,6 +67,27 @@ TEST(DwaPathStitcher, AppendsReferenceTailOnce)
   EXPECT_DOUBLE_EQ(output.poses.back().pose.position.x, 3.0);
 }
 
+TEST(DwaPathStitcher, PreservesFinalGoalOrientationWhenExactPivotIsDeduplicated)
+{
+  nav_msgs::msg::Path connector;
+  connector.poses = {pose(0.0, 0.0, 0.0), pose(1.0, 0.0, 0.0)};
+  nav_msgs::msg::Path reference;
+  reference.poses = {pose(0.0, 0.0, 0.0), pose(1.0, 0.0, 0.0)};
+  reference.poses.back().pose.orientation.z = -0.906302;
+  reference.poses.back().pose.orientation.w = 0.422631;
+  nav_msgs::msg::Path output;
+
+  ASSERT_TRUE(stitchDwaPath(
+      connector, reference, 1U, 0.15, 0.35, output));
+  ASSERT_EQ(output.poses.size(), 2U);
+  EXPECT_DOUBLE_EQ(
+    output.poses.back().pose.orientation.z,
+    reference.poses.back().pose.orientation.z);
+  EXPECT_DOUBLE_EQ(
+    output.poses.back().pose.orientation.w,
+    reference.poses.back().pose.orientation.w);
+}
+
 TEST(DwaPathStitcher, AllowsBoundedProjectedJoin)
 {
   nav_msgs::msg::Path connector;
