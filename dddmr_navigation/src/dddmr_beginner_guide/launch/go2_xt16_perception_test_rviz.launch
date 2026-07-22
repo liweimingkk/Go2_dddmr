@@ -1,0 +1,12 @@
+<launch>
+  <!-- Read-only RViz view for inspecting global perception point clouds. -->
+  <arg name="rviz_config"
+       default="$(find-pkg-share dddmr_beginner_guide)/rviz/go2_xt16_perception_test.rviz"/>
+
+  <node name="go2_xt16_perception_test_rviz"
+        pkg="rviz2"
+        exec="rviz2"
+        output="screen"
+        respawn="false"
+        args="-d $(var rviz_config)"/>
+</launch>
