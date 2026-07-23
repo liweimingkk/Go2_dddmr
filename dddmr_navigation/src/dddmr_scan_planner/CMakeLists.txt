@@ -88,6 +88,7 @@ if(BUILD_TESTING)
       ${CMAKE_CURRENT_SOURCE_DIR}/test/test_scan_config.py
       ${CMAKE_CURRENT_SOURCE_DIR}/config/go2_xt16_scan_planner.yaml
       ${CMAKE_CURRENT_SOURCE_DIR}/launch/go2_xt16_scan_navigation.launch
+      ${CMAKE_CURRENT_SOURCE_DIR}/../dddmr_beginner_guide/rviz/go2_xt16_navigation.rviz
   )
 endif()
 

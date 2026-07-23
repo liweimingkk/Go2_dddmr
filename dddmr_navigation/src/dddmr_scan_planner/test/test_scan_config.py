@@ -87,11 +87,47 @@ def check_launch(launch_path):
     assert controller_remaps["cmd_vel"]["to"] == "/scan_planner/raw_cmd_vel"
 
 
+def check_rviz(rviz_path):
+    rviz = require_mapping(
+        yaml.safe_load(rviz_path.read_text(encoding="utf-8")), "rviz"
+    )
+    manager = require_mapping(
+        rviz["Visualization Manager"], "Visualization Manager"
+    )
+    displays = manager.get("Displays")
+    if not isinstance(displays, list):
+        raise AssertionError("Visualization Manager.Displays must be a list")
+
+    path_displays = {
+        display.get("Name"): display
+        for display in displays
+        if isinstance(display, dict)
+        and display.get("Class") == "rviz_default_plugins/Path"
+    }
+    expected_topics = {
+        "RawGlobalPath": ("/global_path", "Volatile"),
+        "SCANReferenceRoute": (
+            "/scan_planner/initial_path",
+            "Transient Local",
+        ),
+    }
+    for name, (topic_name, durability) in expected_topics.items():
+        display = require_mapping(path_displays[name], name)
+        assert display["Enabled"] is True
+        topic = require_mapping(display["Topic"], f"{name}.Topic")
+        assert topic["Value"] == topic_name
+        assert topic["Durability Policy"] == durability
+        assert topic["Reliability Policy"] == "Reliable"
+
+
 def main():
-    if len(sys.argv) != 3:
-        raise SystemExit("usage: test_scan_config.py CONFIG.yaml LAUNCH.xml")
+    if len(sys.argv) != 4:
+        raise SystemExit(
+            "usage: test_scan_config.py CONFIG.yaml LAUNCH.xml RVIZ_CONFIG.rviz"
+        )
     config_path = pathlib.Path(sys.argv[1])
     launch_path = pathlib.Path(sys.argv[2])
+    rviz_path = pathlib.Path(sys.argv[3])
     config = require_mapping(
         yaml.safe_load(config_path.read_text(encoding="utf-8")), "config"
     )
@@ -161,6 +197,7 @@ def main():
     assert require_finite(guard, "raw_command_timeout") <= 0.15
     assert require_finite(guard, "planner_timeout") <= 0.50
     check_launch(launch_path)
+    check_rviz(rviz_path)
 
 
 if __name__ == "__main__":
