@@ -58,7 +58,7 @@ GO2_DDS_IP="${GO2_DDS_IP:-192.168.123.18}"
 mkdir -p -- "${LOG_DIR}"
 
 remove_conflicting_navigation_containers() {
-  local container_list id name image
+  local container_list id name image remove_error attempt
   local -a container_ids=()
   local -a container_descriptions=()
 
@@ -83,8 +83,28 @@ remove_conflicting_navigation_containers() {
   printf '  %s\n' "${container_descriptions[@]}"
   docker stop --time 5 "${container_ids[@]}" >/dev/null || \
     die "failed to stop an existing Go2/DDDMR navigation container"
-  docker rm "${container_ids[@]}" >/dev/null || \
-    die "failed to remove an existing Go2/DDDMR navigation container"
+
+  for id in "${container_ids[@]}"; do
+    if remove_error="$(docker rm "${id}" 2>&1)"; then
+      continue
+    fi
+
+    # Containers launched with --rm can still be disappearing just after
+    # docker stop returns. Treat that race as success once Docker confirms
+    # that the container no longer exists.
+    for (( attempt = 0; attempt < 50; attempt++ )); do
+      if ! docker inspect "${id}" >/dev/null 2>&1; then
+        remove_error=""
+        break
+      fi
+      sleep 0.1
+    done
+
+    if [[ -n "${remove_error}" ]]; then
+      printf '%s\n' "${remove_error}" >&2
+      die "failed to remove existing Go2/DDDMR navigation container ${id}"
+    fi
+  done
 }
 
 detect_net_iface() {
