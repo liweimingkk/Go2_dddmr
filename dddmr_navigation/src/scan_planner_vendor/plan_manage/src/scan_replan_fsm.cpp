@@ -80,6 +80,11 @@ namespace scan_planner
 
     bspline_pub_ = node_->create_publisher<scan_planner_msgs::msg::Bspline>("planning/bspline", 10);
     data_disp_pub_ = node_->create_publisher<scan_planner_msgs::msg::DataDisp>("planning/data_display", 100);
+    // Keep liveness independent of FSM early returns while sharing the executor so a real stall
+    // still stops the heartbeat and trips the downstream command guard.
+    heartbeat_timer_ = node_->create_wall_timer(
+        std::chrono::milliseconds(100),
+        std::bind(&SCANReplanFSM::publishPlannerHeartbeat, this));
     self_inflation_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
         "self_inflation", rclcpp::QoS(1).reliable().transient_local());
 
@@ -704,7 +709,10 @@ namespace scan_planner
     }
 
     finishProcess();
+  }
 
+  void SCANReplanFSM::publishPlannerHeartbeat()
+  {
     data_disp_.header.stamp = node_->now();
     data_disp_pub_->publish(data_disp_);
   }

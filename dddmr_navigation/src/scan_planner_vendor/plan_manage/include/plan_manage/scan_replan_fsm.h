@@ -88,7 +88,7 @@ namespace scan_planner
 
     /* ROS utils */
     rclcpp::Node *node_{nullptr};
-    rclcpp::TimerBase::SharedPtr exec_timer_, safety_timer_;
+    rclcpp::TimerBase::SharedPtr exec_timer_, safety_timer_, heartbeat_timer_;
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
     rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr path_sub_;
@@ -122,6 +122,7 @@ namespace scan_planner
 
     /* ROS functions */
     void execFSMCallback();
+    void publishPlannerHeartbeat();
     void checkCollisionCallback();
     void rvizGoalCallback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr &msg);
     void waypointCallback(const nav_msgs::msg::Path::ConstSharedPtr &msg);
