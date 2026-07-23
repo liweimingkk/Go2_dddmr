@@ -1,0 +1,140 @@
+bag_reader:
+  ros__parameters:
+    use_sim_time: false
+    bag_file_dir: "/root/dddmr_bags/go2_xt16_dddmr_mapping_20260723_143841_synced"
+    point_cloud_topic: "/lidar_points"
+    mouth_point_cloud_topic: "/utlidar/cloud_base"
+    odometry_topic: "/utlidar/robot_odom"
+    skip_frame: 2
+
+lego_loam_ip:
+  ros__parameters:
+    use_sim_time: false
+    laser:
+        odom_type: "wheel_odometry"
+        base_ground_frame: "base_link"
+        num_vertical_scans: 16
+        num_horizontal_scans: 2000
+        vertical_angle_bottom: -15.0
+        vertical_angle_top: 15.0
+        scan_period: 0.1
+
+    imageProjection:
+        segment_valid_point_num: 5
+        segment_valid_line_num: 3
+        segment_theta: 60.0
+        minimum_detection_range: 0.5
+        maximum_detection_range: 100.0
+        distance_for_patch_between_rings: 1.0
+        stitcher_num: 0
+        trt_model_path: ""
+        projected_image_stack_size: 1
+        ground_slope_tolerance: 0.3
+        ground_dz_tolerance: 0.1
+        patch_first_ring_to_baselink: true
+        use_omp_ground_voxel_filter: false
+
+        ground_fov_bottom: -0.2617994
+        ground_fov_top: -0.087266
+        ground_positive_start: 0.0
+        ground_positive_stop: 3.1415926
+        ground_negative_start: 0.0
+        ground_negative_stop: -3.1415926
+
+        enable_mouth_ground_fusion: true
+        mouth_ground_mode: "connected_surface"
+        mouth_cloud_topic: "/utlidar/cloud_base"
+        mouth_frame_override: ""
+        mouth_filter_frame: "base_link"
+        # The synchronized bag rewrites the mouth header onto the XT16 clock.
+        mouth_sync_mode: "header_offset"
+        # Offline direct replay can only select an already-read mouth frame.
+        # Cover one 15 Hz mouth-LiDAR period plus measured delivery jitter.
+        mouth_max_time_diff: 0.08
+        mouth_time_offset_sec: 0.0
+        mouth_ground_z_min: -0.42
+        mouth_ground_z_max: -0.18
+        mouth_x_min: 0.05
+        mouth_x_max: 3.0
+        mouth_y_abs: 1.2
+        mouth_range_min: 0.15
+        mouth_range_max: 4.5
+        mouth_voxel_size: 0.03
+        mouth_mapping_obstacle_voxel_size: 0.10
+        mouth_buffer_size: 90
+        mouth_min_points: 20
+        mouth_normal_radius: 0.18
+        mouth_min_normal_neighbors: 6
+        mouth_max_support_slope: 0.6108652382
+        mouth_min_obstacle_slope: 0.9599310886
+        mouth_max_planarity_residual: 0.035
+        mouth_min_planar_spread: 0.020
+        mouth_support_seed_z_min: -0.50
+        mouth_support_seed_z_max: -0.18
+        mouth_support_seed_x_max: 0.70
+        mouth_support_seed_y_abs: 0.55
+        mouth_support_reference_radius: 0.12
+        mouth_support_connection_radius: 0.34
+        mouth_maximum_step_height: 0.26
+        mouth_same_surface_height_tolerance: 0.05
+        mouth_minimum_patch_span: 0.20
+        mouth_minimum_patch_minor_span: 0.10
+        mouth_min_supported_component_points: 8
+        mouth_minimum_stair_height_levels: 3
+
+lego_loam_fa:
+  ros__parameters:
+    use_sim_time: false
+    featureAssociation:
+        edge_threshold: 0.1
+        surf_threshold: 0.1
+        nearest_feature_search_distance: 5.0
+        # The synchronized bag is already ordered on the XT16 clock. The
+        # legacy offline reader must not reject a frame because its map stage
+        # expects one output for every projected cloud.
+        odom_sync_enabled: false
+        odom_sync_tolerance_sec: 0.05
+        odom_buffer_duration_sec: 5.0
+        odom_interpolation_max_gap_sec: 0.05
+        # BagReader feeds odom and lidar serially in one thread. Keep future
+        # waiting disabled if strict synchronization is re-enabled later.
+        odom_sync_wait_timeout_sec: 0.0
+        # The synchronized bag rewrites odometry onto the XT16 clock.
+        odom_time_offset_sec: 0.0
+
+    mapping:
+        to_map_optimization: true
+
+lego_loam_mo:
+  ros__parameters:
+    use_sim_time: false
+
+    mapping:
+        distance_between_key_frame: 0.15
+        angle_between_key_frame: 0.5
+        enable_loop_closure: false
+        surrounding_keyframe_search_num: 50
+        history_keyframe_search_radius: 12.0
+        history_keyframe_search_num: 5
+        history_keyframe_fitness_score: 0.5
+        ground_voxel_size: 0.3
+        broadcast_external_odom_tf: true
+        degeneracy_eigenvalue_thresholds: [100.0, 100.0, 100.0, 100.0, 100.0, 100.0]
+        axis_split_factor_enabled: true
+        axis_split_scan_z_variance: 0.01
+        axis_split_unobservable_z_variance: 1000000.0
+        axis_split_scan_z_min_information: 10.0
+        axis_split_scan_z_max_iteration_step: 0.15
+        external_odom_factor_enabled: false
+        external_odom_rotation_variance: 0.0025
+        external_odom_translation_variance: 0.01
+        planar_constraint_enabled: false
+        planar_roll_pitch_variance: 0.0025
+        planar_z_variance: 0.01
+        planar_unconstrained_variance: 1000000.0
+
+lego_loam_map_visualization:
+  ros__parameters:
+    use_sim_time: false
+    ground_voxel_size: 0.1
+    ground_edge_threshold_num: 50

@@ -77,8 +77,8 @@ dddmr_pg_map_server_manager:
 
 map1:
   ros__parameters:
-    # Active single-map outdoor-to-meeting-room run captured on 2026-07-22.
-    pose_graph_dir: "/root/dddmr_bags/go2_xt16_mouth_mapping_20260722_155131_map_2026_07_22_07_51_30_cleaned_ghost_xm037_y325"
+    # Active synchronized XT16 + mouth-LiDAR map captured on 2026-07-23.
+    pose_graph_dir: "/root/dddmr_bags/go2_xt16_dddmr_mapping_20260723_143841_synced_map_2026_07_23_07_19_55"
     complete_map_voxel_size: 0.2
     complete_ground_voxel_size: 0.1
     merge_non_ground_surface_into_mapcloud: true

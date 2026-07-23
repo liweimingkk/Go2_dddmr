@@ -301,7 +301,7 @@ ${launch_cmd}" bash "$@"
   mapping-bag)
     config_file="${CONFIG_FILE:-${1:-/root/dddmr_navigation/src/dddmr_lego_loam/lego_loam_bor/config/loam_bag_go2_xt16_20260704_081247.yaml}}"
     mapping_dir_prefix="${DDDMR_MAPPING_DIR:-/root/dddmr_bags/go2_xt16_dddmr_mapping_20260704_081247_map_}"
-    run_docker "${IMAGE}" bash -lc "${source_prefix}
+    run_docker "${IMAGE}" bash -lc "${offline_source_prefix}
 set +u
 source \"\${DDDMR_INSTALL_BASE}/setup.bash\"
 set -u
