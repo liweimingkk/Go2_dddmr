@@ -14,9 +14,9 @@ One-command launcher for the Go2 XT16 SCAN-Planner integration.
   --dry-run  Start SCAN-Planner with real Unitree Sport output disabled.
 
 Optional speed overrides:
-  GO2_SPORT_MAX_X=0.30
+  GO2_SPORT_MAX_X=0.40
   GO2_SPORT_MAX_Y=0.0
-  GO2_SPORT_MAX_YAW=0.25
+  GO2_SPORT_MAX_YAW=0.40
 EOF
 }
 
@@ -82,9 +82,9 @@ export GO2_SETUP
 export GO2_NAV_LOG_DIR="${LOG_DIR}"
 export GO2_NAV_DRY_RUN_COMMAND="scan-navigation-dry-run"
 export GO2_NAV_DOCKER_COMMAND="scan-navigation-live-source"
-export GO2_SPORT_MAX_X="${GO2_SPORT_MAX_X:-0.30}"
+export GO2_SPORT_MAX_X="${GO2_SPORT_MAX_X:-0.40}"
 export GO2_SPORT_MAX_Y="${GO2_SPORT_MAX_Y:-0.0}"
-export GO2_SPORT_MAX_YAW="${GO2_SPORT_MAX_YAW:-0.25}"
+export GO2_SPORT_MAX_YAW="${GO2_SPORT_MAX_YAW:-0.40}"
 export GO2_ENABLE_YAW_ARC_SHIM="${GO2_ENABLE_YAW_ARC_SHIM:-false}"
 export RVIZ="${RVIZ:-true}"
 export PUBLISH_STATIC_TF="${PUBLISH_STATIC_TF:-true}"
