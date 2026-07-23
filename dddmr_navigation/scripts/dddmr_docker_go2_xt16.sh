@@ -389,7 +389,7 @@ ${launch_cmd}" bash "$@"
     odom_time_offset_sec="$(resolve_live_odom_time_offset)"
     scan_max_translation="$(
       awk -v x="${GO2_NAV_MAX_X_VALUE}" -v y="${GO2_NAV_MAX_Y_VALUE}" \
-        'BEGIN { printf "%.6f", x > y ? x : y }'
+        'BEGIN { printf "%.6f", (x > y ? x : y) }'
     )"
     start_dry_adapter=true
     if [[ "${command}" == "scan-navigation-live-source" ]]; then
