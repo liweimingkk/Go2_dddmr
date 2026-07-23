@@ -20,7 +20,7 @@ Modes:
 
 Common environment overrides:
   MAX_X=0.50
-  MAX_Y=0.0
+  MAX_Y=0.20             Dry-run default. Live defaults to 0.0 unless explicit.
   MAX_YAW=0.50
   RVIZ=true
   PUBLISH_STATIC_TF=true
@@ -40,6 +40,8 @@ Common environment overrides:
 Examples:
   scripts/run_go2_xt16_navigation_test.sh --dry-run
   GO2_NAV_LIVE_CONFIRM=I_AM_SUPERVISING_GO2_NAV \
+    scripts/run_go2_xt16_navigation_test.sh --live
+  GO2_NAV_LIVE_CONFIRM=I_AM_SUPERVISING_GO2_NAV MAX_Y=0.20 \
     scripts/run_go2_xt16_navigation_test.sh --live
   GO2_NAV_LIVE_CONFIRM=I_AM_SUPERVISING_GO2_NAV STOP_EXISTING=true \
     scripts/run_go2_xt16_navigation_test.sh --live
@@ -98,7 +100,14 @@ RVIZ_VALUE="${RVIZ:-true}"
 PUBLISH_STATIC_TF_VALUE="${PUBLISH_STATIC_TF:-true}"
 MAX_X_VALUE="${MAX_X:-0.50}"
 MAX_YAW_VALUE="${MAX_YAW:-0.50}"
-MAX_Y_VALUE="${MAX_Y:-0.0}"
+if [[ -n "${MAX_Y+x}" ]]; then
+  MAX_Y_VALUE="${MAX_Y}"
+elif [[ "${mode}" == "dry-run" ]]; then
+  MAX_Y_VALUE="0.20"
+else
+  MAX_Y_VALUE="0.0"
+fi
+OMNI_MIN_Y_VALUE=""
 RUN_SECONDS_VALUE="${RUN_SECONDS:-}"
 STOP_EXISTING_VALUE="${STOP_EXISTING:-false}"
 LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC_VALUE="${LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC:-0.35}"
@@ -110,7 +119,7 @@ OBSERVATION_MAX_HEADER_GAP_SEC_VALUE="${GO2_NAV_OBSERVATION_MAX_HEADER_GAP_SEC:-
 OBSERVATION_MAX_RECEIVE_GAP_SEC_VALUE="${GO2_NAV_OBSERVATION_MAX_RECEIVE_GAP_SEC:-0.25}"
 OBSERVATION_MAX_FUTURE_SKEW_SEC_VALUE="${GO2_NAV_OBSERVATION_MAX_FUTURE_SKEW_SEC:-0.05}"
 LIVE_CONFIRM_PHRASE="I_AM_SUPERVISING_GO2_NAV"
-CONTAINER_NAME="${NAV_CONTAINER_NAME:-go2_xt16_nav_${mode//-/_}_x${MAX_X_VALUE//./}_yaw${MAX_YAW_VALUE//./}_$(date +%Y%m%d_%H%M%S)}"
+CONTAINER_NAME="${NAV_CONTAINER_NAME:-go2_xt16_nav_${mode//-/_}_x${MAX_X_VALUE//./}_y${MAX_Y_VALUE//./}_yaw${MAX_YAW_VALUE//./}_$(date +%Y%m%d_%H%M%S)}"
 RUN_LOG_DIR="${RUN_LOG_DIR:-${WS_ROOT}/run_logs}"
 ADAPTER_LOG_CONTAINER="/root/dddmr_navigation/run_logs/${CONTAINER_NAME}_adapter.log"
 ADAPTER_LOG_HOST="${RUN_LOG_DIR}/${CONTAINER_NAME}_adapter.log"
@@ -140,6 +149,16 @@ is_nonnegative_number() {
 
 is_positive_number() {
   is_number "$1" && awk -v value="$1" 'BEGIN { exit !(value > 0) }'
+}
+
+validate_lateral_limit() {
+  is_nonnegative_number "${MAX_Y_VALUE}" || \
+    die "MAX_Y must be a finite nonnegative number."
+  awk -v value="${MAX_Y_VALUE}" 'BEGIN { exit !(value <= 0.20) }' || \
+    die "MAX_Y must not exceed the 0.20 m/s first-field-test cap."
+  OMNI_MIN_Y_VALUE="$(
+    awk -v value="${MAX_Y_VALUE}" 'BEGIN { printf "%.6f", -value }'
+  )"
 }
 
 validate_perception_settings() {
@@ -543,6 +562,8 @@ exec ros2 launch dddmr_beginner_guide go2_xt16_navigation.launch \
   odom_sync_wait_timeout_sec:=${ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE} \
   odom_time_offset_sec:=${ODOM_TIME_OFFSET_SEC_VALUE} \
   local_lidar_expected_sensor_time_sec:=${LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC_VALUE} \
+  omni_min_vel_y:=${OMNI_MIN_Y_VALUE} \
+  omni_max_vel_y:=${MAX_Y_VALUE} \
   go2_nav_cmd_gate_max_x:=${MAX_X_VALUE} \
   go2_nav_cmd_gate_max_y:=${MAX_Y_VALUE} \
   sport_dry_run_max_x:=${MAX_X_VALUE} \
@@ -561,7 +582,7 @@ exec ros2 launch dddmr_beginner_guide go2_xt16_navigation.launch \
 }
 
 start_live_adapter() {
-  log "Starting live Sport adapter: max_x=${MAX_X_VALUE}, max_yaw=${MAX_YAW_VALUE}"
+  log "Starting live Sport adapter: max_x=${MAX_X_VALUE}, max_y=${MAX_Y_VALUE}, max_yaw=${MAX_YAW_VALUE}"
   docker exec "${CONTAINER_NAME}" bash -lc "set -e
 test -f /root/dddmr_navigation/.unitree_msg_ws/install/setup.bash || {
   echo 'Missing /root/dddmr_navigation/.unitree_msg_ws/install/setup.bash; build/copy unitree_api first.' >&2
@@ -600,7 +621,7 @@ print_status() {
   docker ps --format '{{.Names}}\t{{.Status}}\t{{.Image}}' | grep -E "^${CONTAINER_NAME}\b" || true
 
   log "ROS parameters:"
-  docker_ros "ros2 param get /go2_nav_cmd_gate max_x; ros2 param get /go2_nav_cmd_gate max_yaw; ros2 param get /trajectory_generators differential_drive_rotate_shortest_angle.rotation_speed; ros2 param get /trajectory_generators differential_drive_rotate_inplace.rotation_speed" || true
+  docker_ros "ros2 param get /go2_nav_cmd_gate max_x; ros2 param get /go2_nav_cmd_gate max_y; ros2 param get /go2_nav_cmd_gate max_yaw; ros2 param get /trajectory_generators omni_drive_simple.min_vel_y; ros2 param get /trajectory_generators omni_drive_simple.max_vel_y; ros2 param get /trajectory_generators differential_drive_rotate_shortest_angle.rotation_speed; ros2 param get /trajectory_generators differential_drive_rotate_inplace.rotation_speed" || true
 
   log "Map and command topics:"
   docker_ros "ros2 topic list | sort | grep -E 'map1/mapcloud|map1/mapground|sub_map|safe_cmd_vel|dry_run_cmd_vel|lidar_points|utlidar/robot_odom' || true" || true
@@ -628,6 +649,7 @@ main() {
     trap 'exit 143' TERM
   fi
 
+  validate_lateral_limit
   require_docker_image
   assert_clean_runtime
   validate_perception_settings

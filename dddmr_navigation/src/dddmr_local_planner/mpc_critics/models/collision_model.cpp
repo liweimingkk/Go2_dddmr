@@ -163,10 +163,10 @@ double CollisionModel::scoreTrajectory(base_trajectory::Trajectory &traj){
       if(x_value<=half_x && y_value<=half_y && z_value<=half_z){
         RCLCPP_WARN_THROTTLE(
           node_->get_logger().get_child(name_), *(node_->get_clock()), 1000,
-          "collision_reject traj_v=(%.3f,%.3f) step=%u/%u traj_pose=(%.3f,%.3f,%.3f) "
+          "collision_reject traj_v=(%.3f,%.3f,%.3f) step=%u/%u traj_pose=(%.3f,%.3f,%.3f) "
           "obstacle=(%.3f,%.3f,%.3f) cuboid_center=(%.3f,%.3f,%.3f) "
           "half=(%.3f,%.3f,%.3f) value=(%.3f,%.3f,%.3f) perception_points=%zu",
-          traj.xv_, traj.thetav_, i + 1, traj.getPointsSize(),
+          traj.xv_, traj.yv_, traj.thetav_, i + 1, traj.getPointsSize(),
           pcl_traj_pose.x, pcl_traj_pose.y, pcl_traj_pose.z,
           pct_point.x, pct_point.y, pct_point.z,
           cuboid_center.x, cuboid_center.y, cuboid_center.z,

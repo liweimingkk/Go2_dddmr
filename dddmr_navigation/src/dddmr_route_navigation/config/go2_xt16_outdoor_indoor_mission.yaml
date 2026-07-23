@@ -5,6 +5,9 @@ p2p_move_base:
     command_topic: "/dddmr_go2/indoor_cmd_vel"
     stamped_command_topic: "/dddmr_go2/indoor_cmd_vel_stamped"
     decision_topic: "/dddmr_go2/indoor_decision"
+    # This combined process shares the recorded-route critic profile, which is
+    # intentionally still differential and max_y=0.
+    main_trajectory_generator: "differential_drive_simple"
 
 recorded_route_controller:
   ros__parameters:

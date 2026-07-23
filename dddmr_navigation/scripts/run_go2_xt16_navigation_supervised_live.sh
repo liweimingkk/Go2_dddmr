@@ -26,7 +26,7 @@ Environment:
   GO2_SPORT_PUBLISH_RATE_HZ=50.0
   GO2_SPORT_CMD_TIMEOUT_SEC=0.20
   GO2_SPORT_MAX_X=0.30
-  GO2_SPORT_MAX_Y=0.0
+  GO2_SPORT_MAX_Y=0.0             Explicit maximum: 0.20 m/s.
   GO2_SPORT_MAX_YAW=0.25
   GO2_SPORT_ZERO_EPSILON=0.001
   GO2_SPORT_STOP_KEEPALIVE_HZ=2.0
@@ -268,6 +268,25 @@ validate_probe_summary() {
   [[ "${RESULT:-}" == "GO2_SPORT_ADAPTER_live_COMPLETE" ]] || die "probe summary RESULT is not live complete"
   [[ -n "${REQUEST_ID_BASE:-}" ]] || die "probe summary missing REQUEST_ID_BASE"
   [[ -f "${REQUEST_ECHO_LOG:-}" ]] || die "probe summary missing REQUEST_ECHO_LOG file"
+  if awk -v value="${sport_max_y}" 'BEGIN { exit !(value > 0.0) }'; then
+    [[ -n "${PROBE_Y:-}" ]] || \
+      die "nonzero GO2_SPORT_MAX_Y requires a probe summary with PROBE_Y"
+    /usr/bin/python3 - "${PROBE_Y}" "${sport_max_y}" <<'PY'
+import math
+import sys
+
+probe_y, max_y = map(float, sys.argv[1:])
+if not math.isfinite(probe_y) or abs(probe_y) <= 1e-9:
+    raise SystemExit(
+        "nonzero GO2_SPORT_MAX_Y requires a supervised nonzero lateral probe"
+    )
+if abs(probe_y) > max_y + 1e-9:
+    raise SystemExit(
+        f"lateral probe abs(PROBE_Y)={abs(probe_y)} exceeds "
+        f"GO2_SPORT_MAX_Y={max_y}"
+    )
+PY
+  fi
 
   /usr/bin/python3 - "${REQUEST_ECHO_LOG}" "${REQUEST_ID_BASE}" <<'PY'
 import re
@@ -294,6 +313,23 @@ if not any(api_id == 1003 for _, api_id in seen):
     raise SystemExit(f"live probe summary did not prove StopMove api_id=1003; seen={seen}")
 
 print(f"validated live probe request ids: {seen}")
+PY
+}
+
+validate_lateral_limit() {
+  /usr/bin/python3 - "${sport_max_y}" <<'PY'
+import math
+import sys
+
+try:
+    max_y = float(sys.argv[1])
+except ValueError as exc:
+    raise SystemExit(f"GO2_SPORT_MAX_Y must be numeric: {exc}")
+if not math.isfinite(max_y) or max_y < 0.0 or max_y > 0.20:
+    raise SystemExit(
+        "GO2_SPORT_MAX_Y must be finite and within the first-field-test "
+        "range [0.0, 0.20]"
+    )
 PY
 }
 
@@ -479,6 +515,7 @@ start_docker_source() {
   echo "DOCKER_NAME=${docker_name}"
   echo "DOCKER_LOG=${docker_log}"
   DDDMR_DOCKER_NAME="${docker_name}" \
+  GO2_NAV_MAX_Y="${sport_max_y}" \
   RVIZ="${rviz}" \
   PUBLISH_STATIC_TF="${publish_static_tf}" \
     "${DOCKER_WRAPPER}" "${docker_live_command}" \
@@ -537,6 +574,7 @@ start_request_echo() {
 }
 
 assert_no_conflicting_runtime
+validate_lateral_limit
 
 case "${docker_dry_run_command}" in
   navigation-dry-run|outdoor-indoor-dry-run) ;;
@@ -549,7 +587,8 @@ esac
 
 if [[ "${mode}" == "dry-run" ]]; then
   echo "Launching Docker Go2 XT16 navigation in dry-run RViz mode."
-  exec env RVIZ="${rviz}" PUBLISH_STATIC_TF="${publish_static_tf}" \
+  exec env GO2_NAV_MAX_Y="${sport_max_y}" \
+    RVIZ="${rviz}" PUBLISH_STATIC_TF="${publish_static_tf}" \
     "${DOCKER_WRAPPER}" "${docker_dry_run_command}"
 fi
 

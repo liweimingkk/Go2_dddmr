@@ -36,6 +36,17 @@ def require_positive(mapping: dict[str, Any], key: str, path: str) -> float:
     return float(value)
 
 
+def require_number(mapping: dict[str, Any], key: str, path: str) -> float:
+    value = mapping.get(key)
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(float(value))
+    ):
+        raise ValueError(f"{path}.{key} must be finite, got {value!r}")
+    return float(value)
+
+
 def robot_xy_radius(config: dict[str, Any]) -> float:
     local_planner = require_mapping(config.get("local_planner"), "local_planner")
     params = require_mapping(local_planner.get("ros__parameters"), "local_planner.ros__parameters")
@@ -80,7 +91,8 @@ def validate(config: dict[str, Any]) -> dict[str, float]:
         if inscribed + 1e-9 < minimum_centerline_clearance:
             raise ValueError(
                 f"{node}.inscribed_radius={inscribed:.3f} is smaller than "
-                f"the robot half-width plus 0.10 m margin "
+                f"the robot half-width plus "
+                f"{NARROW_ROUTE_CENTERLINE_MARGIN_M:.2f} m margin "
                 f"({minimum_centerline_clearance:.3f})"
             )
         if inflation < inscribed:
@@ -134,6 +146,91 @@ def validate(config: dict[str, Any]) -> dict[str, float]:
             "narrow-gate Go2 profile"
         )
     report["rotate_recovery_enabled"] = 0.0
+    main_generator = p2p_params.get("main_trajectory_generator")
+    if main_generator != "omni_drive_simple":
+        raise ValueError(
+            "p2p_move_base.main_trajectory_generator must be omni_drive_simple "
+            "for collision-checked Go2 lateral avoidance"
+        )
+
+    trajectory_generators = require_mapping(
+        config.get("trajectory_generators"), "trajectory_generators"
+    )
+    trajectory_params = require_mapping(
+        trajectory_generators.get("ros__parameters"),
+        "trajectory_generators.ros__parameters",
+    )
+    trajectory_plugins = trajectory_params.get("plugins")
+    if (
+        not isinstance(trajectory_plugins, list)
+        or "omni_drive_simple" not in trajectory_plugins
+    ):
+        raise ValueError(
+            "trajectory_generators.plugins must include omni_drive_simple"
+        )
+    omni = require_mapping(
+        trajectory_params.get("omni_drive_simple"),
+        "trajectory_generators.omni_drive_simple",
+    )
+    if omni.get("plugin") != (
+        "trajectory_generators::OmniSimpleTrajectoryGeneratorTheory"
+    ):
+        raise ValueError(
+            "trajectory_generators.omni_drive_simple.plugin must select the "
+            "omnidirectional generator"
+        )
+    min_y = require_number(
+        omni, "min_vel_y", "trajectory_generators.omni_drive_simple"
+    )
+    max_y = require_positive(
+        omni, "max_vel_y", "trajectory_generators.omni_drive_simple"
+    )
+    min_trans = require_positive(
+        omni, "min_vel_trans", "trajectory_generators.omni_drive_simple"
+    )
+    max_trans = require_positive(
+        omni, "max_vel_trans", "trajectory_generators.omni_drive_simple"
+    )
+    max_x = require_positive(
+        omni, "max_vel_x", "trajectory_generators.omni_drive_simple"
+    )
+    sim_time = require_positive(
+        omni, "sim_time", "trajectory_generators.omni_drive_simple"
+    )
+    acc_y = require_positive(
+        omni, "acc_lim_y", "trajectory_generators.omni_drive_simple"
+    )
+    lateral_samples = require_positive(
+        omni, "linear_y_sample", "trajectory_generators.omni_drive_simple"
+    )
+    if max_y > 0.20 + 1e-9:
+        raise ValueError(
+            "trajectory_generators.omni_drive_simple.max_vel_y exceeds the "
+            "0.20 m/s first-field-test cap"
+        )
+    if not math.isclose(min_y, -max_y, rel_tol=0.0, abs_tol=1e-9):
+        raise ValueError(
+            "trajectory_generators.omni_drive_simple lateral limits must be symmetric"
+        )
+    if min_trans > max_y + 1e-9:
+        raise ValueError(
+            "trajectory_generators.omni_drive_simple.min_vel_trans must admit "
+            "a pure lateral candidate at max_vel_y"
+        )
+    if max_trans + 1e-9 < math.hypot(max_x, max_y):
+        raise ValueError(
+            "trajectory_generators.omni_drive_simple.max_vel_trans must admit "
+            "the configured maximum diagonal command"
+        )
+    if lateral_samples < 3.0:
+        raise ValueError(
+            "trajectory_generators.omni_drive_simple.linear_y_sample must "
+            "cover left, zero, and right"
+        )
+    report["omni.max_vel_y"] = max_y
+    report["omni.min_vel_y"] = min_y
+    report["omni.min_vel_trans"] = min_trans
+    report["omni.acc_lim_y"] = acc_y
 
     critics = require_mapping(config.get("mpc_critics"), "mpc_critics")
     critic_params = require_mapping(
@@ -150,20 +247,79 @@ def validate(config: dict[str, Any]) -> dict[str, float]:
             "mpc_critics.route_corridor.plugin must be "
             "mpc_critics::RouteCorridorModel"
         )
-    if corridor.get("trajectory_generator") != "differential_drive_simple":
+    if corridor.get("trajectory_generator") != main_generator:
         raise ValueError(
-            "mpc_critics.route_corridor must guard differential_drive_simple"
+            "mpc_critics.route_corridor must guard the configured main "
+            "trajectory generator"
         )
+    for critic_name in (
+        "collision",
+        "route_corridor",
+        "stick_path",
+        "pure_pursuit",
+        "toward_global_plan",
+    ):
+        critic = require_mapping(
+            critic_params.get(critic_name), f"mpc_critics.{critic_name}"
+        )
+        if critic.get("trajectory_generator") != main_generator:
+            raise ValueError(
+                f"mpc_critics.{critic_name} must score {main_generator}"
+            )
     corridor_xy = require_positive(
         corridor, "max_xy_distance", "mpc_critics.route_corridor"
     )
     corridor_z = require_positive(
         corridor, "max_z_distance", "mpc_critics.route_corridor"
     )
-    if corridor_xy > 0.15 + 1e-9:
+    if corridor.get("adaptive_xy_enabled") is not True:
+        raise ValueError(
+            "mpc_critics.route_corridor.adaptive_xy_enabled must be true"
+        )
+    if corridor.get("adaptive_requires_lateral_motion") is not True:
+        raise ValueError(
+            "mpc_critics.route_corridor adaptive relaxation must require "
+            "body-frame lateral motion"
+        )
+    adaptive_xy = require_positive(
+        corridor, "adaptive_max_xy_distance", "mpc_critics.route_corridor"
+    )
+    adaptive_clearance = require_positive(
+        corridor,
+        "adaptive_min_obstacle_clearance",
+        "mpc_critics.route_corridor",
+    )
+    adaptive_ground_distance = require_positive(
+        corridor,
+        "adaptive_max_ground_distance",
+        "mpc_critics.route_corridor",
+    )
+    required_lateral_horizon = max_y * sim_time
+    if adaptive_xy + 1e-9 < required_lateral_horizon:
+        raise ValueError(
+            "mpc_critics.route_corridor.adaptive_max_xy_distance must admit "
+            f"the lateral planning horizon ({required_lateral_horizon:.3f} m)"
+        )
+    if adaptive_xy > 0.35 + 1e-9:
+        raise ValueError(
+            "mpc_critics.route_corridor.adaptive_max_xy_distance exceeds the "
+            "0.35 m first-field-test cap"
+        )
+    required_clearance = body_radius + NARROW_ROUTE_CENTERLINE_MARGIN_M
+    if adaptive_clearance + 1e-9 < required_clearance:
+        raise ValueError(
+            "mpc_critics.route_corridor.adaptive_min_obstacle_clearance is "
+            f"smaller than the robot XY radius plus margin ({required_clearance:.3f} m)"
+        )
+    if adaptive_ground_distance > corridor_xy + 1e-9:
+        raise ValueError(
+            "mpc_critics.route_corridor.adaptive_max_ground_distance must not "
+            "exceed the hard XY corridor"
+        )
+    if corridor_xy > 0.20 + 1e-9:
         raise ValueError(
             "mpc_critics.route_corridor.max_xy_distance must be no greater "
-            "than 0.15 m for the gate profile"
+            "than 0.20 m for the gate profile"
         )
     if corridor_z > 0.60 + 1e-9:
         raise ValueError(
@@ -172,6 +328,9 @@ def validate(config: dict[str, Any]) -> dict[str, float]:
         )
     report["route_corridor.max_xy_distance"] = corridor_xy
     report["route_corridor.max_z_distance"] = corridor_z
+    report["route_corridor.adaptive_max_xy_distance"] = adaptive_xy
+    report["route_corridor.adaptive_min_obstacle_clearance"] = adaptive_clearance
+    report["route_corridor.adaptive_max_ground_distance"] = adaptive_ground_distance
 
     dwa = require_mapping(
         config.get("dynamic_window_aware_global_planner"),

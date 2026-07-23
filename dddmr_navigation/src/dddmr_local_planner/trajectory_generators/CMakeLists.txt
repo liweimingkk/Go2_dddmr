@@ -171,6 +171,16 @@ if(BUILD_TESTING)
   ament_target_dependencies(test_dd_rotate_inplace_collision_horizon
     ${dependencies}
   )
+
+  ament_add_gtest(test_omni_simple_trajectory_generator
+    test/test_omni_simple_trajectory_generator.cpp
+  )
+  target_link_libraries(test_omni_simple_trajectory_generator
+    theories
+  )
+  ament_target_dependencies(test_omni_simple_trajectory_generator
+    ${dependencies}
+  )
 endif()
 
 ament_export_include_directories(include)

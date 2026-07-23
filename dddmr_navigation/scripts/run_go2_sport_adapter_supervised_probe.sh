@@ -616,6 +616,10 @@ REQUEST_TOPIC=$([[ "${mode}" == "typed-preview" ]] && printf '%s' "${PREVIEW_REQ
 PROBE_DECISION=${probe_decision}
 PROBE_DECISION_PUB_COUNT=${probe_decision_pub_count}
 PROBE_PRE_CMD_SLEEP=${probe_pre_cmd_sleep}
+PROBE_X=${probe_x}
+PROBE_Y=${probe_y}
+PROBE_YAW=${probe_yaw}
+PROBE_DURATION=${probe_duration}
 PUBLISH_RATE_HZ=${publish_rate_hz}
 CMD_TIMEOUT_SEC=${cmd_timeout_sec}
 MAX_X=${max_x}

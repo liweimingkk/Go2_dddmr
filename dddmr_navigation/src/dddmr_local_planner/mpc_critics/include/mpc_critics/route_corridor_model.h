@@ -18,6 +18,11 @@ protected:
 private:
   double max_xy_distance_{0.60};
   double max_z_distance_{0.35};
+  bool adaptive_xy_enabled_{false};
+  bool adaptive_requires_lateral_motion_{true};
+  double adaptive_max_xy_distance_{0.60};
+  double adaptive_min_obstacle_clearance_{0.50};
+  double adaptive_max_ground_distance_{0.15};
 };
 
 }  // namespace mpc_critics

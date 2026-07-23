@@ -600,6 +600,7 @@ void Local_Planner::getBestTrajectory(std::string traj_gen_name, base_trajectory
 
     InPlaceRotationCandidate hysteresis_candidate;
     hysteresis_candidate.linear_x = (*traj_it).xv_;
+    hysteresis_candidate.linear_y = (*traj_it).yv_;
     hysteresis_candidate.angular_z = (*traj_it).thetav_;
     hysteresis_candidate.cost = (*traj_it).cost_;
     hysteresis_candidates.push_back(hysteresis_candidate);
@@ -664,6 +665,7 @@ void Local_Planner::getBestTrajectory(std::string traj_gen_name, base_trajectory
            << " accepted=" << accepted
            << " best_cost=" << best_traj.cost_
            << " best_vx=" << best_traj.xv_
+           << " best_vy=" << best_traj.yv_
            << " best_vyaw=" << best_traj.thetav_;
     for(auto report_it=rejected_trajectories_.begin(); report_it!=rejected_trajectories_.end(); report_it++){
       double rate = total > 0 ? static_cast<double>((*report_it).second.size()) / static_cast<double>(total) : 0.0;
@@ -806,6 +808,40 @@ dddmr_sys_core::PlannerState Local_Planner::computeVelocityCommand(std::string t
   mpc_critics_ros_->getSharedDataPtr()->ackermann_drive_state_ = ackermann_drive_state_;
   mpc_critics_ros_->getSharedDataPtr()->pcl_perception_ = perception_3d_ros_->getSharedDataPtr()->aggregate_observation_;
   mpc_critics_ros_->getSharedDataPtr()->prune_plan_ = prune_plan_;
+  const auto perception_shared_data = perception_3d_ros_->getSharedDataPtr();
+  auto * const stacked_perception = perception_3d_ros_->getStackedPerception();
+  mpc_critics_ros_->getSharedDataPtr()->ground_clearance_query_ =
+    [perception_shared_data, stacked_perception](
+      const pcl::PointXYZI & query, double & nearest_ground_distance,
+      double & obstacle_clearance)
+    {
+      std::unique_lock<std::recursive_mutex> ground_lock(
+        perception_shared_data->ground_kdtree_cb_mutex_);
+      if (!perception_shared_data->kdtree_ground_ ||
+        !perception_shared_data->pcl_ground_ ||
+        perception_shared_data->pcl_ground_->empty())
+      {
+        return false;
+      }
+
+      std::vector<int> indices;
+      std::vector<float> squared_distances;
+      if (perception_shared_data->kdtree_ground_->nearestKSearch(
+          query, 1, indices, squared_distances) <= 0 ||
+        indices.empty() || squared_distances.empty() ||
+        indices.front() < 0)
+      {
+        return false;
+      }
+
+      nearest_ground_distance =
+        std::sqrt(static_cast<double>(squared_distances.front()));
+      obstacle_clearance = stacked_perception->get_min_dGraphValue(
+        static_cast<unsigned int>(indices.front()));
+      return
+        std::isfinite(nearest_ground_distance) &&
+        std::isfinite(obstacle_clearance);
+    };
   //@ Below function transform prune_plane from nav::msg to pcl type
   //@ Below function generate kd-tree using aggregate observation
   mpc_critics_ros_->updateSharedData();

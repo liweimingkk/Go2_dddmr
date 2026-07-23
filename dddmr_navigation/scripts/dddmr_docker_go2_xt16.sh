@@ -40,6 +40,7 @@ Environment:
   AUTO_MEASURE_ODOM_TIME_OFFSET=true
   ODOM_SYNC_TOLERANCE_SEC=0.05
   ODOM_SYNC_WAIT_TIMEOUT_SEC=0.1
+  GO2_NAV_MAX_Y=0.0
   DDDMR_BUILD_BASE=.docker_go2_xt16_build
   DDDMR_INSTALL_BASE=.docker_go2_xt16_install
   DDDMR_LOG_BASE=.docker_go2_xt16_log
@@ -71,6 +72,7 @@ DOCKER_NAME_VALUE="${DDDMR_DOCKER_NAME:-}"
 ODOM_OFFSET_RESOLVER="${GO2_ODOM_TIME_OFFSET_RESOLVER:-${SCRIPT_DIR}/resolve_go2_odom_time_offset.sh}"
 ODOM_SYNC_TOLERANCE_SEC_VALUE="${ODOM_SYNC_TOLERANCE_SEC:-0.05}"
 ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE="${ODOM_SYNC_WAIT_TIMEOUT_SEC:-0.1}"
+GO2_NAV_MAX_Y_VALUE="${GO2_NAV_MAX_Y:-0.0}"
 
 if [[ $# -lt 1 ]]; then
   usage >&2
@@ -98,6 +100,18 @@ is_number() {
 
 is_nonnegative_number() {
   is_number "$1" && awk -v value="$1" 'BEGIN { exit !(value >= 0) }'
+}
+
+resolve_navigation_min_y() {
+  is_nonnegative_number "${GO2_NAV_MAX_Y_VALUE}" || {
+    echo "GO2_NAV_MAX_Y must be a finite nonnegative number." >&2
+    exit 1
+  }
+  awk -v value="${GO2_NAV_MAX_Y_VALUE}" 'BEGIN { exit !(value <= 0.20) }' || {
+    echo "GO2_NAV_MAX_Y must not exceed the 0.20 m/s first-field-test cap." >&2
+    exit 1
+  }
+  awk -v value="${GO2_NAV_MAX_Y_VALUE}" 'BEGIN { printf "%.6f", -value }'
 }
 
 resolve_live_odom_time_offset() {
@@ -294,13 +308,14 @@ wait \${mapping_pid}"
     publish_static_tf="${PUBLISH_STATIC_TF:-true}"
     run_seconds="${RUN_SECONDS:-}"
     odom_time_offset_sec="$(resolve_live_odom_time_offset)"
+    omni_min_vel_y="$(resolve_navigation_min_y)"
     if [[ "${rviz}" == "true" && -n "${DISPLAY:-}" ]] && command -v xhost >/dev/null 2>&1; then
       xhost +local:docker >/dev/null || true
     fi
     launch_cmd="set +u
 source \"\${DDDMR_INSTALL_BASE}/setup.bash\"
 set -u
-ros2 launch dddmr_beginner_guide go2_xt16_navigation.launch rviz:=${rviz} publish_static_tf:=${publish_static_tf} odom_sync_enabled:=true odom_sync_tolerance_sec:=${ODOM_SYNC_TOLERANCE_SEC_VALUE} odom_sync_wait_timeout_sec:=${ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE} odom_time_offset_sec:=${odom_time_offset_sec} \"\$@\""
+ros2 launch dddmr_beginner_guide go2_xt16_navigation.launch rviz:=${rviz} publish_static_tf:=${publish_static_tf} odom_sync_enabled:=true odom_sync_tolerance_sec:=${ODOM_SYNC_TOLERANCE_SEC_VALUE} odom_sync_wait_timeout_sec:=${ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE} odom_time_offset_sec:=${odom_time_offset_sec} omni_min_vel_y:=${omni_min_vel_y} omni_max_vel_y:=${GO2_NAV_MAX_Y_VALUE} go2_nav_cmd_gate_max_y:=${GO2_NAV_MAX_Y_VALUE} sport_dry_run_max_y:=${GO2_NAV_MAX_Y_VALUE} \"\$@\""
     if [[ -n "${run_seconds}" ]]; then
       run_docker "${IMAGE}" bash -lc "${source_prefix}
 timeout -s TERM -k 5s ${run_seconds}s bash -lc '${launch_cmd}' bash \"\$@\"" bash "$@"
@@ -315,13 +330,14 @@ ${launch_cmd}" bash "$@"
     publish_static_tf="${PUBLISH_STATIC_TF:-true}"
     run_seconds="${RUN_SECONDS:-}"
     odom_time_offset_sec="$(resolve_live_odom_time_offset)"
+    omni_min_vel_y="$(resolve_navigation_min_y)"
     if [[ "${rviz}" == "true" && -n "${DISPLAY:-}" ]] && command -v xhost >/dev/null 2>&1; then
       xhost +local:docker >/dev/null || true
     fi
     launch_cmd="set +u
 source \"\${DDDMR_INSTALL_BASE}/setup.bash\"
 set -u
-ros2 launch dddmr_beginner_guide go2_xt16_navigation.launch rviz:=${rviz} publish_static_tf:=${publish_static_tf} odom_sync_enabled:=true odom_sync_tolerance_sec:=${ODOM_SYNC_TOLERANCE_SEC_VALUE} odom_sync_wait_timeout_sec:=${ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE} odom_time_offset_sec:=${odom_time_offset_sec} start_sport_dry_run_adapter:=false start_go2_sport_adapter:=false \"\$@\""
+ros2 launch dddmr_beginner_guide go2_xt16_navigation.launch rviz:=${rviz} publish_static_tf:=${publish_static_tf} odom_sync_enabled:=true odom_sync_tolerance_sec:=${ODOM_SYNC_TOLERANCE_SEC_VALUE} odom_sync_wait_timeout_sec:=${ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE} odom_time_offset_sec:=${odom_time_offset_sec} omni_min_vel_y:=${omni_min_vel_y} omni_max_vel_y:=${GO2_NAV_MAX_Y_VALUE} go2_nav_cmd_gate_max_y:=${GO2_NAV_MAX_Y_VALUE} start_sport_dry_run_adapter:=false start_go2_sport_adapter:=false \"\$@\""
     if [[ -n "${run_seconds}" ]]; then
       run_docker "${IMAGE}" bash -lc "${source_prefix}
 timeout -s TERM -k 5s ${run_seconds}s bash -lc '${launch_cmd}' bash \"\$@\"" bash "$@"

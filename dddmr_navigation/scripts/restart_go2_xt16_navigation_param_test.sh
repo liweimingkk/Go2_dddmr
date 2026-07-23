@@ -377,6 +377,7 @@ case "${mode}" in
     exec env \
       RVIZ="${rviz}" \
       PUBLISH_STATIC_TF="${PUBLISH_STATIC_TF:-true}" \
+      GO2_SPORT_MAX_Y="${nav_max_y}" \
       "${NAV_LIVE}" --dry-run
     ;;
 

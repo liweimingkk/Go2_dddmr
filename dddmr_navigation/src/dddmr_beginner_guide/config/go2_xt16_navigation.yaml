@@ -19,6 +19,7 @@ p2p_move_base:
     waiting_patience: 10.0
     # Pure yaw is responsive on this Go2; the previous 0.10 m/s heading arc
     # operated in its observed low-speed dead zone and prolonged alignment.
+    main_trajectory_generator: "omni_drive_simple"
     initial_heading_trajectory_generator: "differential_drive_rotate_shortest_angle"
     goal_heading_trajectory_generator: "differential_drive_rotate_shortest_angle"
 global_plan_manager:
@@ -186,7 +187,7 @@ local_planner:
     # This prevents nearly symmetric left/right candidates from alternating and
     # making the robot shake in front of an obstacle.
     in_place_direction_hysteresis_enabled: true
-    in_place_direction_hysteresis_generator: "differential_drive_simple"
+    in_place_direction_hysteresis_generator: "omni_drive_simple"
     # Ignore small critic noise; after a three-second hold, allow only a
     # materially better side to win so the lock cannot force a long detour.
     in_place_direction_min_hold_sec: 3.0
@@ -227,7 +228,7 @@ recovery_behaviors:
 
 trajectory_generators:
   ros__parameters:
-    plugins: ["differential_drive_simple", "differential_drive_rotate_inplace", "differential_drive_rotate_shortest_angle", "differential_drive_go2_heading_arc"]
+    plugins: ["omni_drive_simple", "differential_drive_simple", "differential_drive_rotate_inplace", "differential_drive_rotate_shortest_angle", "differential_drive_go2_heading_arc"]
     differential_drive_rotate_shortest_angle:
       plugin: "trajectory_generators::DDRotateInplaceTheory"
       controller_frequency: 10.0
@@ -280,6 +281,55 @@ trajectory_generators:
         blt: [-0.35, 0.21, 0.60]
         brt: [-0.35, -0.21, 0.60]
     
+    omni_drive_simple:
+      plugin: "trajectory_generators::OmniSimpleTrajectoryGeneratorTheory"
+      # SCAN-Planner's Go2 controller keeps planar vx/vy tracking active while
+      # yaw remains bounded. Use the same collision-aware holonomic principle
+      # here, but retain DDDMR's swept cuboid and hard route corridor.
+      max_vel_x: 0.40
+      min_vel_x: 0.0
+      # Launchers override these symmetrically from the supervised MAX_Y
+      # envelope. The YAML values define the tested planner ceiling.
+      max_vel_y: 0.20
+      min_vel_y: -0.20
+      min_vel_trans: 0.20
+      max_vel_trans: 0.45
+      max_vel_theta: 0.50
+      min_vel_theta: 0.40
+      acc_lim_x: 3.00
+      acc_lim_y: 2.00
+      # At 10 Hz this makes +/-0.40 rad/s reachable from rest, matching
+      # min_vel_theta instead of silently filtering every rotation sample.
+      acc_lim_theta: 4.0
+      deceleration_ratio: 2.0
+      max_motor_shaft_rpm: 3000.0
+      wheel_diameter: 0.16
+      gear_ratio: 1.0
+      robot_radius: 0.25
+
+      controller_frequency: 10.0
+      sim_time: 1.5
+      # From rest these produce executable 0/0.30 m/s forward and
+      # -0.20/0/0.20 m/s lateral candidates without multiplying the former
+      # 56-candidate workload.
+      linear_x_sample: 2.0
+      linear_y_sample: 3.0
+      angular_z_sample: 5.0
+      sim_granularity: 0.05
+      angular_sim_granularity: 0.025
+
+      cuboid:
+        flb: [0.42, 0.21, -0.20] #front left bottom
+        frb: [0.42, -0.21, -0.20]
+        flt: [0.42, 0.21, 0.60] #front left top
+        frt: [0.42, -0.21, 0.60]
+        blb: [-0.35, 0.21, -0.20] #back left bottom
+        brb: [-0.35, -0.21, -0.20]
+        blt: [-0.35, 0.21, 0.60]
+        brt: [-0.35, -0.21, 0.60]
+
+    # Retained for the recorded-route controller, whose separately bounded
+    # profile remains differential until it receives its own lateral field test.
     differential_drive_simple:
       plugin: "trajectory_generators::DDSimpleTrajectoryGeneratorTheory"
       # Field replay showed that 0.10-0.15 m/s forward and about 0.05 rad/s
@@ -303,7 +353,6 @@ trajectory_generators:
       wheel_diameter: 0.16
       gear_ratio: 1.0
       robot_radius: 0.25
-      
       controller_frequency: 10.0
       sim_time: 1.5
       linear_x_sample: 5.0
@@ -326,31 +375,38 @@ mpc_critics:
     plugins: ["collision", "route_corridor", "stick_path", "pure_pursuit", "toward_global_plan", "collision_rotate", "collision_rotate_shortest", "prefer_rotate_shortest", "collision_go2_heading_arc", "prefer_go2_heading_arc"]
     collision:
       plugin: "mpc_critics::CollisionModel"
-      trajectory_generator: differential_drive_simple
+      trajectory_generator: omni_drive_simple
       weight: 1.0
     route_corridor:
       plugin: "mpc_critics::RouteCorridorModel"
-      trajectory_generator: differential_drive_simple
-      # The global path is sampled at roughly 0.10 m. Keep every predicted
-      # body centre within a narrow hard corridor so local live-lidar avoidance
-      # cannot cut the gate corner into a static-map wall. XY is the doorway
-      # safety bound. Z must also include the normal base_link-to-ground offset
-      # because local trajectories are at base height while this path is on the
-      # mapped ground (0.445 m was observed in the 2026-07-22 live run).
-      max_xy_distance: 0.15
+      trajectory_generator: omni_drive_simple
+      # The global path is sampled at roughly 0.10 m. Keep every predicted body
+      # centre within a narrow hard corridor at doors and map edges. For a
+      # genuine body-frame lateral candidate only, permit enough offset to
+      # complete the 1.5 s / 0.20 m/s sidestep when fused static-map and
+      # live-lidar clearance proves a full Go2-radius envelope and nearby
+      # traversable ground. Missing clearance data fails back to the hard
+      # corridor. Forward/yaw arcs never receive this relaxation. Z includes
+      # the normal base_link-to-ground offset.
+      max_xy_distance: 0.20
       max_z_distance: 0.60
+      adaptive_xy_enabled: true
+      adaptive_requires_lateral_motion: true
+      adaptive_max_xy_distance: 0.32
+      adaptive_min_obstacle_clearance: 0.52
+      adaptive_max_ground_distance: 0.15
     stick_path:
       plugin: "mpc_critics::StickPathModel"
-      trajectory_generator: differential_drive_simple
+      trajectory_generator: omni_drive_simple
       weight: 0.1
     pure_pursuit:
       plugin: "mpc_critics::PurePursuitModel"
-      trajectory_generator: differential_drive_simple
+      trajectory_generator: omni_drive_simple
       translation_weight: 1.0
       orientation_weight: 0.01
     toward_global_plan:
       plugin: "mpc_critics::TowardGlobalPlanModel"
-      trajectory_generator: differential_drive_simple
+      trajectory_generator: omni_drive_simple
       weight: 1.0
     collision_rotate:
       plugin: "mpc_critics::CollisionModel"

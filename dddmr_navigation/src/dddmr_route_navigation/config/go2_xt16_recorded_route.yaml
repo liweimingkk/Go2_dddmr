@@ -37,14 +37,30 @@ recorded_route_controller:
       goal_max_xy_error: 0.35
       goal_max_z_error: 0.25
 
+local_planner:
+  ros__parameters:
+    # The shared outdoor/indoor and recorded-route profiles still select the
+    # differential generator below, so keep their turn-direction lock scoped
+    # to that generator.
+    in_place_direction_hysteresis_generator: "differential_drive_simple"
+
 mpc_critics:
   ros__parameters:
     # Keep the existing Go2 critics and add a hard 3D corridor only to the
     # forward local-avoidance generator. Rotation remains collision-checked;
     # the controller separately checks the robot's current corridor position.
     plugins: ["collision", "route_corridor", "stick_path", "pure_pursuit", "toward_global_plan", "collision_rotate", "collision_rotate_shortest", "prefer_rotate_shortest", "collision_go2_heading_arc", "prefer_go2_heading_arc"]
+    collision:
+      trajectory_generator: differential_drive_simple
     route_corridor:
       plugin: "mpc_critics::RouteCorridorModel"
       trajectory_generator: differential_drive_simple
       max_xy_distance: 0.60
       max_z_distance: 0.35
+      adaptive_xy_enabled: false
+    stick_path:
+      trajectory_generator: differential_drive_simple
+    pure_pursuit:
+      trajectory_generator: differential_drive_simple
+    toward_global_plan:
+      trajectory_generator: differential_drive_simple

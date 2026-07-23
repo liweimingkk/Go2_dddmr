@@ -37,6 +37,16 @@ InPlaceRotationCandidate forward(const double linear_x, const double cost)
   return candidate;
 }
 
+InPlaceRotationCandidate lateral(
+  const double linear_y, const double angular_z, const double cost)
+{
+  InPlaceRotationCandidate candidate;
+  candidate.linear_y = linear_y;
+  candidate.angular_z = angular_z;
+  candidate.cost = cost;
+  return candidate;
+}
+
 TEST(InPlaceRotationHysteresis, HoldsDirectionAcrossAlternatingSmallCostAdvantages)
 {
   InPlaceRotationHysteresis policy;
@@ -110,6 +120,20 @@ TEST(InPlaceRotationHysteresis, ForwardWinnerPreservesDirectionLockWithinGap)
   rotations[0].cost = 0.99;
   rotations[1].cost = 1.00;
   EXPECT_EQ(policy.select(rotations, 0U, atSeconds(0.2)), 1U);
+}
+
+TEST(InPlaceRotationHysteresis, LateralMotionIsNotMisclassifiedAsInPlaceRotation)
+{
+  InPlaceRotationHysteresis policy;
+  policy.configure(5.0, 1.0, 10.0);
+
+  std::vector<InPlaceRotationCandidate> rotations{
+    rotation(-0.20, 1.10), rotation(0.20, 1.00)};
+  ASSERT_EQ(policy.select(rotations, 1U, atSeconds(0.0)), 1U);
+
+  const std::vector<InPlaceRotationCandidate> lateral_candidates{
+    rotation(0.20, 1.00), lateral(0.20, -0.20, 0.50)};
+  EXPECT_EQ(policy.select(lateral_candidates, 1U, atSeconds(0.1)), 1U);
 }
 
 TEST(InPlaceRotationHysteresis, CostBasedSwitchCanBeDisabled)

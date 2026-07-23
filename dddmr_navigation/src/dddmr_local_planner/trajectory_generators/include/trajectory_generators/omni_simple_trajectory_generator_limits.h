@@ -29,7 +29,7 @@
 * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#ifndef _ONNI_SIMPLE_TRAJECTORY_GENERATOR_LIMITS_H__
+#ifndef _OMNI_SIMPLE_TRAJECTORY_GENERATOR_LIMITS_H__
 #define _OMNI_SIMPLE_TRAJECTORY_GENERATOR_LIMITS_H__
 
 #include <Eigen/Core>
@@ -78,7 +78,7 @@ public:
       double nacc_lim_x,
       double nacc_lim_y,
       double nacc_lim_theta,
-      double nuse_motor_constraint,
+      bool nuse_motor_constraint,
       double nmax_motor_shaft_rpm,
       double nwheel_diameter,
       double ngear_ratio,

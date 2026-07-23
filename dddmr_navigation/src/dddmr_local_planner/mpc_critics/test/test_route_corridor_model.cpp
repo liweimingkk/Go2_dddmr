@@ -61,7 +61,14 @@ protected:
     rclcpp::NodeOptions options;
     options.parameter_overrides({
       rclcpp::Parameter("route_corridor.max_xy_distance", 0.15),
-      rclcpp::Parameter("route_corridor.max_z_distance", 0.60)});
+      rclcpp::Parameter("route_corridor.max_z_distance", 0.60),
+      rclcpp::Parameter("route_corridor.adaptive_xy_enabled", true),
+      rclcpp::Parameter(
+        "route_corridor.adaptive_requires_lateral_motion", true),
+      rclcpp::Parameter("route_corridor.adaptive_max_xy_distance", 0.32),
+      rclcpp::Parameter(
+        "route_corridor.adaptive_min_obstacle_clearance", 0.52),
+      rclcpp::Parameter("route_corridor.adaptive_max_ground_distance", 0.15)});
     node_ = std::make_shared<rclcpp::Node>(
       "route_corridor_model_test", options);
     buffer_ = std::make_shared<tf2_ros::Buffer>(node_->get_clock());
@@ -80,6 +87,21 @@ protected:
       shared_data_->prune_plan_.poses.push_back(pose);
     }
     shared_data_->updateData();
+  }
+
+  void setClearanceQuery(
+    const bool available, const double ground_distance,
+    const double obstacle_clearance)
+  {
+    shared_data_->ground_clearance_query_ =
+      [available, ground_distance, obstacle_clearance](
+        const pcl::PointXYZI &, double & output_ground_distance,
+        double & output_obstacle_clearance)
+      {
+        output_ground_distance = ground_distance;
+        output_obstacle_clearance = obstacle_clearance;
+        return available;
+      };
   }
 
   std::shared_ptr<rclcpp::Node> node_;
@@ -104,6 +126,61 @@ TEST_F(RouteCorridorModelTest, RejectsHorizontalDeparture)
 {
   setRoute({point(0.0, 0.0, 0.0), point(1.0, 0.0, 0.0)});
   auto trajectory = makeTrajectory({point(0.0, 0.16, 0.0)});
+  EXPECT_LT(model_.scoreTrajectory(trajectory), 0.0);
+}
+
+TEST_F(RouteCorridorModelTest, AcceptsClearLateralDepartureOnMappedGround)
+{
+  setRoute({
+    point(0.0, 0.0, 0.0), point(0.2, 0.0, 0.0),
+    point(0.4, 0.0, 0.0)});
+  setClearanceQuery(true, 0.05, 0.60);
+  auto trajectory = makeTrajectory({
+    point(0.2, 0.20, 0.0), point(0.4, 0.30, 0.0)});
+  trajectory.yv_ = 0.20;
+  EXPECT_DOUBLE_EQ(model_.scoreTrajectory(trajectory), 0.0);
+}
+
+TEST_F(RouteCorridorModelTest, RejectsAdaptiveDepartureWithoutFullBodyClearance)
+{
+  setRoute({
+    point(0.0, 0.0, 0.0), point(0.2, 0.0, 0.0),
+    point(0.4, 0.0, 0.0)});
+  setClearanceQuery(true, 0.05, 0.51);
+  auto trajectory = makeTrajectory({point(0.2, 0.20, 0.0)});
+  trajectory.yv_ = 0.20;
+  EXPECT_LT(model_.scoreTrajectory(trajectory), 0.0);
+}
+
+TEST_F(RouteCorridorModelTest, RejectsAdaptiveDepartureWithoutNearbyGround)
+{
+  setRoute({
+    point(0.0, 0.0, 0.0), point(0.2, 0.0, 0.0),
+    point(0.4, 0.0, 0.0)});
+  setClearanceQuery(true, 0.16, 0.80);
+  auto trajectory = makeTrajectory({point(0.2, 0.20, 0.0)});
+  trajectory.yv_ = 0.20;
+  EXPECT_LT(model_.scoreTrajectory(trajectory), 0.0);
+}
+
+TEST_F(RouteCorridorModelTest, ForwardArcCannotUseAdaptiveDeparture)
+{
+  setRoute({
+    point(0.0, 0.0, 0.0), point(0.2, 0.0, 0.0),
+    point(0.4, 0.0, 0.0)});
+  setClearanceQuery(true, 0.05, 0.80);
+  auto trajectory = makeTrajectory({point(0.2, 0.20, 0.0)});
+  EXPECT_LT(model_.scoreTrajectory(trajectory), 0.0);
+}
+
+TEST_F(RouteCorridorModelTest, RejectsDepartureBeyondAdaptiveLimit)
+{
+  setRoute({
+    point(0.0, 0.0, 0.0), point(0.2, 0.0, 0.0),
+    point(0.4, 0.0, 0.0)});
+  setClearanceQuery(true, 0.05, 0.80);
+  auto trajectory = makeTrajectory({point(0.2, 0.33, 0.0)});
+  trajectory.yv_ = 0.20;
   EXPECT_LT(model_.scoreTrajectory(trajectory), 0.0);
 }
 

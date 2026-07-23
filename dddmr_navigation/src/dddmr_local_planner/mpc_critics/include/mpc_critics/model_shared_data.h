@@ -31,6 +31,8 @@
 #ifndef MPC_CRITICS_MODEL_SHARED_DATA_H_
 #define MPC_CRITICS_MODEL_SHARED_DATA_H_
 
+#include <functional>
+
 #include "rclcpp/rclcpp.hpp"
 
 /*TF listener*/
@@ -100,6 +102,12 @@ class ModelSharedData{
     
     //@ this will be easy use for kdtree from pct
     pcl::PointCloud<pcl::PointXYZI>::Ptr pcl_prune_plan_;
+
+    // Optional fail-closed query used by critics that may leave the reference
+    // route. It returns the nearest-ground distance and the fused static/live
+    // obstacle clearance at that ground node.
+    std::function<bool(
+      const pcl::PointXYZI &, double &, double &)> ground_clearance_query_;
 
     nav_msgs::msg::Path prune_plan_;
 

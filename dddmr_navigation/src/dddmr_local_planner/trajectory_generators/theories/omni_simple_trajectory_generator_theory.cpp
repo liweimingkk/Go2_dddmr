@@ -30,6 +30,10 @@
 */
 #include <trajectory_generators/omni_simple_trajectory_generator_theory.h>
 
+#include <algorithm>
+#include <cmath>
+#include <stdexcept>
+
 PLUGINLIB_EXPORT_CLASS(trajectory_generators::OmniSimpleTrajectoryGeneratorTheory, trajectory_generators::TrajectoryGeneratorTheory)
 
 namespace trajectory_generators
@@ -102,9 +106,6 @@ void OmniSimpleTrajectoryGeneratorTheory::onInitialize(){
   node_->get_parameter(name_ + ".deceleration_ratio", limits_->deceleration_ratio);
   RCLCPP_INFO(node_->get_logger().get_child(name_), "deceleration_ratio: %.2f", limits_->deceleration_ratio);
 
-  if(limits_->min_vel_x<0)
-    RCLCPP_FATAL(node_->get_logger().get_child(name_), "The min velocity of the robot should be positive!");
-
   /*Motor constraint*/
   node_->declare_parameter(name_ + ".use_motor_constraint", rclcpp::ParameterValue(false));
   node_->get_parameter(name_ + ".use_motor_constraint", limits_->use_motor_constraint);
@@ -156,6 +157,60 @@ void OmniSimpleTrajectoryGeneratorTheory::onInitialize(){
   node_->declare_parameter(name_ + ".angular_sim_granularity", rclcpp::ParameterValue(0.05));
   node_->get_parameter(name_ + ".angular_sim_granularity", params_->angular_sim_granularity);
   RCLCPP_INFO(node_->get_logger().get_child(name_), "angular_sim_granularity: %.2f", params_->angular_sim_granularity);
+
+  const auto finite = [](const double value) {
+    return std::isfinite(value);
+  };
+  if(
+    !finite(limits_->min_vel_x) || !finite(limits_->max_vel_x) ||
+    !finite(limits_->min_vel_y) || !finite(limits_->max_vel_y) ||
+    limits_->min_vel_x > limits_->max_vel_x ||
+    limits_->min_vel_y > limits_->max_vel_y)
+  {
+    throw std::invalid_argument(
+      "omnidirectional x/y velocity bounds must be finite and ordered");
+  }
+  if(
+    !finite(limits_->min_vel_trans) || limits_->min_vel_trans < 0.0 ||
+    !finite(limits_->max_vel_trans) || limits_->max_vel_trans <= 0.0 ||
+    limits_->min_vel_trans > limits_->max_vel_trans)
+  {
+    throw std::invalid_argument(
+      "omnidirectional translational speed limits must be finite, non-negative, "
+      "and ordered");
+  }
+  if(
+    !finite(limits_->min_vel_theta) || limits_->min_vel_theta < 0.0 ||
+    !finite(limits_->max_vel_theta) || limits_->max_vel_theta <= 0.0 ||
+    limits_->min_vel_theta > limits_->max_vel_theta)
+  {
+    throw std::invalid_argument(
+      "omnidirectional angular speed limits must be finite, non-negative, and ordered");
+  }
+  if(
+    !finite(limits_->acc_lim_x) || limits_->acc_lim_x <= 0.0 ||
+    !finite(limits_->acc_lim_y) || limits_->acc_lim_y <= 0.0 ||
+    !finite(limits_->acc_lim_theta) || limits_->acc_lim_theta <= 0.0 ||
+    !finite(limits_->deceleration_ratio) || limits_->deceleration_ratio <= 0.0)
+  {
+    throw std::invalid_argument(
+      "omnidirectional acceleration limits and deceleration_ratio must be "
+      "finite and positive");
+  }
+  if(
+    !finite(params_->controller_frequency) || params_->controller_frequency <= 0.0 ||
+    !finite(params_->sim_time) || params_->sim_time <= 0.0 ||
+    !finite(params_->linear_x_sample) || params_->linear_x_sample < 1.0 ||
+    !finite(params_->linear_y_sample) || params_->linear_y_sample < 1.0 ||
+    !finite(params_->angular_z_sample) || params_->angular_z_sample < 1.0 ||
+    !finite(params_->sim_granularity) || params_->sim_granularity <= 0.0 ||
+    !finite(params_->angular_sim_granularity) ||
+    params_->angular_sim_granularity <= 0.0)
+  {
+    throw std::invalid_argument(
+      "omnidirectional controller, simulation, and sampling parameters must be "
+      "finite and positive");
+  }
 
   //@ parse cuboid
   /*
@@ -274,7 +329,11 @@ void OmniSimpleTrajectoryGeneratorTheory::initialise(){
   double max_vel_y = limits_->max_vel_y;
 
   // if sampling number is zero in any dimension, we don't generate samples generically
-  if (params_->linear_x_sample * params_->angular_z_sample > 0) {
+  if (
+    params_->linear_x_sample > 0.0 &&
+    params_->linear_y_sample > 0.0 &&
+    params_->angular_z_sample > 0.0)
+  {
     //compute the feasible velocity space based on the rate at which we run
     Eigen::Vector3f max_vel = Eigen::Vector3f::Zero();
     Eigen::Vector3f min_vel = Eigen::Vector3f::Zero();
@@ -292,26 +351,48 @@ void OmniSimpleTrajectoryGeneratorTheory::initialise(){
     min_vel[2] = std::max(min_vel_th, shared_data_->robot_state_.twist.twist.angular.z - acc_lim[2] * sim_period);
     
     
-    if(shared_data_->robot_state_.twist.twist.linear.x >= max_vel_x/limits_->deceleration_ratio){
+    if(shared_data_->robot_state_.twist.twist.linear.x > max_vel_x/limits_->deceleration_ratio){
       //@ robot reach max speed at forward/backward
       min_vel[0] = std::max(min_vel_x, shared_data_->robot_state_.twist.twist.linear.x/limits_->deceleration_ratio);
     }
-    else if(shared_data_->robot_state_.twist.twist.linear.x <= min_vel_x/limits_->deceleration_ratio){
+    else if(shared_data_->robot_state_.twist.twist.linear.x < min_vel_x/limits_->deceleration_ratio){
       max_vel[0] = std::min(max_vel_x, shared_data_->robot_state_.twist.twist.linear.x/limits_->deceleration_ratio);
     }
 
-    if(shared_data_->robot_state_.twist.twist.linear.y >= max_vel_y/limits_->deceleration_ratio){
+    if(shared_data_->robot_state_.twist.twist.linear.y > max_vel_y/limits_->deceleration_ratio){
       //@ robot reach max speed at forward/backward
       min_vel[1] = std::max(min_vel_y, shared_data_->robot_state_.twist.twist.linear.y/limits_->deceleration_ratio);
     }
-    else if(shared_data_->robot_state_.twist.twist.linear.y <= min_vel_y/limits_->deceleration_ratio){
+    else if(shared_data_->robot_state_.twist.twist.linear.y < min_vel_y/limits_->deceleration_ratio){
       max_vel[1] = std::min(max_vel_y, shared_data_->robot_state_.twist.twist.linear.y/limits_->deceleration_ratio);
     }
 
+    // Odometry may briefly report a velocity outside the configured command
+    // envelope. Keep the dynamic window ordered and pull the next command back
+    // to the nearest safe boundary instead of constructing a reversed iterator.
+    for(std::size_t axis = 0; axis < 3; ++axis){
+      if(max_vel[axis] < min_vel[axis]){
+        const double bounded_current = std::clamp(
+          static_cast<double>(
+            axis == 0 ? shared_data_->robot_state_.twist.twist.linear.x :
+            axis == 1 ? shared_data_->robot_state_.twist.twist.linear.y :
+            shared_data_->robot_state_.twist.twist.angular.z),
+          static_cast<double>(
+            axis == 0 ? min_vel_x : axis == 1 ? min_vel_y : min_vel_th),
+          static_cast<double>(
+            axis == 0 ? max_vel_x : axis == 1 ? max_vel_y : max_vel_th));
+        min_vel[axis] = bounded_current;
+        max_vel[axis] = bounded_current;
+      }
+    }
+
     Eigen::Vector3f vel_samp = Eigen::Vector3f::Zero();
-    trajectory_generators::VelocityIterator x_it(min_vel[0], max_vel[0], params_->linear_x_sample);
-    trajectory_generators::VelocityIterator y_it(min_vel[1], max_vel[1], params_->linear_y_sample);
-    trajectory_generators::VelocityIterator th_it(min_vel[2], max_vel[2], params_->angular_z_sample);
+    trajectory_generators::VelocityIterator x_it(
+      min_vel[0], max_vel[0], static_cast<int>(params_->linear_x_sample));
+    trajectory_generators::VelocityIterator y_it(
+      min_vel[1], max_vel[1], static_cast<int>(params_->linear_y_sample));
+    trajectory_generators::VelocityIterator th_it(
+      min_vel[2], max_vel[2], static_cast<int>(params_->angular_z_sample));
     for(; !x_it.isFinished(); x_it++) {
       vel_samp[0] = x_it.getVelocity();
       for(; !y_it.isFinished(); y_it++) {

@@ -13,6 +13,7 @@ namespace local_planner
 struct InPlaceRotationCandidate
 {
   double linear_x{0.0};
+  double linear_y{0.0};
   double angular_z{0.0};
   double cost{-1.0};
 };
@@ -127,6 +128,7 @@ private:
   {
     return
       std::fabs(candidate.linear_x) <= kLinearEpsilon &&
+      std::fabs(candidate.linear_y) <= kLinearEpsilon &&
       std::fabs(candidate.angular_z) > kAngularEpsilon;
   }
 
