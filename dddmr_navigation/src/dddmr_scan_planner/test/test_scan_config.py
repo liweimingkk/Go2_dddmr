@@ -44,6 +44,8 @@ def child_elements(element, tag, key):
 def check_launch(launch_path):
     root = ET.parse(launch_path).getroot()
     launch_args = child_attributes(root, "arg", "name")
+    assert "scan_config_file" in launch_args
+    assert "config_file" not in launch_args
     assert launch_args["scan_max_vel_y"]["default"] == "0.0"
     assert launch_args["scan_max_plan_vel"]["default"] == "0.50"
     assert launch_args["start_sport_dry_run_adapter"]["default"] == "true"
@@ -59,6 +61,20 @@ def check_launch(launch_path):
     assert include_args["go2_sport_allow_real_request_topic"]["value"] == "false"
 
     nodes = child_elements(root, "node", "name")
+    for node_name in (
+        "scan_input_adapter",
+        "scan_route_bridge",
+        "scan_planner_node",
+        "closed_loop_controller",
+        "scan_command_guard",
+    ):
+        parameter_files = [
+            parameter.attrib.get("from")
+            for parameter in nodes[node_name].findall("param")
+            if "from" in parameter.attrib
+        ]
+        assert parameter_files == ["$(var scan_config_file)"]
+
     guard_remaps = child_attributes(nodes["scan_command_guard"], "remap", "from")
     assert guard_remaps["guarded_cmd"]["to"] == "/dddmr_go2/dry_run_cmd_vel"
     assert (
@@ -105,6 +121,7 @@ def main():
     assert planner_params["grid_map.frame_id"] == "map"
     assert planner_params["grid_map.cloud_is_world"] is True
     assert planner_params["grid_map.need_extrinsic"] is False
+    assert adapter["input_cloud_frame"] == "base_link"
     assert adapter["prefer_latest_transform"] is True
     assert require_finite(adapter, "transform_max_age_sec") <= 0.25
     assert require_finite(adapter, "transform_max_future_skew_sec") <= 0.05

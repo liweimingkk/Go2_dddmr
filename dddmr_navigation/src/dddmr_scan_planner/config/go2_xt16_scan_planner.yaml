@@ -3,7 +3,9 @@ scan_input_adapter:
     map_frame: "map"
     body_frame: "base_link"
     sensor_frame: "hesai_lidar"
-    input_cloud_frame: "map"
+    # DDDMR publishes current_observation in base_link. The adapter transforms
+    # every cloud into map before publishing it to SCAN's world-frame grid.
+    input_cloud_frame: "base_link"
     transform_timeout_sec: 0.05
     # DDDMR's local/global LiDAR layers intentionally use the latest MCL TF
     # when producing their map-frame observations. Match that time contract
@@ -39,9 +41,9 @@ scan_planner_node:
     fsm.fail_safe: true
     fsm.max_replan_fail_count: 20
 
-    # The global DDDMR observation is already non-ground, voxel-filtered, and
-    # transformed into map. A 0.10 m grid matches that observation density and
-    # keeps the 10 Hz XT16 path computationally bounded.
+    # The global DDDMR observation is already non-ground and voxel-filtered;
+    # scan_input_adapter transforms it from base_link into map. A 0.10 m grid
+    # matches that density and keeps the 10 Hz XT16 path bounded.
     grid_map.resolution: 0.10
     grid_map.sliding_map_size_x: 10.0
     grid_map.sliding_map_size_y: 10.0

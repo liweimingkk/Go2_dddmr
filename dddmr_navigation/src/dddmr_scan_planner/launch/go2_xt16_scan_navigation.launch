@@ -1,5 +1,8 @@
 <launch>
-  <arg name="config_file"
+  <!-- Keep this name distinct from the included DDDMR launch's config_file.
+       ROS 2 XML include arguments otherwise overwrite the parent substitution
+       and silently feed the DDDMR YAML to every SCAN node below. -->
+  <arg name="scan_config_file"
        default="$(find-pkg-share dddmr_scan_planner)/config/go2_xt16_scan_planner.yaml"/>
   <arg name="dddmr_config_file"
        default="$(find-pkg-share dddmr_beginner_guide)/config/go2_xt16_navigation.yaml"/>
@@ -64,7 +67,7 @@
 
   <node pkg="dddmr_scan_planner" exec="scan_input_adapter_node"
         name="scan_input_adapter" output="screen" respawn="false">
-    <param from="$(var config_file)"/>
+    <param from="$(var scan_config_file)"/>
     <remap from="input_odom" to="$(var odom_topic)"/>
     <remap from="input_cloud"
            to="/perception_3d_global/lidar/current_observation"/>
@@ -75,7 +78,7 @@
 
   <node pkg="dddmr_scan_planner" exec="scan_route_bridge_node"
         name="scan_route_bridge" output="screen" respawn="false">
-    <param from="$(var config_file)"/>
+    <param from="$(var scan_config_file)"/>
     <remap from="goal_pose_3d" to="/goal_pose_3d"/>
     <remap from="clicked_point" to="/clicked_point"/>
     <remap from="body_pose" to="/scan_planner/body_pose"/>
@@ -85,7 +88,7 @@
 
   <node pkg="scan_planner" exec="scan_planner_node"
         name="scan_planner_node" output="screen" respawn="false">
-    <param from="$(var config_file)"/>
+    <param from="$(var scan_config_file)"/>
     <param name="manager.max_vel"
            value="$(var scan_max_plan_vel)" type="float"/>
     <param name="optimization.max_vel"
@@ -103,7 +106,7 @@
 
   <node pkg="scan_planner" exec="closed_loop_controller"
         name="closed_loop_controller" output="screen" respawn="false">
-    <param from="$(var config_file)"/>
+    <param from="$(var scan_config_file)"/>
     <param name="max_vx" value="$(var scan_max_vel_x)" type="float"/>
     <param name="max_vy" value="$(var scan_max_vel_y)" type="float"/>
     <param name="max_vyaw" value="$(var scan_max_vel_yaw)" type="float"/>
@@ -116,7 +119,7 @@
 
   <node pkg="dddmr_scan_planner" exec="scan_command_guard_node"
         name="scan_command_guard" output="screen" respawn="false">
-    <param from="$(var config_file)"/>
+    <param from="$(var scan_config_file)"/>
     <param name="max_x" value="$(var scan_max_vel_x)" type="float"/>
     <param name="max_y" value="$(var scan_max_vel_y)" type="float"/>
     <param name="max_yaw" value="$(var scan_max_vel_yaw)" type="float"/>

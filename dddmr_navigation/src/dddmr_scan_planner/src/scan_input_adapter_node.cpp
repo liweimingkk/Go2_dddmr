@@ -12,6 +12,7 @@
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
+#include <tf2_sensor_msgs/tf2_sensor_msgs.hpp>
 
 namespace dddmr_scan_planner
 {
@@ -210,15 +211,33 @@ private:
       return;
     }
 
+    geometry_msgs::msg::TransformStamped map_to_cloud;
+    if (!lookupTransform(msg->header.frame_id, msg->header.stamp, map_to_cloud)) {
+      return;
+    }
+
     geometry_msgs::msg::TransformStamped map_to_sensor;
     if (!lookupTransform(sensor_frame_, msg->header.stamp, map_to_sensor)) {
       return;
     }
 
+    sensor_msgs::msg::PointCloud2 cloud_in_map;
+    try {
+      tf2::doTransform(*msg, cloud_in_map, map_to_cloud);
+    } catch (const std::exception & error) {
+      RCLCPP_ERROR_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "SCAN cloud dropped: failed to transform %s -> %s: %s",
+        msg->header.frame_id.c_str(), map_frame_.c_str(), error.what());
+      return;
+    }
+    cloud_in_map.header.stamp = msg->header.stamp;
+    cloud_in_map.header.frame_id = map_frame_;
+
     const nav_msgs::msg::Odometry sensor_pose =
       poseFromTransform(map_to_sensor, msg->header.stamp, map_frame_, sensor_frame_);
     sensor_pose_pub_->publish(sensor_pose);
-    cloud_pub_->publish(*msg);
+    cloud_pub_->publish(cloud_in_map);
   }
 
   std::string map_frame_;

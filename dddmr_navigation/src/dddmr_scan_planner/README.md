@@ -6,7 +6,8 @@ existing DDDMR Go2 + Hesai XT16 stack.
 The integration keeps:
 
 - DDDMR pose-graph maps, `mcl_3dl`, and the static 3-D global planner
-- the filtered, non-ground XT16 obstacle stream in the `map` frame
+- the filtered, non-ground XT16 obstacle stream, transformed from `base_link`
+  into the `map` frame by the adapter
 - the existing `/dddmr_go2/dry_run_cmd_vel -> safe_cmd_vel` command gate
 - the separately approval-gated Unitree Sport adapter
 
@@ -24,9 +25,10 @@ scan_command_guard -> DDDMR dry-run topic -> existing safety gate
 ```
 
 The adapter removes DDDMR's duplicated route-start pose before SCAN's
-minimum-snap initialization, converts body-frame velocity into the map frame,
-and rejects stale localization transforms. The command guard requires fresh
-odometry, obstacle cloud, controller output, and SCAN planner heartbeat.
+minimum-snap initialization, converts body-frame velocity and obstacle clouds
+into the map frame, and rejects stale localization transforms. The command
+guard requires fresh odometry, obstacle cloud, controller output, and SCAN
+planner heartbeat.
 
 Direct launches cannot publish Unitree Sport requests.
 
