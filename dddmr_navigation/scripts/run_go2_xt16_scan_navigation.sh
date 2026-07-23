@@ -17,6 +17,9 @@ Optional speed overrides:
   GO2_SPORT_MAX_X=0.40
   GO2_SPORT_MAX_Y=0.0
   GO2_SPORT_MAX_YAW=0.40
+
+Existing running Go2/DDDMR navigation containers are stopped and removed
+before this launcher starts a new navigation runtime.
 EOF
 }
 
@@ -53,6 +56,36 @@ GO2_DDS_IP="${GO2_DDS_IP:-192.168.123.18}"
 [[ -x "${SUPERVISOR}" ]] || die "missing supervisor: ${SUPERVISOR}"
 [[ -f "${ADAPTER}" ]] || die "missing Sport adapter: ${ADAPTER}"
 mkdir -p -- "${LOG_DIR}"
+
+remove_conflicting_navigation_containers() {
+  local container_list id name image
+  local -a container_ids=()
+  local -a container_descriptions=()
+
+  if ! container_list="$(docker ps --format '{{.ID}}\t{{.Names}}\t{{.Image}}' 2>&1)"; then
+    printf '%s\n' "${container_list}" >&2
+    die "cannot inspect Docker containers"
+  fi
+
+  while IFS=$'\t' read -r id name image; do
+    [[ -n "${id}" ]] || continue
+    if [[ "${name} ${image}" =~ go2_xt16|dddmr_go2_xt16|dddmr_navigation ]]; then
+      container_ids+=("${id}")
+      container_descriptions+=("${name} (${image})")
+    fi
+  done <<<"${container_list}"
+
+  if (( ${#container_ids[@]} == 0 )); then
+    return
+  fi
+
+  printf 'Removing existing Go2/DDDMR navigation container(s):\n'
+  printf '  %s\n' "${container_descriptions[@]}"
+  docker stop --time 5 "${container_ids[@]}" >/dev/null || \
+    die "failed to stop an existing Go2/DDDMR navigation container"
+  docker rm "${container_ids[@]}" >/dev/null || \
+    die "failed to remove an existing Go2/DDDMR navigation container"
+}
 
 detect_net_iface() {
   ip route get "${GO2_DDS_IP}" 2>/dev/null | awk '
@@ -138,4 +171,5 @@ if [[ "${mode}" == "--live" ]]; then
   printf 'GO2_SPORT_PROBE_SUMMARY=%s\n' "${GO2_SPORT_PROBE_SUMMARY}"
 fi
 
+remove_conflicting_navigation_containers
 exec "${SUPERVISOR}" "${mode}"
