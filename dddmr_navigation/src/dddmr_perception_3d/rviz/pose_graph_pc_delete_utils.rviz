@@ -52,7 +52,7 @@ Visualization Manager:
       Color: 255; 255; 127
       Color Transformer: FlatColor
       Decay Time: 0
-      Enabled: true
+      Enabled: false
       Name: ReferenceGround
       Position Transformer: XYZ
       Selectable: false
@@ -67,7 +67,7 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /point_cloud_delete/remaining_ground
       Use Fixed Frame: true
-      Value: true
+      Value: false
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:

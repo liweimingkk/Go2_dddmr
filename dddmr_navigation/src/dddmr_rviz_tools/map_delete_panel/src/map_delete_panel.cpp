@@ -74,7 +74,25 @@ void MapDeletePanel::selectedPCCb(const sensor_msgs::msg::PointCloud2::SharedPtr
 
 
   output_map_cloud_.reset(new pcl::PointCloud<pcl::PointXYZ>);
-  output_ground_cloud_.reset(new pcl::PointCloud<pcl::PointXYZ>);
+  output_ground_cloud_.reset(new pcl::PointCloud<pcl::PointXYZ>(*ground_pc_));
+
+  // SegmentDifferences does not safely handle an empty target cloud on all
+  // supported PCL builds. Clear/undo can legitimately publish an empty
+  // selection, so restore the unmodified editor map in that case.
+  if (sub_pc_->empty()) {
+    *output_map_cloud_ = *map_pc_;
+
+    sensor_msgs::msg::PointCloud2 output_map;
+    pcl::toROSMsg(*output_map_cloud_, output_map);
+    output_map.header.frame_id = "map";
+    remaining_map_pub_->publish(output_map);
+
+    sensor_msgs::msg::PointCloud2 output_ground;
+    pcl::toROSMsg(*output_ground_cloud_, output_ground);
+    output_ground.header.frame_id = "map";
+    remaining_ground_pub_->publish(output_ground);
+    return;
+  }
 
   pcl::SegmentDifferences<pcl::PointXYZ> segment_map;
   segment_map.setInputCloud(map_pc_);
@@ -87,13 +105,8 @@ void MapDeletePanel::selectedPCCb(const sensor_msgs::msg::PointCloud2::SharedPtr
   output_map.header.frame_id = "map";
   remaining_map_pub_->publish(output_map);
 
-
-  pcl::SegmentDifferences<pcl::PointXYZ> segment_ground;
-  segment_ground.setInputCloud(ground_pc_);
-  segment_ground.setTargetCloud(sub_pc_);
-  segment_ground.setDistanceThreshold(0.01 * 0.01);
-  segment_ground.segment(*output_ground_cloud_);
-
+  // Ground is a non-selectable visual reference for pose-graph cleaning. It
+  // must never participate in deletion or be changed by the selected points.
   sensor_msgs::msg::PointCloud2 output_ground;
   pcl::toROSMsg(*output_ground_cloud_, output_ground);
   output_ground.header.frame_id = "map";
