@@ -1,0 +1,136 @@
+<launch>
+  <arg name="config_file"
+       default="$(find-pkg-share dddmr_scan_planner)/config/go2_xt16_scan_planner.yaml"/>
+  <arg name="dddmr_config_file"
+       default="$(find-pkg-share dddmr_beginner_guide)/config/go2_xt16_navigation.yaml"/>
+  <arg name="relocalization_config_file"
+       default="$(find-pkg-share dddmr_beginner_guide)/config/go2_xt16_relocalization.yaml"/>
+  <arg name="rviz" default="true"/>
+  <arg name="rviz_config"
+       default="$(find-pkg-share dddmr_beginner_guide)/rviz/go2_xt16_navigation.rviz"/>
+
+  <arg name="publish_static_tf" default="true"/>
+  <arg name="standardize_odom" default="true"/>
+  <arg name="raw_odom_topic" default="/utlidar/robot_odom"/>
+  <arg name="odom_topic" default="/dddmr_go2/robot_odom_standard"/>
+  <arg name="lidar_topic" default="/lidar_points"/>
+  <arg name="odom_sync_enabled" default="true"/>
+  <arg name="odom_sync_tolerance_sec" default="0.05"/>
+  <arg name="odom_sync_wait_timeout_sec" default="0.1"/>
+  <arg name="odom_time_offset_sec" default="0.0"/>
+
+  <!-- Direct launches remain no-motion: SCAN output terminates at the same
+       dry-run topic and Go2 safety gate used by the DDDMR planner. -->
+  <arg name="start_sport_dry_run_adapter" default="true"/>
+  <arg name="scan_max_vel_x" default="0.50"/>
+  <arg name="scan_max_vel_y" default="0.0"/>
+  <arg name="scan_max_vel_yaw" default="0.50"/>
+  <arg name="scan_max_plan_vel" default="0.50"/>
+  <arg name="scan_max_translation" default="0.50"/>
+
+  <!-- Reuse DDDMR mapping, localization, static global planning, RViz, and
+       command safety. Omit only the original P2PMoveBase/local planner. -->
+  <include file="$(find-pkg-share dddmr_beginner_guide)/launch/go2_xt16_navigation.launch">
+    <arg name="config_file" value="$(var dddmr_config_file)"/>
+    <arg name="relocalization_config_file" value="$(var relocalization_config_file)"/>
+    <arg name="rviz" value="$(var rviz)"/>
+    <arg name="rviz_config" value="$(var rviz_config)"/>
+    <arg name="start_move_base" value="false"/>
+    <arg name="start_global_planner" value="true"/>
+    <arg name="publish_static_tf" value="$(var publish_static_tf)"/>
+    <arg name="standardize_odom" value="$(var standardize_odom)"/>
+    <arg name="raw_odom_topic" value="$(var raw_odom_topic)"/>
+    <arg name="odom_topic" value="$(var odom_topic)"/>
+    <arg name="lidar_topic" value="$(var lidar_topic)"/>
+    <arg name="odom_sync_enabled" value="$(var odom_sync_enabled)"/>
+    <arg name="odom_sync_tolerance_sec" value="$(var odom_sync_tolerance_sec)"/>
+    <arg name="odom_sync_wait_timeout_sec" value="$(var odom_sync_wait_timeout_sec)"/>
+    <arg name="odom_time_offset_sec" value="$(var odom_time_offset_sec)"/>
+    <arg name="start_go2_nav_cmd_gate" value="true"/>
+    <arg name="go2_nav_cmd_gate_input_topic"
+         value="/dddmr_go2/dry_run_cmd_vel"/>
+    <arg name="go2_nav_cmd_gate_max_x" value="$(var scan_max_vel_x)"/>
+    <arg name="go2_nav_cmd_gate_max_y" value="$(var scan_max_vel_y)"/>
+    <arg name="go2_nav_cmd_gate_max_yaw" value="$(var scan_max_vel_yaw)"/>
+    <arg name="start_sport_dry_run_adapter"
+         value="$(var start_sport_dry_run_adapter)"/>
+    <arg name="sport_dry_run_max_x" value="$(var scan_max_vel_x)"/>
+    <arg name="sport_dry_run_max_y" value="$(var scan_max_vel_y)"/>
+    <arg name="sport_dry_run_max_yaw" value="$(var scan_max_vel_yaw)"/>
+    <arg name="start_go2_sport_adapter" value="false"/>
+    <arg name="go2_sport_enable_output" value="false"/>
+    <arg name="go2_sport_allow_real_request_topic" value="false"/>
+  </include>
+
+  <node pkg="dddmr_scan_planner" exec="scan_input_adapter_node"
+        name="scan_input_adapter" output="screen" respawn="false">
+    <param from="$(var config_file)"/>
+    <remap from="input_odom" to="$(var odom_topic)"/>
+    <remap from="input_cloud"
+           to="/perception_3d_global/lidar/current_observation"/>
+    <remap from="body_pose" to="/scan_planner/body_pose"/>
+    <remap from="sensor_pose" to="/scan_planner/sensor_pose"/>
+    <remap from="cloud" to="/scan_planner/cloud"/>
+  </node>
+
+  <node pkg="dddmr_scan_planner" exec="scan_route_bridge_node"
+        name="scan_route_bridge" output="screen" respawn="false">
+    <param from="$(var config_file)"/>
+    <remap from="goal_pose_3d" to="/goal_pose_3d"/>
+    <remap from="clicked_point" to="/clicked_point"/>
+    <remap from="body_pose" to="/scan_planner/body_pose"/>
+    <remap from="initial_path" to="/scan_planner/initial_path"/>
+    <remap from="route_ready" to="/scan_planner/route_ready"/>
+  </node>
+
+  <node pkg="scan_planner" exec="scan_planner_node"
+        name="scan_planner_node" output="screen" respawn="false">
+    <param from="$(var config_file)"/>
+    <param name="manager.max_vel"
+           value="$(var scan_max_plan_vel)" type="float"/>
+    <param name="optimization.max_vel"
+           value="$(var scan_max_plan_vel)" type="float"/>
+    <remap from="body_pose" to="/scan_planner/body_pose"/>
+    <remap from="sensor_pose" to="/scan_planner/sensor_pose"/>
+    <remap from="cloud" to="/scan_planner/cloud"/>
+    <remap from="initial_path" to="/scan_planner/initial_path"/>
+    <remap from="planning/bspline" to="/scan_planner/planning/bspline"/>
+    <remap from="planning/data_display"
+           to="/scan_planner/planning/data_display"/>
+    <remap from="planning/go2_execution_frozen"
+           to="/scan_planner/planning/go2_execution_frozen"/>
+  </node>
+
+  <node pkg="scan_planner" exec="closed_loop_controller"
+        name="closed_loop_controller" output="screen" respawn="false">
+    <param from="$(var config_file)"/>
+    <param name="max_vx" value="$(var scan_max_vel_x)" type="float"/>
+    <param name="max_vy" value="$(var scan_max_vel_y)" type="float"/>
+    <param name="max_vyaw" value="$(var scan_max_vel_yaw)" type="float"/>
+    <remap from="body_pose" to="/scan_planner/body_pose"/>
+    <remap from="planning/bspline" to="/scan_planner/planning/bspline"/>
+    <remap from="planning/go2_execution_frozen"
+           to="/scan_planner/planning/go2_execution_frozen"/>
+    <remap from="cmd_vel" to="/scan_planner/raw_cmd_vel"/>
+  </node>
+
+  <node pkg="dddmr_scan_planner" exec="scan_command_guard_node"
+        name="scan_command_guard" output="screen" respawn="false">
+    <param from="$(var config_file)"/>
+    <param name="max_x" value="$(var scan_max_vel_x)" type="float"/>
+    <param name="max_y" value="$(var scan_max_vel_y)" type="float"/>
+    <param name="max_yaw" value="$(var scan_max_vel_yaw)" type="float"/>
+    <param name="max_translation"
+           value="$(var scan_max_translation)" type="float"/>
+    <remap from="raw_cmd" to="/scan_planner/raw_cmd_vel"/>
+    <remap from="body_pose" to="/scan_planner/body_pose"/>
+    <remap from="cloud" to="/scan_planner/cloud"/>
+    <remap from="trajectory" to="/scan_planner/planning/bspline"/>
+    <remap from="planner_heartbeat"
+           to="/scan_planner/planning/data_display"/>
+    <remap from="route_ready" to="/scan_planner/route_ready"/>
+    <remap from="guarded_cmd" to="/dddmr_go2/dry_run_cmd_vel"/>
+    <remap from="decision" to="/dddmr_go2/p2p_decision"/>
+    <remap from="status" to="/scan_planner/command_guard_status"/>
+  </node>
+</launch>

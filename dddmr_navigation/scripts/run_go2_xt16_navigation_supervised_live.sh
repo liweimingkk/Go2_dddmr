@@ -515,7 +515,9 @@ start_docker_source() {
   echo "DOCKER_NAME=${docker_name}"
   echo "DOCKER_LOG=${docker_log}"
   DDDMR_DOCKER_NAME="${docker_name}" \
+  GO2_NAV_MAX_X="${sport_max_x}" \
   GO2_NAV_MAX_Y="${sport_max_y}" \
+  GO2_NAV_MAX_YAW="${sport_max_yaw}" \
   RVIZ="${rviz}" \
   PUBLISH_STATIC_TF="${publish_static_tf}" \
     "${DOCKER_WRAPPER}" "${docker_live_command}" \
@@ -577,17 +579,18 @@ assert_no_conflicting_runtime
 validate_lateral_limit
 
 case "${docker_dry_run_command}" in
-  navigation-dry-run|outdoor-indoor-dry-run) ;;
+  navigation-dry-run|scan-navigation-dry-run|outdoor-indoor-dry-run) ;;
   *) die "unsupported GO2_NAV_DRY_RUN_COMMAND=${docker_dry_run_command}" ;;
 esac
 case "${docker_live_command}" in
-  navigation-live-source|outdoor-indoor-live-source) ;;
+  navigation-live-source|scan-navigation-live-source|outdoor-indoor-live-source) ;;
   *) die "unsupported GO2_NAV_DOCKER_COMMAND=${docker_live_command}" ;;
 esac
 
 if [[ "${mode}" == "dry-run" ]]; then
   echo "Launching Docker Go2 XT16 navigation in dry-run RViz mode."
-  exec env GO2_NAV_MAX_Y="${sport_max_y}" \
+  exec env GO2_NAV_MAX_X="${sport_max_x}" GO2_NAV_MAX_Y="${sport_max_y}" \
+    GO2_NAV_MAX_YAW="${sport_max_yaw}" \
     RVIZ="${rviz}" PUBLISH_STATIC_TF="${publish_static_tf}" \
     "${DOCKER_WRAPPER}" "${docker_dry_run_command}"
 fi

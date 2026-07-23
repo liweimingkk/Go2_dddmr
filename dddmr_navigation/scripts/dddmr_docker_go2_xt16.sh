@@ -20,6 +20,11 @@ Commands:
   navigation-live-source
                Run Go2 XT16 DDDMR navigation/RViz as a velocity source only.
                It publishes /dddmr_go2/dry_run_cmd_vel but never publishes /api/sport/request.
+  scan-navigation-dry-run
+               Run SCAN-Planner local avoidance through the dry-run safety chain.
+  scan-navigation-live-source
+               Run SCAN-Planner as an isolated velocity source. It never
+               publishes /api/sport/request by itself.
   outdoor-indoor-dry-run
                Run the one-map outdoor/indoor mission stack with the dry-run Sport logger.
   outdoor-indoor-live-source
@@ -40,7 +45,9 @@ Environment:
   AUTO_MEASURE_ODOM_TIME_OFFSET=true
   ODOM_SYNC_TOLERANCE_SEC=0.05
   ODOM_SYNC_WAIT_TIMEOUT_SEC=0.1
+  GO2_NAV_MAX_X=0.50
   GO2_NAV_MAX_Y=0.0
+  GO2_NAV_MAX_YAW=0.50
   DDDMR_BUILD_BASE=.docker_go2_xt16_build
   DDDMR_INSTALL_BASE=.docker_go2_xt16_install
   DDDMR_LOG_BASE=.docker_go2_xt16_log
@@ -72,7 +79,9 @@ DOCKER_NAME_VALUE="${DDDMR_DOCKER_NAME:-}"
 ODOM_OFFSET_RESOLVER="${GO2_ODOM_TIME_OFFSET_RESOLVER:-${SCRIPT_DIR}/resolve_go2_odom_time_offset.sh}"
 ODOM_SYNC_TOLERANCE_SEC_VALUE="${ODOM_SYNC_TOLERANCE_SEC:-0.05}"
 ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE="${ODOM_SYNC_WAIT_TIMEOUT_SEC:-0.1}"
+GO2_NAV_MAX_X_VALUE="${GO2_NAV_MAX_X:-0.50}"
 GO2_NAV_MAX_Y_VALUE="${GO2_NAV_MAX_Y:-0.0}"
+GO2_NAV_MAX_YAW_VALUE="${GO2_NAV_MAX_YAW:-0.50}"
 
 if [[ $# -lt 1 ]]; then
   usage >&2
@@ -112,6 +121,31 @@ resolve_navigation_min_y() {
     exit 1
   }
   awk -v value="${GO2_NAV_MAX_Y_VALUE}" 'BEGIN { printf "%.6f", -value }'
+}
+
+validate_scan_navigation_limits() {
+  is_nonnegative_number "${GO2_NAV_MAX_X_VALUE}" || {
+    echo "GO2_NAV_MAX_X must be a finite nonnegative number." >&2
+    exit 1
+  }
+  awk -v value="${GO2_NAV_MAX_X_VALUE}" 'BEGIN { exit !(value <= 0.50) }' || {
+    echo "GO2_NAV_MAX_X must not exceed the 0.50 m/s integration cap." >&2
+    exit 1
+  }
+  is_nonnegative_number "${GO2_NAV_MAX_YAW_VALUE}" || {
+    echo "GO2_NAV_MAX_YAW must be a finite nonnegative number." >&2
+    exit 1
+  }
+  awk -v value="${GO2_NAV_MAX_YAW_VALUE}" 'BEGIN { exit !(value <= 0.50) }' || {
+    echo "GO2_NAV_MAX_YAW must not exceed the 0.50 rad/s integration cap." >&2
+    exit 1
+  }
+  resolve_navigation_min_y >/dev/null
+  awk -v x="${GO2_NAV_MAX_X_VALUE}" -v y="${GO2_NAV_MAX_Y_VALUE}" \
+    'BEGIN { exit !(x > 0.0 || y > 0.0) }' || {
+    echo "SCAN requires a positive GO2_NAV_MAX_X or GO2_NAV_MAX_Y." >&2
+    exit 1
+  }
 }
 
 resolve_live_odom_time_offset() {
@@ -214,7 +248,7 @@ colcon --log-base \"\${DDDMR_LOG_BASE}\" build --base-paths src --symlink-instal
 
   build-navigation)
     run_docker "${IMAGE}" bash -lc "${source_prefix}
-colcon --log-base \"\${DDDMR_LOG_BASE}\" build --base-paths src --symlink-install --packages-up-to lego_loam_bor dddmr_pg_map_server mcl_3dl global_planner p2p_move_base perception_3d dddmr_beginner_guide dddmr_rviz_default_plugins map_delete_panel --build-base \"\${DDDMR_BUILD_BASE}\" --install-base \"\${DDDMR_INSTALL_BASE}\" --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPython3_EXECUTABLE=/usr/bin/python3"
+colcon --log-base \"\${DDDMR_LOG_BASE}\" build --base-paths src --symlink-install --packages-up-to lego_loam_bor dddmr_pg_map_server mcl_3dl global_planner p2p_move_base perception_3d dddmr_beginner_guide dddmr_rviz_default_plugins map_delete_panel scan_planner dddmr_scan_planner --build-base \"\${DDDMR_BUILD_BASE}\" --install-base \"\${DDDMR_INSTALL_BASE}\" --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPython3_EXECUTABLE=/usr/bin/python3"
     ;;
 
   pose-graph-editor)
@@ -341,6 +375,39 @@ ros2 launch dddmr_beginner_guide go2_xt16_navigation.launch rviz:=${rviz} publis
     if [[ -n "${run_seconds}" ]]; then
       run_docker "${IMAGE}" bash -lc "${source_prefix}
 timeout -s TERM -k 5s ${run_seconds}s bash -lc '${launch_cmd}' bash \"\$@\"" bash "$@"
+    else
+      run_docker "${IMAGE}" bash -lc "${source_prefix}
+${launch_cmd}" bash "$@"
+    fi
+    ;;
+
+  scan-navigation-dry-run|scan-navigation-live-source)
+    rviz="${RVIZ:-true}"
+    publish_static_tf="${PUBLISH_STATIC_TF:-true}"
+    run_seconds="${RUN_SECONDS:-}"
+    validate_scan_navigation_limits
+    odom_time_offset_sec="$(resolve_live_odom_time_offset)"
+    scan_max_translation="$(
+      awk -v x="${GO2_NAV_MAX_X_VALUE}" -v y="${GO2_NAV_MAX_Y_VALUE}" \
+        'BEGIN { printf "%.6f", x > y ? x : y }'
+    )"
+    start_dry_adapter=true
+    if [[ "${command}" == "scan-navigation-live-source" ]]; then
+      start_dry_adapter=false
+    fi
+    if [[ "${rviz}" == "true" && -n "${DISPLAY:-}" ]] && command -v xhost >/dev/null 2>&1; then
+      xhost +local:docker >/dev/null || true
+    fi
+    launch_cmd="set +u
+source \"\${DDDMR_INSTALL_BASE}/setup.bash\"
+set -u
+ros2 launch dddmr_scan_planner go2_xt16_scan_navigation.launch rviz:=${rviz} publish_static_tf:=${publish_static_tf} odom_sync_enabled:=true odom_sync_tolerance_sec:=${ODOM_SYNC_TOLERANCE_SEC_VALUE} odom_sync_wait_timeout_sec:=${ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE} odom_time_offset_sec:=${odom_time_offset_sec} scan_max_vel_x:=${GO2_NAV_MAX_X_VALUE} scan_max_vel_y:=${GO2_NAV_MAX_Y_VALUE} scan_max_vel_yaw:=${GO2_NAV_MAX_YAW_VALUE} scan_max_plan_vel:=${scan_max_translation} scan_max_translation:=${scan_max_translation} start_sport_dry_run_adapter:=${start_dry_adapter} \"\$@\""
+    if [[ -n "${run_seconds}" ]]; then
+      run_docker "${IMAGE}" bash -lc "${source_prefix}
+timeout -s TERM -k 5s ${run_seconds}s bash -lc '${launch_cmd}' bash \"\$@\"" bash "$@"
+    elif [[ "${command}" == "scan-navigation-dry-run" ]]; then
+      run_docker -it "${IMAGE}" bash -lc "${source_prefix}
+${launch_cmd}" bash "$@"
     else
       run_docker "${IMAGE}" bash -lc "${source_prefix}
 ${launch_cmd}" bash "$@"

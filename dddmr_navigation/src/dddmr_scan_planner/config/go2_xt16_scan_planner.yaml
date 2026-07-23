@@ -1,0 +1,133 @@
+scan_input_adapter:
+  ros__parameters:
+    map_frame: "map"
+    body_frame: "base_link"
+    sensor_frame: "hesai_lidar"
+    input_cloud_frame: "map"
+    transform_timeout_sec: 0.05
+    # DDDMR's local/global LiDAR layers intentionally use the latest MCL TF
+    # when producing their map-frame observations. Match that time contract
+    # without first blocking on a timestamped lookup, but reject stale TF.
+    prefer_latest_transform: true
+    allow_latest_transform_fallback: true
+    transform_max_age_sec: 0.25
+    transform_max_future_skew_sec: 0.05
+    input_twist_in_body_frame: true
+
+scan_route_bridge:
+  ros__parameters:
+    global_plan_action: "/get_plan"
+    map_frame: "map"
+    min_path_poses: 2
+    body_pose_timeout: 0.25
+    # DDDMR paths include the projected start pose. SCAN prepends its current
+    # body pose itself, so remove that leading duplicate before min-snap setup.
+    start_exclusion_xy: 0.15
+    min_path_point_separation: 0.02
+
+scan_planner_node:
+  ros__parameters:
+    use_sim_time: false
+
+    # Route-guided mode consumes the DDDMR static global plan and performs
+    # continuous local replanning around live obstacles.
+    fsm.navi_mode: 3
+    fsm.thresh_replan: 0.8
+    fsm.thresh_no_replan: 0.15
+    fsm.planning_horizon: 5.0
+    fsm.emergency_time: 0.8
+    fsm.fail_safe: true
+    fsm.max_replan_fail_count: 20
+
+    # The global DDDMR observation is already non-ground, voxel-filtered, and
+    # transformed into map. A 0.10 m grid matches that observation density and
+    # keeps the 10 Hz XT16 path computationally bounded.
+    grid_map.resolution: 0.10
+    grid_map.sliding_map_size_x: 10.0
+    grid_map.sliding_map_size_y: 10.0
+    grid_map.sliding_map_size_z: 3.0
+    grid_map.local_update_range_x: 5.0
+    grid_map.local_update_range_y: 5.0
+    grid_map.local_update_range_z: 1.5
+    grid_map.map_sliding_en: true
+    grid_map.map_sliding_thresh: 0.2
+
+    # Go2 standing footprint: two radius-0.26 m cylinders separated by
+    # 0.26 m. This encloses the existing 0.77 x 0.42 m DDDMR collision cuboid
+    # while preserving its 0.05 m lateral margin.
+    grid_map.double_cylinder_radius: 0.26
+    grid_map.double_cylinder_offset: 0.13
+    grid_map.body_height: 0.32
+    grid_map.obstacles_inflation_z_up: 0.45
+    grid_map.obstacles_inflation_z_down: 0.25
+    grid_map.frame_id: "map"
+    grid_map.sliding_map_frame_id: "scan_sliding_map"
+    grid_map.ground_height: 0.0
+    grid_map.sensor_type: "lidar"
+    grid_map.cloud_is_world: true
+    grid_map.need_extrinsic: false
+
+    # Unused in LiDAR mode, retained because GridMap validates a complete
+    # parameter set during construction.
+    grid_map.cx: 321.0
+    grid_map.cy: 243.0
+    grid_map.fx: 387.0
+    grid_map.fy: 387.0
+    grid_map.depth_filter_maxdist: 5.0
+    grid_map.depth_filter_mindist: 0.3
+    grid_map.depth_filter_margin: 1
+    grid_map.k_depth_scaling_factor: 1000.0
+    grid_map.skip_pixel: 2
+
+    grid_map.p_hit: 0.85
+    grid_map.p_miss: 0.30
+    grid_map.p_min: 0.12
+    grid_map.p_max: 0.98
+    grid_map.p_occ: 0.80
+    grid_map.max_ray_length: 5.0
+    grid_map.vis_height: 0.3
+    grid_map.show_occ_time: false
+
+    manager.max_vel: 0.50
+    manager.max_acc: 0.80
+    manager.max_jerk: 4.0
+    manager.control_points_distance: 0.20
+    manager.feasibility_tolerance: 0.30
+    manager.planning_horizon: 5.0
+
+    optimization.lambda_smooth: 1.0
+    optimization.lambda_collision: 1.5
+    optimization.lambda_feasibility: 0.2
+    optimization.lambda_fitness: 1.0
+    optimization.dist0: 0.20
+    optimization.max_vel: 0.50
+    optimization.max_acc: 0.80
+    optimization.order: 3
+
+closed_loop_controller:
+  ros__parameters:
+    use_sim_time: false
+    time_forward: 0.6
+    heading_error_threshold: 0.8
+    kp_pos: 0.8
+    kp_yaw: 1.5
+    max_vx: 0.50
+    max_vy: 0.20
+    max_vyaw: 0.50
+    finish_dist: 0.15
+
+scan_command_guard:
+  ros__parameters:
+    max_x: 0.50
+    max_y: 0.20
+    max_yaw: 0.50
+    max_translation: 0.54
+    publish_rate: 50.0
+    raw_command_timeout: 0.15
+    odom_timeout: 0.25
+    cloud_timeout: 0.35
+    planner_timeout: 0.50
+    odom_header_max_age: 0.35
+    cloud_header_max_age: 0.35
+    max_future_skew: 0.05
+    zero_epsilon: 0.001

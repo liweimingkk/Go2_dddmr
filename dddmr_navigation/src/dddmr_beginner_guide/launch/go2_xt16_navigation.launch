@@ -7,6 +7,7 @@
   <arg name="start_feature" default="true"/>
   <arg name="start_localization" default="true"/>
   <arg name="start_move_base" default="true"/>
+  <arg name="start_global_planner" default="$(var start_move_base)"/>
 
   <arg name="publish_static_tf" default="true"/>
   <arg name="lidar_x" default="0.1710"/>
@@ -138,7 +139,7 @@
     <param name="use_sim_time" value="false"/>
   </node>
 
-  <node pkg="global_planner" exec="global_planner_node" output="screen" respawn="false" if="$(var start_move_base)">
+  <node pkg="global_planner" exec="global_planner_node" output="screen" respawn="false" if="$(var start_global_planner)">
     <param from="$(var config_file)" />
     <param name="use_sim_time" value="false"/>
   </node>
