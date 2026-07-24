@@ -62,6 +62,25 @@ class P2PMissionExecutor(Node):
         self.arrival_stable_sec = self._positive_parameter(
             "arrival_stable_sec", 0.50, maximum=10.0
         )
+        self.dwell_exit_position_tolerance = self._positive_parameter(
+            "dwell_exit_position_tolerance", 0.40, maximum=2.0
+        )
+        self.dwell_exit_yaw_tolerance = self._positive_parameter(
+            "dwell_exit_yaw_tolerance", 0.25, maximum=math.pi
+        )
+        self.dwell_pose_grace_sec = self._positive_parameter(
+            "dwell_pose_grace_sec", 1.0, maximum=30.0
+        )
+        if self.dwell_exit_position_tolerance < self.position_tolerance:
+            raise MissionValidationError(
+                "dwell_exit_position_tolerance must be greater than or equal "
+                "to position_tolerance"
+            )
+        if self.dwell_exit_yaw_tolerance < self.yaw_tolerance:
+            raise MissionValidationError(
+                "dwell_exit_yaw_tolerance must be greater than or equal to "
+                "yaw_tolerance"
+            )
         self.waypoint_timeout_sec = self._positive_parameter(
             "waypoint_timeout_sec", 180.0, maximum=3600.0
         )
@@ -137,6 +156,9 @@ class P2PMissionExecutor(Node):
         self.arrival_window = ArrivalWindow(self.arrival_stable_sec)
         self.localization_health_grace = UnhealthyGraceWindow(
             self.localization_health_grace_sec
+        )
+        self.dwell_pose_grace = UnhealthyGraceWindow(
+            self.dwell_pose_grace_sec
         )
         self.goal_handle = None
         self.goal_serial = 0
@@ -340,6 +362,7 @@ class P2PMissionExecutor(Node):
         self.failure_reason = reason
         self.arrival_window.reset()
         self.localization_health_grace.reset()
+        self.dwell_pose_grace.reset()
         self.get_logger().error(
             f"P2P mission {self.mission.mission_id} failed: {reason}"
         )
@@ -413,6 +436,7 @@ class P2PMissionExecutor(Node):
         held_sec = self.localization_health_grace.elapsed(now)
         if first_unhealthy_sample:
             self.arrival_window.reset()
+            self.dwell_pose_grace.reset()
             self.get_logger().warning(
                 "Holding P2P mission for transient localization health %s "
                 "(grace=%.3fs; %s)"
@@ -598,6 +622,7 @@ class P2PMissionExecutor(Node):
         serial = self.goal_serial
         self.goal_handle = None
         self.arrival_window.reset()
+        self.dwell_pose_grace.reset()
         self.waypoint_deadline = time.monotonic() + self.waypoint_timeout_sec
         future = self.action_client.send_goal_async(
             goal,
@@ -674,9 +699,9 @@ class P2PMissionExecutor(Node):
         self.arrival_window.reset()
         self.transition("SETTLING")
 
-    def pose_is_within_tolerance(self) -> bool:
+    def waypoint_pose_errors(self) -> tuple[float, float]:
         if self.mcl_pose is None:
-            return False
+            return (math.inf, math.inf)
         waypoint = self.current_waypoint()
         pose = self.mcl_pose.pose.pose
         horizontal = math.hypot(
@@ -692,6 +717,10 @@ class P2PMissionExecutor(Node):
             )
         )
         yaw_error = abs(normalize_angle(waypoint.yaw - yaw))
+        return horizontal, yaw_error
+
+    def pose_is_within_tolerance(self) -> bool:
+        horizontal, yaw_error = self.waypoint_pose_errors()
         return (
             horizontal <= self.position_tolerance
             and yaw_error <= self.yaw_tolerance
@@ -712,6 +741,7 @@ class P2PMissionExecutor(Node):
 
     def complete(self) -> None:
         self.localization_health_grace.reset()
+        self.dwell_pose_grace.reset()
         self.transition("COMPLETE")
         self.stop_active_goal()
         self.get_logger().info(f"P2P mission {self.mission.mission_id} completed")
@@ -785,15 +815,78 @@ class P2PMissionExecutor(Node):
             ):
                 waypoint = self.current_waypoint()
                 self.dwell_deadline = now + waypoint.dwell_sec
+                horizontal, yaw_error = self.waypoint_pose_errors()
+                self.get_logger().info(
+                    "Waypoint %s settled; starting %.3fs dwell "
+                    "(xy_error=%.3f yaw_error=%.3f)"
+                    % (
+                        waypoint.waypoint_id,
+                        waypoint.dwell_sec,
+                        horizontal,
+                        yaw_error,
+                    )
+                )
                 self.transition("DWELLING")
             return
         if self.state == "DWELLING":
             if not self.command_is_stopped(now):
                 self.fail("controller produced motion during waypoint dwell")
                 return
-            if not self.pose_is_within_tolerance():
-                self.fail("waypoint pose left tolerance during dwell")
+            horizontal, yaw_error = self.waypoint_pose_errors()
+            within_exit_tolerance = (
+                horizontal <= self.dwell_exit_position_tolerance
+                and yaw_error <= self.dwell_exit_yaw_tolerance
+            )
+            if not within_exit_tolerance:
+                first_excursion = not self.dwell_pose_grace.active
+                expired = self.dwell_pose_grace.mark_unhealthy(now)
+                held_sec = self.dwell_pose_grace.elapsed(now)
+                if first_excursion:
+                    self.get_logger().warning(
+                        "Waypoint %s pose exceeded dwell exit tolerance; "
+                        "holding for grace "
+                        "(xy_error=%.3f limit=%.3f yaw_error=%.3f "
+                        "limit=%.3f grace=%.3fs)"
+                        % (
+                            self.current_waypoint().waypoint_id,
+                            horizontal,
+                            self.dwell_exit_position_tolerance,
+                            yaw_error,
+                            self.dwell_exit_yaw_tolerance,
+                            self.dwell_pose_grace_sec,
+                        )
+                    )
+                if expired:
+                    self.fail(
+                        "waypoint pose remained outside dwell exit tolerance "
+                        "for %.3fs "
+                        "(xy_error=%.3f limit=%.3f yaw_error=%.3f "
+                        "limit=%.3f)"
+                        % (
+                            held_sec,
+                            horizontal,
+                            self.dwell_exit_position_tolerance,
+                            yaw_error,
+                            self.dwell_exit_yaw_tolerance,
+                        )
+                    )
                 return
+            if self.dwell_pose_grace.active:
+                held_sec = self.dwell_pose_grace.mark_healthy(now)
+                waypoint = self.current_waypoint()
+                self.dwell_deadline = now + waypoint.dwell_sec
+                self.get_logger().info(
+                    "Waypoint %s pose recovered after %.3fs; "
+                    "restarting %.3fs dwell "
+                    "(xy_error=%.3f yaw_error=%.3f)"
+                    % (
+                        waypoint.waypoint_id,
+                        held_sec,
+                        waypoint.dwell_sec,
+                        horizontal,
+                        yaw_error,
+                    )
+                )
             if now < self.dwell_deadline:
                 return
             if self.current_index + 1 >= len(self.mission.waypoints):

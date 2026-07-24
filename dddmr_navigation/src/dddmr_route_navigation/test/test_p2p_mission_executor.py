@@ -68,7 +68,7 @@ def write_documents():
                         "y": 2.0,
                         "z": 0.0,
                         "yaw": 0.5,
-                        "dwell_sec": 0.05,
+                        "dwell_sec": 0.30,
                     },
                     {
                         "id": "wp_002",
@@ -105,6 +105,9 @@ def generate_test_description():
                 "prearm_stable_sec": 0.10,
                 "input_timeout_sec": 0.40,
                 "localization_health_grace_sec": 0.50,
+                "dwell_exit_position_tolerance": 0.40,
+                "dwell_exit_yaw_tolerance": 0.25,
+                "dwell_pose_grace_sec": 0.20,
                 "auto_arm": False,
             }
         ],
@@ -133,6 +136,7 @@ class TestP2PMissionExecutor(unittest.TestCase):
         states = []
         initial_messages = []
         goals = []
+        goal_times = []
         enabled = {"value": False}
 
         node.create_subscription(
@@ -188,6 +192,7 @@ class TestP2PMissionExecutor(unittest.TestCase):
 
         def execute_callback(goal_handle):
             goals.append(goal_handle.request.target_pose)
+            goal_times.append(time.monotonic())
             feedback = PToPMoveBase.Feedback()
             feedback.current_decision = "d_align_goal_heading"
             goal_handle.publish_feedback(feedback)
@@ -278,6 +283,40 @@ class TestP2PMissionExecutor(unittest.TestCase):
                 time.sleep(0.02)
             self.assertNotIn("FAILED", states)
 
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline and (
+                not states or states[-1] != "DWELLING"
+            ):
+                if goals:
+                    target = goals[0].pose
+                    publish_localization(
+                        "TRACKING",
+                        target.position.x,
+                        target.position.y,
+                        target.position.z + 0.32,
+                        0.5,
+                    )
+                time.sleep(0.02)
+            self.assertEqual(states[-1], "DWELLING", states)
+
+            hysteresis_deadline = time.monotonic() + 0.08
+            while time.monotonic() < hysteresis_deadline:
+                publish_localization("TRACKING", 1.0, 2.0, 0.32, 0.70)
+                time.sleep(0.02)
+            self.assertNotIn("FAILED", states)
+
+            excursion_deadline = time.monotonic() + 0.10
+            while time.monotonic() < excursion_deadline:
+                publish_localization("TRACKING", 1.0, 2.0, 0.32, 0.85)
+                time.sleep(0.02)
+            self.assertNotIn("FAILED", states)
+
+            recovered_at = time.monotonic()
+            while time.monotonic() - recovered_at < 0.05:
+                publish_localization("TRACKING", 1.0, 2.0, 0.32, 0.5)
+                time.sleep(0.02)
+            self.assertNotIn("FAILED", states)
+
             deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline and (
                 not states or states[-1] != "COMPLETE"
@@ -307,6 +346,7 @@ class TestP2PMissionExecutor(unittest.TestCase):
 
             self.assertEqual(states[-1], "COMPLETE", states)
             self.assertEqual(len(goals), 2)
+            self.assertGreaterEqual(goal_times[1] - recovered_at, 0.25)
             self.assertAlmostEqual(goals[0].pose.position.x, 1.0)
             self.assertAlmostEqual(goals[1].pose.position.x, 2.0)
             self.assertIn("ALIGNING", states)

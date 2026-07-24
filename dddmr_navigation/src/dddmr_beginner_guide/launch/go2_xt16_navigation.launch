@@ -14,6 +14,9 @@
   <arg name="p2p_mission_file" default=""/>
   <arg name="p2p_mission_auto_arm" default="false"/>
   <arg name="p2p_localization_health_grace_sec" default="1.5"/>
+  <arg name="p2p_dwell_exit_position_tolerance" default="0.40"/>
+  <arg name="p2p_dwell_exit_yaw_tolerance" default="0.25"/>
+  <arg name="p2p_dwell_pose_grace_sec" default="1.0"/>
 
   <arg name="publish_static_tf" default="true"/>
   <arg name="lidar_x" default="0.1710"/>
@@ -249,6 +252,12 @@
     <param name="auto_arm" value="$(var p2p_mission_auto_arm)" type="bool"/>
     <param name="localization_health_grace_sec"
            value="$(var p2p_localization_health_grace_sec)" type="float"/>
+    <param name="dwell_exit_position_tolerance"
+           value="$(var p2p_dwell_exit_position_tolerance)" type="float"/>
+    <param name="dwell_exit_yaw_tolerance"
+           value="$(var p2p_dwell_exit_yaw_tolerance)" type="float"/>
+    <param name="dwell_pose_grace_sec"
+           value="$(var p2p_dwell_pose_grace_sec)" type="float"/>
     <param name="use_sim_time" value="false"/>
   </node>
 
