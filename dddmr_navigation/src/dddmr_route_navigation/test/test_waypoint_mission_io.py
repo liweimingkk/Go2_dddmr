@@ -136,6 +136,27 @@ class WaypointMissionIoTest(unittest.TestCase):
         self.assertFalse(window.update(2.0, True, True))
         self.assertTrue(window.update(2.5, True, True))
 
+    def test_unhealthy_grace_window_recovers_or_expires(self):
+        window = mission_io.UnhealthyGraceWindow(0.5)
+        self.assertFalse(window.active)
+        self.assertFalse(window.mark_unhealthy(1.0))
+        self.assertTrue(window.active)
+        self.assertFalse(window.mark_unhealthy(1.49))
+        self.assertAlmostEqual(window.elapsed(1.49), 0.49)
+        self.assertAlmostEqual(window.mark_healthy(1.49), 0.49)
+        self.assertFalse(window.active)
+
+        self.assertFalse(window.mark_unhealthy(2.0))
+        self.assertTrue(window.mark_unhealthy(2.5))
+        window.reset()
+        self.assertFalse(window.active)
+
+    def test_unhealthy_grace_window_rejects_invalid_duration(self):
+        for value in (0.0, -1.0, math.inf, math.nan):
+            with self.subTest(value=value):
+                with self.assertRaises(mission_io.MissionValidationError):
+                    mission_io.UnhealthyGraceWindow(value)
+
 
 if __name__ == "__main__":
     unittest.main()

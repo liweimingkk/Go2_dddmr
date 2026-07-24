@@ -104,6 +104,7 @@ def generate_test_description():
                 "planner_ready_timeout_sec": 5.0,
                 "prearm_stable_sec": 0.10,
                 "input_timeout_sec": 0.40,
+                "localization_health_grace_sec": 0.50,
                 "auto_arm": False,
             }
         ],
@@ -207,12 +208,12 @@ class TestP2PMissionExecutor(unittest.TestCase):
         arm_client = node.create_client(Trigger, "/p2p_multi_point/arm")
         spin_thread.start()
 
-        def publish_localization(status, x, y, z, yaw):
+        def publish_localization(status, x, y, z, yaw, health="HEALTHY"):
             status_message = String()
             status_message.data = status
             status_pub.publish(status_message)
             health_message = String()
-            health_message.data = "HEALTHY"
+            health_message.data = health
             health_pub.publish(health_message)
             pose = PoseWithCovarianceStamped()
             pose.header.frame_id = "map"
@@ -263,6 +264,19 @@ class TestP2PMissionExecutor(unittest.TestCase):
                 time.sleep(0.02)
             self.assertTrue(arm_future.done())
             self.assertTrue(arm_future.result().success)
+
+            transient_deadline = time.monotonic() + 0.20
+            while time.monotonic() < transient_deadline:
+                publish_localization(
+                    "TRACKING",
+                    0.0,
+                    0.0,
+                    0.32,
+                    0.0,
+                    health="GROUND_NORMAL",
+                )
+                time.sleep(0.02)
+            self.assertNotIn("FAILED", states)
 
             deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline and (

@@ -13,6 +13,7 @@
   <arg name="start_p2p_mission" default="false"/>
   <arg name="p2p_mission_file" default=""/>
   <arg name="p2p_mission_auto_arm" default="false"/>
+  <arg name="p2p_localization_health_grace_sec" default="1.5"/>
 
   <arg name="publish_static_tf" default="true"/>
   <arg name="lidar_x" default="0.1710"/>
@@ -246,6 +247,8 @@
         if="$(var start_p2p_mission)">
     <param name="mission_file" value="$(var p2p_mission_file)" type="str"/>
     <param name="auto_arm" value="$(var p2p_mission_auto_arm)" type="bool"/>
+    <param name="localization_health_grace_sec"
+           value="$(var p2p_localization_health_grace_sec)" type="float"/>
     <param name="use_sim_time" value="false"/>
   </node>
 

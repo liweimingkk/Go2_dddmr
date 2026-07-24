@@ -70,6 +70,45 @@ class ArrivalWindow:
         return now_sec - self._start >= self.stable_sec
 
 
+class UnhealthyGraceWindow:
+    """Track a bounded interval for a recoverable unhealthy input."""
+
+    def __init__(self, grace_sec: float) -> None:
+        if not _finite_number(grace_sec) or grace_sec <= 0.0:
+            raise MissionValidationError("grace_sec must be finite and positive")
+        self.grace_sec = float(grace_sec)
+        self._start: Optional[float] = None
+
+    @property
+    def active(self) -> bool:
+        return self._start is not None
+
+    def reset(self) -> None:
+        self._start = None
+
+    def elapsed(self, now_sec: float) -> float:
+        if not _finite_number(now_sec) or self._start is None:
+            return 0.0
+        if now_sec < self._start:
+            self._start = float(now_sec)
+            return 0.0
+        return float(now_sec) - self._start
+
+    def mark_unhealthy(self, now_sec: float) -> bool:
+        if not _finite_number(now_sec):
+            self.reset()
+            return True
+        if self._start is None or now_sec < self._start:
+            self._start = float(now_sec)
+            return False
+        return self.elapsed(now_sec) >= self.grace_sec
+
+    def mark_healthy(self, now_sec: float) -> float:
+        held_sec = self.elapsed(now_sec)
+        self.reset()
+        return held_sec
+
+
 def normalize_angle(angle: float) -> float:
     if not _finite_number(angle):
         raise MissionValidationError("yaw must be finite")

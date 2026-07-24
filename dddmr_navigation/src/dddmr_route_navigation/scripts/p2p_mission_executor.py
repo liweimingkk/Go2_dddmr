@@ -22,6 +22,7 @@ from std_srvs.srv import SetBool, Trigger
 from waypoint_mission_io import (
     ArrivalWindow,
     MissionValidationError,
+    UnhealthyGraceWindow,
     Waypoint,
     load_initial_pose,
     load_mission,
@@ -91,6 +92,9 @@ class P2PMissionExecutor(Node):
         self.input_timeout_sec = self._positive_parameter(
             "input_timeout_sec", 0.75, maximum=5.0
         )
+        self.localization_health_grace_sec = self._positive_parameter(
+            "localization_health_grace_sec", 1.50, maximum=30.0
+        )
         self.zero_epsilon = self._positive_parameter(
             "zero_epsilon", 0.001, maximum=0.05
         )
@@ -131,6 +135,9 @@ class P2PMissionExecutor(Node):
         self.dwell_deadline = 0.0
         self.receipt = {}
         self.arrival_window = ArrivalWindow(self.arrival_stable_sec)
+        self.localization_health_grace = UnhealthyGraceWindow(
+            self.localization_health_grace_sec
+        )
         self.goal_handle = None
         self.goal_serial = 0
 
@@ -332,6 +339,7 @@ class P2PMissionExecutor(Node):
             return
         self.failure_reason = reason
         self.arrival_window.reset()
+        self.localization_health_grace.reset()
         self.get_logger().error(
             f"P2P mission {self.mission.mission_id} failed: {reason}"
         )
@@ -351,12 +359,80 @@ class P2PMissionExecutor(Node):
 
     def localization_is_fresh_and_healthy(self, now: float) -> bool:
         return (
-            self.localization_status == "TRACKING"
+            self.localization_tracking_inputs_are_fresh(now)
             and self.localization_health == "HEALTHY"
+        )
+
+    def localization_tracking_inputs_are_fresh(self, now: float) -> bool:
+        return (
+            self.localization_status == "TRACKING"
             and self.is_fresh("localization_status", now)
             and self.is_fresh("localization_health", now)
             and self.is_fresh("mcl_pose", now)
         )
+
+    def localization_snapshot(self, now: float) -> str:
+        return (
+            f"status={self.localization_status or 'missing'} "
+            f"status_age={self.input_age('localization_status', now):.3f}s "
+            f"health={self.localization_health or 'missing'} "
+            f"health_age={self.input_age('localization_health', now):.3f}s "
+            f"mcl_pose_age={self.input_age('mcl_pose', now):.3f}s"
+        )
+
+    def extend_active_deadline(self, held_sec: float) -> None:
+        if held_sec <= 0.0:
+            return
+        if self.state in {"NAVIGATING", "ALIGNING", "SETTLING"}:
+            self.waypoint_deadline += held_sec
+        elif self.state == "DWELLING":
+            self.dwell_deadline += held_sec
+
+    def active_localization_allows_progress(self, now: float) -> bool:
+        if not self.localization_tracking_inputs_are_fresh(now):
+            self.localization_health_grace.reset()
+            self.fail(
+                "localization tracking input failed: "
+                + self.localization_snapshot(now)
+            )
+            return False
+
+        if self.localization_health == "HEALTHY":
+            if self.localization_health_grace.active:
+                held_sec = self.localization_health_grace.mark_healthy(now)
+                self.extend_active_deadline(held_sec)
+                self.get_logger().info(
+                    "Localization health recovered after %.3fs; "
+                    "resuming P2P mission in state %s"
+                    % (held_sec, self.state)
+                )
+            return True
+
+        first_unhealthy_sample = not self.localization_health_grace.active
+        expired = self.localization_health_grace.mark_unhealthy(now)
+        held_sec = self.localization_health_grace.elapsed(now)
+        if first_unhealthy_sample:
+            self.arrival_window.reset()
+            self.get_logger().warning(
+                "Holding P2P mission for transient localization health %s "
+                "(grace=%.3fs; %s)"
+                % (
+                    self.localization_health or "missing",
+                    self.localization_health_grace_sec,
+                    self.localization_snapshot(now),
+                )
+            )
+        if expired:
+            self.fail(
+                "localization health remained unhealthy for %.3fs "
+                "(grace=%.3fs; %s)"
+                % (
+                    held_sec,
+                    self.localization_health_grace_sec,
+                    self.localization_snapshot(now),
+                )
+            )
+        return False
 
     def prearm_ready(self, now: float) -> bool:
         return (
@@ -635,6 +711,7 @@ class P2PMissionExecutor(Node):
         )
 
     def complete(self) -> None:
+        self.localization_health_grace.reset()
         self.transition("COMPLETE")
         self.stop_active_goal()
         self.get_logger().info(f"P2P mission {self.mission.mission_id} completed")
@@ -690,12 +767,9 @@ class P2PMissionExecutor(Node):
         if self.state in self.PREARM_STATES:
             self.update_prearm_readiness(now)
             return
-        if self.state == "ARMING":
-            if not self.localization_is_fresh_and_healthy(now):
-                self.fail("localization became unhealthy while arming")
+        if not self.active_localization_allows_progress(now):
             return
-        if not self.localization_is_fresh_and_healthy(now):
-            self.fail("localization is not fresh TRACKING/HEALTHY")
+        if self.state == "ARMING":
             return
         if self.state in {"NAVIGATING", "ALIGNING", "SETTLING"}:
             if now > self.waypoint_deadline:
