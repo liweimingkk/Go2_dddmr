@@ -100,7 +100,14 @@ install(PROGRAMS
   scripts/outdoor_indoor_mission_client.py
   scripts/outdoor_indoor_mission_lib.py
   scripts/outdoor_indoor_mission_no_motion.py
+  scripts/p2p_mission_executor.py
+  scripts/p2p_waypoint_recorder.py
   scripts/route_tool.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(FILES
+  scripts/waypoint_mission_io.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -110,6 +117,7 @@ install(DIRECTORY config
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  find_package(launch_testing_ament_cmake REQUIRED)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
   ament_add_gtest(test_route_tracker
@@ -133,6 +141,13 @@ if(BUILD_TESTING)
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/test/test_mission_command_mux_policy.py
   )
+  add_test(
+    NAME test_waypoint_mission_io
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/test/test_waypoint_mission_io.py
+      ${CMAKE_CURRENT_SOURCE_DIR}/scripts/waypoint_mission_io.py
+  )
+  add_launch_test(test/test_p2p_mission_executor.py TIMEOUT 30)
 endif()
 
 ament_export_include_directories(include)

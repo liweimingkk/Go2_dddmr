@@ -1,0 +1,412 @@
+#!/usr/bin/env python3
+"""Interactively record a fixed initial pose and P2P mission waypoints."""
+
+from __future__ import annotations
+
+import argparse
+import math
+import select
+import sys
+import termios
+import threading
+import time
+import tty
+from pathlib import Path
+from typing import List, Optional
+
+import rclpy
+from geometry_msgs.msg import PoseWithCovarianceStamped
+from rclpy.executors import SingleThreadedExecutor
+from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.utilities import remove_ros_args
+from std_msgs.msg import String
+
+from waypoint_mission_io import (
+    IDENTIFIER_PATTERN,
+    MAX_DWELL_SEC,
+    MissionValidationError,
+    Waypoint,
+    atomic_write_json,
+    initial_pose_document,
+    load_mission,
+    mission_document,
+    relative_initial_pose_reference,
+    yaw_from_quaternion,
+)
+
+
+STATUS_FRESHNESS_SEC = 0.75
+
+
+class P2PWaypointRecorder(Node):
+    def __init__(self, mission_path: str, initial_pose_path: str) -> None:
+        super().__init__("p2p_waypoint_recorder")
+        self.mission_path = Path(mission_path).expanduser().resolve()
+        self.initial_pose_path = Path(initial_pose_path).expanduser().resolve()
+        self.mission_id = self.mission_path.stem
+        if not IDENTIFIER_PATTERN.fullmatch(self.mission_id):
+            raise MissionValidationError(
+                "mission filename stem must be a valid mission identifier"
+            )
+        self.body_height = float(
+            self.declare_parameter("body_height", 0.32).value
+        )
+        if (
+            not math.isfinite(self.body_height)
+            or self.body_height <= 0.0
+            or self.body_height > 1.0
+        ):
+            raise MissionValidationError("body_height must be within (0, 1.0]")
+
+        self.waypoints: List[Waypoint] = []
+        self.latest_pose: Optional[PoseWithCovarianceStamped] = None
+        self.localization_status: Optional[str] = None
+        self.localization_health: Optional[str] = None
+        self.pose_receipt = 0.0
+        self.status_receipt = 0.0
+        self.health_receipt = 0.0
+
+        if self.mission_path.exists():
+            mission = load_mission(self.mission_path)
+            if mission.initial_pose_path != self.initial_pose_path:
+                raise MissionValidationError(
+                    "existing mission references a different initial-pose file: "
+                    f"{mission.initial_pose_path}"
+                )
+            self.mission_id = mission.mission_id
+            self.waypoints = list(mission.waypoints)
+
+        transient_qos = QoSProfile(depth=1)
+        transient_qos.reliability = ReliabilityPolicy.RELIABLE
+        transient_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
+        self.create_subscription(
+            PoseWithCovarianceStamped, "/mcl_pose", self.pose_callback, 10
+        )
+        self.create_subscription(
+            String, "/localization_status", self.status_callback, transient_qos
+        )
+        self.create_subscription(
+            String, "/localization_health", self.health_callback, transient_qos
+        )
+
+    def pose_callback(self, message: PoseWithCovarianceStamped) -> None:
+        if message.header.frame_id == "map":
+            self.latest_pose = message
+            self.pose_receipt = time.monotonic()
+
+    def status_callback(self, message: String) -> None:
+        self.localization_status = message.data.strip().upper()
+        self.status_receipt = time.monotonic()
+
+    def health_callback(self, message: String) -> None:
+        self.localization_health = message.data.strip().upper()
+        self.health_receipt = time.monotonic()
+
+    def localization_ready(self) -> bool:
+        now = time.monotonic()
+        return (
+            self.localization_status == "TRACKING"
+            and self.localization_health == "HEALTHY"
+            and all(
+                receipt > 0.0 and now - receipt <= STATUS_FRESHNESS_SEC
+                for receipt in (
+                    self.pose_receipt,
+                    self.status_receipt,
+                    self.health_receipt,
+                )
+            )
+        )
+
+    def readiness_summary(self) -> str:
+        now = time.monotonic()
+
+        def age(receipt: float) -> str:
+            return (
+                "missing"
+                if receipt <= 0.0
+                else f"{max(0.0, now - receipt):.3f}s"
+            )
+
+        return (
+            f"status={self.localization_status or 'missing'}"
+            f"(age={age(self.status_receipt)}) "
+            f"health={self.localization_health or 'missing'}"
+            f"(age={age(self.health_receipt)}) "
+            f"mcl_pose_age={age(self.pose_receipt)}"
+        )
+
+    def record_initial_pose(self, settings) -> None:
+        if not self.localization_ready() or self.latest_pose is None:
+            self.get_logger().warning(
+                "Initial pose not saved: require fresh TRACKING, HEALTHY and "
+                f"map mcl_pose; {self.readiness_summary()}"
+            )
+            return
+        if self.initial_pose_path.exists():
+            answer = self.prompt_text(
+                settings,
+                f"Overwrite fixed initial pose {self.initial_pose_path}? "
+                "Type OVERWRITE: ",
+            )
+            if answer != "OVERWRITE":
+                self.get_logger().warning("Initial-pose overwrite cancelled")
+                return
+        pose = self.latest_pose.pose
+        document = initial_pose_document(
+            "map",
+            (
+                pose.pose.position.x,
+                pose.pose.position.y,
+                pose.pose.position.z,
+            ),
+            (
+                pose.pose.orientation.x,
+                pose.pose.orientation.y,
+                pose.pose.orientation.z,
+                pose.pose.orientation.w,
+            ),
+            pose.covariance,
+        )
+        atomic_write_json(self.initial_pose_path, document)
+        self.get_logger().info(f"Saved fixed initial pose: {self.initial_pose_path}")
+
+    def current_waypoint(
+        self, dwell_sec: float, waypoint_id: str
+    ) -> Optional[Waypoint]:
+        if not self.localization_ready() or self.latest_pose is None:
+            self.get_logger().warning(
+                "Waypoint not recorded: require fresh TRACKING, HEALTHY and "
+                f"map mcl_pose; {self.readiness_summary()}"
+            )
+            return None
+        pose = self.latest_pose.pose.pose
+        values = (
+            pose.position.x,
+            pose.position.y,
+            pose.position.z,
+            pose.orientation.x,
+            pose.orientation.y,
+            pose.orientation.z,
+            pose.orientation.w,
+        )
+        if not all(math.isfinite(float(value)) for value in values):
+            self.get_logger().warning("Waypoint not recorded: pose is non-finite")
+            return None
+        return Waypoint(
+            waypoint_id=waypoint_id,
+            x=float(pose.position.x),
+            y=float(pose.position.y),
+            z=float(pose.position.z) - self.body_height,
+            yaw=yaw_from_quaternion(
+                (
+                    pose.orientation.x,
+                    pose.orientation.y,
+                    pose.orientation.z,
+                    pose.orientation.w,
+                )
+            ),
+            dwell_sec=dwell_sec,
+        )
+
+    def prompt_dwell(self, settings) -> Optional[float]:
+        raw = self.prompt_text(
+            settings, f"dwell_sec [0..{MAX_DWELL_SEC:g}] (required): "
+        )
+        try:
+            dwell = float(raw)
+        except ValueError:
+            self.get_logger().warning("Waypoint unchanged: dwell_sec is not numeric")
+            return None
+        if not math.isfinite(dwell) or dwell < 0.0 or dwell > MAX_DWELL_SEC:
+            self.get_logger().warning(
+                f"Waypoint unchanged: dwell_sec must be within [0, {MAX_DWELL_SEC:g}]"
+            )
+            return None
+        return dwell
+
+    def add_waypoint(self, settings) -> None:
+        dwell = self.prompt_dwell(settings)
+        if dwell is None:
+            return
+        existing = {waypoint.waypoint_id for waypoint in self.waypoints}
+        sequence = 1
+        while f"wp_{sequence:03d}" in existing:
+            sequence += 1
+        waypoint = self.current_waypoint(dwell, f"wp_{sequence:03d}")
+        if waypoint is None:
+            return
+        self.waypoints.append(waypoint)
+        self.get_logger().info(
+            "Recorded %s: x=%.3f y=%.3f ground_z=%.3f yaw=%.3f dwell=%.1fs"
+            % (
+                waypoint.waypoint_id,
+                waypoint.x,
+                waypoint.y,
+                waypoint.z,
+                waypoint.yaw,
+                waypoint.dwell_sec,
+            )
+        )
+
+    def replace_waypoint(self, settings) -> None:
+        index = self.prompt_index(settings, "Replace")
+        if index is None:
+            return
+        dwell = self.prompt_dwell(settings)
+        if dwell is None:
+            return
+        current = self.waypoints[index]
+        replacement = self.current_waypoint(dwell, current.waypoint_id)
+        if replacement is not None:
+            self.waypoints[index] = replacement
+            self.get_logger().info(f"Replaced {current.waypoint_id}")
+
+    def delete_waypoint(self, settings) -> None:
+        index = self.prompt_index(settings, "Delete")
+        if index is not None:
+            removed = self.waypoints.pop(index)
+            self.get_logger().info(f"Deleted {removed.waypoint_id}")
+
+    def list_waypoints(self) -> None:
+        if not self.waypoints:
+            print("(no waypoints)")
+        for index, waypoint in enumerate(self.waypoints, 1):
+            print(
+                "%d: %s x=%.3f y=%.3f ground_z=%.3f yaw=%.3f dwell=%.1fs"
+                % (
+                    index,
+                    waypoint.waypoint_id,
+                    waypoint.x,
+                    waypoint.y,
+                    waypoint.z,
+                    waypoint.yaw,
+                    waypoint.dwell_sec,
+                )
+            )
+
+    def save(self) -> bool:
+        if not self.initial_pose_path.is_file():
+            self.get_logger().error(
+                f"Cannot save mission before fixed initial pose exists: "
+                f"{self.initial_pose_path}"
+            )
+            return False
+        if not self.waypoints:
+            self.get_logger().error("Cannot save an empty mission")
+            return False
+        reference = relative_initial_pose_reference(
+            self.mission_path, self.initial_pose_path
+        )
+        atomic_write_json(
+            self.mission_path,
+            mission_document(self.mission_id, reference, self.waypoints),
+        )
+        load_mission(self.mission_path)
+        self.get_logger().info(
+            f"Saved mission {self.mission_id} with {len(self.waypoints)} "
+            f"waypoint(s): {self.mission_path}"
+        )
+        return True
+
+    def prompt_index(self, settings, action: str) -> Optional[int]:
+        if not self.waypoints:
+            self.get_logger().warning("No waypoint is available")
+            return None
+        raw = self.prompt_text(
+            settings, f"{action} waypoint index (1-{len(self.waypoints)}): "
+        )
+        try:
+            index = int(raw) - 1
+        except ValueError:
+            index = -1
+        if index < 0 or index >= len(self.waypoints):
+            self.get_logger().warning("Invalid waypoint index")
+            return None
+        return index
+
+    @staticmethod
+    def prompt_text(settings, prompt: str) -> str:
+        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
+        try:
+            return input(prompt).strip()
+        finally:
+            tty.setcbreak(sys.stdin.fileno())
+
+    def run(self) -> None:
+        if not sys.stdin.isatty():
+            raise RuntimeError("waypoint recording requires an interactive TTY")
+        executor = SingleThreadedExecutor(context=self.context)
+        executor.add_node(self)
+        spin_thread = threading.Thread(
+            target=executor.spin,
+            name="p2p_waypoint_recorder_ros",
+            daemon=True,
+        )
+        spin_thread.start()
+        print(
+            "i: save fixed initial pose | Enter/Space/a: add waypoint | "
+            "r: replace | d: delete | u: undo | l: list | s: save | q: save+quit"
+        )
+        print(
+            "Set a correct RViz 3D Pose Estimate first. Each waypoint records "
+            "the current localized base pose and requires dwell_sec."
+        )
+        settings = termios.tcgetattr(sys.stdin)
+        tty.setcbreak(sys.stdin.fileno())
+        try:
+            while rclpy.ok(context=self.context):
+                ready, _, _ = select.select([sys.stdin], [], [], 0.0)
+                if not ready:
+                    time.sleep(0.02)
+                    continue
+                key = sys.stdin.read(1)
+                lowered = key.lower()
+                if lowered == "i":
+                    self.record_initial_pose(settings)
+                elif key in ("\n", "\r", " ") or lowered == "a":
+                    self.add_waypoint(settings)
+                elif lowered == "r":
+                    self.replace_waypoint(settings)
+                elif lowered == "d":
+                    self.delete_waypoint(settings)
+                elif lowered == "u" and self.waypoints:
+                    removed = self.waypoints.pop()
+                    self.get_logger().info(f"Undid {removed.waypoint_id}")
+                elif lowered == "l":
+                    self.list_waypoints()
+                elif lowered == "s":
+                    self.save()
+                elif lowered in ("q", "\x03") and self.save():
+                    break
+        finally:
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
+            executor.shutdown(timeout_sec=1.0)
+            spin_thread.join(timeout=1.0)
+            executor.remove_node(self)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--mission-file", required=True)
+    parser.add_argument("--initial-pose-file", required=True)
+    arguments = parser.parse_args(remove_ros_args(args=sys.argv)[1:])
+    rclpy.init(args=sys.argv)
+    result = 0
+    try:
+        recorder = P2PWaypointRecorder(
+            arguments.mission_file, arguments.initial_pose_file
+        )
+        recorder.run()
+    except (KeyboardInterrupt, RuntimeError, MissionValidationError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        result = 1
+    finally:
+        if "recorder" in locals():
+            recorder.destroy_node()
+        rclpy.try_shutdown()
+    return result
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

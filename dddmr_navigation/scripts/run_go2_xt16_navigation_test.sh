@@ -4,7 +4,13 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/run_go2_xt16_navigation_test.sh [--dry-run|--live|--stop]
+  scripts/run_go2_xt16_navigation_test.sh --dry-run
+  scripts/run_go2_xt16_navigation_test.sh --live
+  scripts/run_go2_xt16_navigation_test.sh --record MISSION.json \
+    --initial-pose INITIAL_POSE.json
+  scripts/run_go2_xt16_navigation_test.sh --multi-dry-run MISSION.json
+  scripts/run_go2_xt16_navigation_test.sh --multi-live MISSION.json
+  scripts/run_go2_xt16_navigation_test.sh --stop
 
 Starts Go2 XT16 navigation with the map configured in:
   src/dddmr_beginner_guide/config/go2_xt16_navigation.yaml
@@ -15,6 +21,14 @@ Modes:
   --live     Start navigation, RViz, and the live Sport adapter. This can move
              the Go2 after an RViz goal is sent. Requires onsite supervision
              and GO2_NAV_LIVE_CONFIRM=I_AM_SUPERVISING_GO2_NAV.
+  --record   Start the original DDDMR/P2P stack without real Sport output.
+             Interactively save a fixed initial pose and localized waypoints.
+  --multi-dry-run
+             Load a mission and execute its waypoints in order through the
+             dry-run command path.
+  --multi-live
+             Load a mission and execute it through the supervised Sport
+             adapter. Also requires `EXECUTE <mission_id>` after READY.
   --stop     Stop running go2_xt16 navigation containers. If a live adapter is
              running, it is stopped first so it can publish StopMove.
 
@@ -45,36 +59,77 @@ Examples:
     scripts/run_go2_xt16_navigation_test.sh --live
   GO2_NAV_LIVE_CONFIRM=I_AM_SUPERVISING_GO2_NAV STOP_EXISTING=true \
     scripts/run_go2_xt16_navigation_test.sh --live
+  scripts/run_go2_xt16_navigation_test.sh --record \
+    bags/p2p_missions/route_a.json --initial-pose \
+    bags/p2p_missions/go2_start.json
+  scripts/run_go2_xt16_navigation_test.sh --multi-dry-run \
+    bags/p2p_missions/route_a.json
+  GO2_NAV_LIVE_CONFIRM=I_AM_SUPERVISING_GO2_NAV \
+    scripts/run_go2_xt16_navigation_test.sh --multi-live \
+    bags/p2p_missions/route_a.json
   scripts/run_go2_xt16_navigation_test.sh --stop
 EOF
 }
 
 mode="dry-run"
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --dry-run)
-      mode="dry-run"
-      shift
-      ;;
-    --live)
-      mode="live"
-      shift
-      ;;
-    --stop)
-      mode="stop"
-      shift
-      ;;
-    -h|--help|help)
-      usage
-      exit 0
-      ;;
-    *)
-      echo "Unknown argument: $1" >&2
+mission_file_requested=""
+initial_pose_file_requested=""
+case "${1:---dry-run}" in
+  --dry-run)
+    (( $# <= 1 )) || {
       usage >&2
       exit 2
-      ;;
-  esac
-done
+    }
+    mode="dry-run"
+    ;;
+  --live)
+    (( $# == 1 )) || {
+      usage >&2
+      exit 2
+    }
+    mode="live"
+    ;;
+  --multi-dry-run|--multi-live)
+    (( $# == 2 )) || {
+      usage >&2
+      exit 2
+    }
+    mode="${1#--}"
+    mission_file_requested="$2"
+    ;;
+  --record)
+    (( $# == 4 )) && [[ "$3" == "--initial-pose" ]] || {
+      usage >&2
+      exit 2
+    }
+    mode="record"
+    mission_file_requested="$2"
+    initial_pose_file_requested="$4"
+    ;;
+  --stop)
+    (( $# == 1 )) || {
+      usage >&2
+      exit 2
+    }
+    mode="stop"
+    ;;
+  -h|--help|help)
+    usage
+    exit 0
+    ;;
+  *)
+    echo "Unknown or incomplete arguments: $*" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
+
+live_mode="false"
+multi_mode="false"
+record_mode="false"
+[[ "${mode}" == "live" || "${mode}" == "multi-live" ]] && live_mode="true"
+[[ "${mode}" == "multi-live" || "${mode}" == "multi-dry-run" ]] && multi_mode="true"
+[[ "${mode}" == "record" ]] && record_mode="true"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -92,6 +147,7 @@ ODOM_OFFSET_RESOLVER="${GO2_ODOM_TIME_OFFSET_RESOLVER:-${SCRIPT_DIR}/resolve_go2
 ODOM_SYNC_CHECKER="${GO2_ODOM_SYNC_CHECKER:-${SCRIPT_DIR}/check_go2_odom_sync.py}"
 DDS_BUFFER_CHECK="${SCRIPT_DIR}/check_go2_dds_receive_buffers.sh"
 OBSERVATION_GATE_SOURCE="${WS_ROOT}/src/dddmr_beginner_guide/scripts/go2_pointcloud_stream_gate.py"
+MISSION_IO_SOURCE="${WS_ROOT}/src/dddmr_route_navigation/scripts/waypoint_mission_io.py"
 CURRENT_OBSERVATION_TOPIC="/perception_3d_local/lidar/current_observation"
 BUILD_BASE_VALUE="${DDDMR_BUILD_BASE:-.docker_go2_xt16_build}"
 INSTALL_BASE_VALUE="${DDDMR_INSTALL_BASE:-.docker_go2_xt16_install}"
@@ -102,7 +158,7 @@ MAX_X_VALUE="${MAX_X:-0.50}"
 MAX_YAW_VALUE="${MAX_YAW:-0.50}"
 if [[ -n "${MAX_Y+x}" ]]; then
   MAX_Y_VALUE="${MAX_Y}"
-elif [[ "${mode}" == "dry-run" ]]; then
+elif [[ "${live_mode}" != "true" ]]; then
   MAX_Y_VALUE="0.20"
 else
   MAX_Y_VALUE="0.0"
@@ -125,8 +181,13 @@ ADAPTER_LOG_CONTAINER="/root/dddmr_navigation/run_logs/${CONTAINER_NAME}_adapter
 ADAPTER_LOG_HOST="${RUN_LOG_DIR}/${CONTAINER_NAME}_adapter.log"
 PERCEPTION_GATE_LOG_HOST="${RUN_LOG_DIR}/${CONTAINER_NAME}_perception_gate.log"
 runtime_started="false"
+mission_file=""
+mission_file_container=""
+initial_pose_file=""
+initial_pose_file_container=""
+mission_id=""
 
-if [[ "${mode}" == "live" && -z "${RUN_SECONDS_VALUE}" ]]; then
+if [[ "${live_mode}" == "true" && -z "${RUN_SECONDS_VALUE}" ]]; then
   RUN_SECONDS_VALUE="300"
 fi
 
@@ -137,6 +198,55 @@ log() {
 die() {
   printf 'ERROR: %s\n' "$*" >&2
   exit 1
+}
+
+resolve_bags_path() {
+  local requested="$1"
+  local resolved
+  resolved="$(realpath -m -- "${requested}")"
+  if [[ "${resolved}" != "${BAGS_DIR}"/* && "${requested}" != /* ]]; then
+    requested="${requested#./}"
+    requested="${requested#bags/}"
+    resolved="$(realpath -m -- "${BAGS_DIR}/${requested}")"
+  fi
+  [[ "${resolved}" == "${BAGS_DIR}"/* ]] || \
+    die "mission data must stay under ${BAGS_DIR}: ${requested}"
+  printf '%s\n' "${resolved}"
+}
+
+container_bags_path() {
+  local host_path="$1"
+  printf '/root/dddmr_bags/%s\n' "${host_path#"${BAGS_DIR}"/}"
+}
+
+validate_mission_request() {
+  [[ -f "${MISSION_IO_SOURCE}" ]] || \
+    die "P2P mission validator is missing: ${MISSION_IO_SOURCE}"
+  BAGS_DIR="$(realpath -m -- "${BAGS_DIR}")"
+  if [[ -n "${mission_file_requested}" ]]; then
+    mission_file="$(resolve_bags_path "${mission_file_requested}")"
+    mission_file_container="$(container_bags_path "${mission_file}")"
+  fi
+  if [[ -n "${initial_pose_file_requested}" ]]; then
+    initial_pose_file="$(resolve_bags_path "${initial_pose_file_requested}")"
+    initial_pose_file_container="$(container_bags_path "${initial_pose_file}")"
+  fi
+  if [[ "${record_mode}" == "true" ]]; then
+    [[ "${mission_file}" != "${initial_pose_file}" ]] || \
+      die "mission and initial-pose files must be different"
+    mkdir -p -- \
+      "$(dirname -- "${mission_file}")" \
+      "$(dirname -- "${initial_pose_file}")"
+  elif [[ "${multi_mode}" == "true" ]]; then
+    [[ -f "${mission_file}" ]] || \
+      die "mission file does not exist: ${mission_file}"
+    /usr/bin/python3 "${MISSION_IO_SOURCE}" validate \
+      --mission "${mission_file}" --root "${BAGS_DIR}"
+    mission_id="$(
+      /usr/bin/python3 "${MISSION_IO_SOURCE}" mission-id \
+        --mission "${mission_file}" --root "${BAGS_DIR}"
+    )"
+  fi
 }
 
 is_number() {
@@ -229,8 +339,10 @@ validate_live_request() {
 
 cleanup_live_runtime() {
   local status=$?
-  if [[ "${mode}" == "live" && "${runtime_started}" == "true" ]]; then
-    log "Stopping supervised live runtime during exit cleanup..."
+  if [[ "${runtime_started}" == "true" ]] && \
+     [[ "${live_mode}" == "true" || "${multi_mode}" == "true" || \
+        "${record_mode}" == "true" ]]; then
+    log "Stopping supervised navigation runtime during exit cleanup..."
     stop_nav_containers || true
     runtime_started="false"
   fi
@@ -517,6 +629,19 @@ require_current_observation_stream() {
 }
 
 start_container() {
+  local start_clicked_to_goal="true"
+  local p2p_goals_enabled="true"
+  local start_p2p_mission="false"
+  local p2p_mission_file=""
+  if [[ "${multi_mode}" == "true" ]]; then
+    start_clicked_to_goal="false"
+    p2p_goals_enabled="false"
+    start_p2p_mission="true"
+    p2p_mission_file="${mission_file_container}"
+  elif [[ "${record_mode}" == "true" ]]; then
+    start_clicked_to_goal="false"
+    p2p_goals_enabled="false"
+  fi
   mkdir -p "${BAGS_DIR}" "${RUN_LOG_DIR}"
 
   if [[ "${RVIZ_VALUE}" == "true" && -n "${DISPLAY:-}" ]] && command -v xhost >/dev/null 2>&1; then
@@ -524,8 +649,10 @@ start_container() {
   fi
 
   log "Starting navigation container: ${CONTAINER_NAME}"
-  if [[ "${mode}" == "live" ]]; then
+  if [[ "${live_mode}" == "true" && "${multi_mode}" != "true" ]]; then
     log "Do not send an RViz goal until all readiness checks have passed."
+  elif [[ "${multi_mode}" == "true" ]]; then
+    log "RViz manual goals are disabled; the P2P mission remains locked until READY."
   fi
   docker run -d \
     --name "${CONTAINER_NAME}" \
@@ -572,6 +699,10 @@ exec ros2 launch dddmr_beginner_guide go2_xt16_navigation.launch \
   go2_sport_max_y:=${MAX_Y_VALUE} \
   go2_nav_cmd_gate_max_yaw:=${MAX_YAW_VALUE} \
   sport_dry_run_max_yaw:=${MAX_YAW_VALUE} \
+  start_clicked_to_goal:=${start_clicked_to_goal} \
+  p2p_goals_enabled:=${p2p_goals_enabled} \
+  start_p2p_mission:=${start_p2p_mission} \
+  p2p_mission_file:=${p2p_mission_file} \
   start_sport_dry_run_adapter:=true \
   start_go2_sport_adapter:=false \
   go2_sport_enable_output:=false \
@@ -579,6 +710,120 @@ exec ros2 launch dddmr_beginner_guide go2_xt16_navigation.launch \
   go2_sport_max_yaw:=${MAX_YAW_VALUE}" >/dev/null
 
   printf '%s\n' "${CONTAINER_NAME}" >/tmp/go2_xt16_nav_current_name.txt
+}
+
+run_waypoint_recorder() {
+  log "Starting interactive P2P waypoint recorder."
+  docker exec -it "${CONTAINER_NAME}" bash -lc "set -eo pipefail
+set +u
+source /opt/ros/humble/setup.bash
+source /root/dddmr_navigation/scripts/setup_go2_dds_env.sh
+source /root/dddmr_navigation/${INSTALL_BASE_VALUE}/setup.bash
+set -u
+exec ros2 run dddmr_route_navigation p2p_waypoint_recorder.py \
+  --mission-file '${mission_file_container}' \
+  --initial-pose-file '${initial_pose_file_container}'"
+}
+
+read_mission_state() {
+  local output
+  output="$(
+    docker_ros \
+      "timeout 4 ros2 topic echo /p2p_multi_point/state std_msgs/msg/String --once" \
+      2>/dev/null || true
+  )"
+  awk -F': ' '
+    $1 == "data" {
+      gsub(/^["'\''"]|["'\''"]$/, "", $2)
+      print $2
+      exit
+    }
+  ' <<<"${output}"
+}
+
+wait_for_mission_ready() {
+  local timeout_sec="${1:-120}"
+  local deadline=$((SECONDS + timeout_sec))
+  local state=""
+  log "Waiting for P2P mission READY (timeout ${timeout_sec}s)..."
+  while (( SECONDS < deadline )); do
+    state="$(read_mission_state)"
+    case "${state}" in
+      READY)
+        log "Mission ${mission_id} is localized and READY."
+        return 0
+        ;;
+      FAILED)
+        docker logs --tail 120 "${CONTAINER_NAME}" 2>&1 || true
+        die "P2P mission entered FAILED before arming."
+        ;;
+    esac
+    sleep 1
+  done
+  docker logs --tail 120 "${CONTAINER_NAME}" 2>&1 || true
+  die "Timed out waiting for P2P mission READY (last state=${state:-missing})."
+}
+
+arm_multi_mission() {
+  local expected="EXECUTE ${mission_id}"
+  local answer=""
+  [[ -t 0 ]] || \
+    die "multi-point execution requires an interactive terminal"
+  printf 'Type exactly `%s` to submit waypoint 1: ' "${expected}"
+  read -r answer
+  [[ "${answer}" == "${expected}" ]] || die "mission execution cancelled"
+
+  # READY is a live condition, not a promise. Recheck immediately before the
+  # service call so a brief localization gap cannot turn confirmation into a
+  # misleading rejected arm request.
+  wait_for_mission_ready 15
+  local response
+  response="$(
+    docker_ros \
+      "timeout 10 ros2 service call /p2p_multi_point/arm std_srvs/srv/Trigger '{}'" \
+      2>&1
+  )" || {
+    printf '%s\n' "${response}" >&2
+    die "P2P mission arm service call failed"
+  }
+  printf '%s\n' "${response}"
+  if grep -Eq 'success[=:][[:space:]]*(true|True)' <<<"${response}"; then
+    return 0
+  fi
+  local state
+  state="$(read_mission_state)"
+  if [[ "${state}" == "FAILED" ]] || grep -q 'state=FAILED' <<<"${response}"; then
+    die "P2P mission entered terminal FAILED before arm"
+  fi
+  log "Mission readiness changed before arm (state=${state:-missing}); waiting again."
+  return 1
+}
+
+monitor_multi_mission() {
+  local timeout_sec="${P2P_MISSION_MONITOR_TIMEOUT_SEC:-${RUN_SECONDS_VALUE:-3600}}"
+  [[ "${timeout_sec}" =~ ^[1-9][0-9]*$ ]] || \
+    die "P2P_MISSION_MONITOR_TIMEOUT_SEC must be a positive integer"
+  local deadline=$((SECONDS + timeout_sec))
+  local state=""
+  log "Monitoring P2P mission for up to ${timeout_sec}s..."
+  while (( SECONDS < deadline )); do
+    state="$(read_mission_state)"
+    case "${state}" in
+      COMPLETE)
+        log "P2P mission ${mission_id} completed."
+        return 0
+        ;;
+      FAILED)
+        docker logs --tail 120 "${CONTAINER_NAME}" 2>&1 || true
+        die "P2P mission ${mission_id} failed."
+        ;;
+    esac
+    sleep 1
+  done
+  docker_ros \
+    "timeout 10 ros2 service call /p2p_multi_point/cancel std_srvs/srv/Trigger '{}'" \
+    >/dev/null 2>&1 || true
+  die "P2P mission monitor timed out (last state=${state:-missing})."
 }
 
 start_live_adapter() {
@@ -626,7 +871,7 @@ print_status() {
   log "Map and command topics:"
   docker_ros "ros2 topic list | sort | grep -E 'map1/mapcloud|map1/mapground|sub_map|safe_cmd_vel|dry_run_cmd_vel|lidar_points|utlidar/robot_odom' || true" || true
 
-  if [[ "${mode}" == "live" ]]; then
+  if [[ "${live_mode}" == "true" ]]; then
     log "Live adapter log: ${ADAPTER_LOG_HOST}"
     if [[ -f "${ADAPTER_LOG_HOST}" ]]; then
       tail -n 20 "${ADAPTER_LOG_HOST}" || true
@@ -642,8 +887,13 @@ main() {
     return 0
   fi
 
-  if [[ "${mode}" == "live" ]]; then
+  validate_mission_request
+
+  if [[ "${live_mode}" == "true" ]]; then
     validate_live_request
+  fi
+  if [[ "${live_mode}" == "true" || "${multi_mode}" == "true" || \
+        "${record_mode}" == "true" ]]; then
     trap cleanup_live_runtime EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
@@ -675,7 +925,7 @@ main() {
     die "Timed out waiting for a non-empty /weighted_ground sample"
   wait_for_topic /dddmr_go2/safe_cmd_vel 90 || die "Timed out waiting for /dddmr_go2/safe_cmd_vel"
 
-  if [[ "${mode}" == "live" ]]; then
+  if [[ "${live_mode}" == "true" ]]; then
     # The bare-DDS Go2 endpoints can take longer than the navigation graph to
     # appear in a newly started container's ROS CLI discovery cache. Require
     # the continuously published state topics before enabling Sport output.
@@ -693,7 +943,21 @@ main() {
 
   print_status
 
-  if [[ -n "${RUN_SECONDS_VALUE}" ]]; then
+  if [[ "${record_mode}" == "true" ]]; then
+    run_waypoint_recorder
+    stop_nav_containers
+    runtime_started="false"
+  elif [[ "${multi_mode}" == "true" ]]; then
+    while true; do
+      wait_for_mission_ready 120
+      if arm_multi_mission; then
+        break
+      fi
+    done
+    monitor_multi_mission
+    stop_nav_containers
+    runtime_started="false"
+  elif [[ -n "${RUN_SECONDS_VALUE}" ]]; then
     log "RUN_SECONDS=${RUN_SECONDS_VALUE}; stopping after timeout..."
     sleep "${RUN_SECONDS_VALUE}"
     stop_nav_containers

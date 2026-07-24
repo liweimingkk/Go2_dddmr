@@ -8,6 +8,11 @@
   <arg name="start_localization" default="true"/>
   <arg name="start_move_base" default="true"/>
   <arg name="start_global_planner" default="$(var start_move_base)"/>
+  <arg name="start_clicked_to_goal" default="$(var start_move_base)"/>
+  <arg name="p2p_goals_enabled" default="true"/>
+  <arg name="start_p2p_mission" default="false"/>
+  <arg name="p2p_mission_file" default=""/>
+  <arg name="p2p_mission_auto_arm" default="false"/>
 
   <arg name="publish_static_tf" default="true"/>
   <arg name="lidar_x" default="0.1710"/>
@@ -147,6 +152,7 @@
   <!-- No-motion test path: DDDMR velocity output is intentionally isolated. -->
   <node pkg="p2p_move_base" exec="p2p_move_base_node" output="screen" respawn="false" if="$(var start_move_base)">
     <param from="$(var config_file)" />
+    <param name="goals_enabled" value="$(var p2p_goals_enabled)" type="bool"/>
     <param name="lidar.expected_sensor_time"
            value="$(var local_lidar_expected_sensor_time_sec)" type="float"/>
     <param name="omni_drive_simple.min_vel_y"
@@ -231,7 +237,15 @@
     <param name="use_sim_time" value="false"/>
   </node>
 
-  <node pkg="p2p_move_base" exec="clicked2goal.py" output="screen" respawn="false" if="$(var start_move_base)">
+  <node pkg="p2p_move_base" exec="clicked2goal.py" output="screen" respawn="false" if="$(var start_clicked_to_goal)">
+    <param name="use_sim_time" value="false"/>
+  </node>
+
+  <node pkg="dddmr_route_navigation" exec="p2p_mission_executor.py"
+        name="p2p_mission_executor" output="screen" respawn="false"
+        if="$(var start_p2p_mission)">
+    <param name="mission_file" value="$(var p2p_mission_file)" type="str"/>
+    <param name="auto_arm" value="$(var p2p_mission_auto_arm)" type="bool"/>
     <param name="use_sim_time" value="false"/>
   </node>
 
