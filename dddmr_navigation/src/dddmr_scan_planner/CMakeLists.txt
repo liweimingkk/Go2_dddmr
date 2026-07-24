@@ -107,6 +107,7 @@ if(BUILD_TESTING)
       ${CMAKE_CURRENT_SOURCE_DIR}/scripts/scan_mission_io.py
   )
   add_launch_test(test/test_scan_mission_executor.py TIMEOUT 30)
+  add_launch_test(test/test_scan_route_bridge.py TIMEOUT 30)
 endif()
 
 ament_export_include_directories(include)

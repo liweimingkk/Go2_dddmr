@@ -24,6 +24,7 @@ from rclpy.qos import (
 )
 from sensor_msgs.msg import PointCloud2
 from std_msgs.msg import Bool, String
+from std_srvs.srv import Trigger
 
 
 TEMPORARY = tempfile.TemporaryDirectory()
@@ -100,9 +101,11 @@ def generate_test_description():
                 "initial_pose_xy_tolerance": 0.50,
                 "initial_pose_z_tolerance": 0.25,
                 "initial_pose_yaw_tolerance": 0.35,
-                "input_timeout_sec": 1.0,
+                "planner_ready_timeout_sec": 5.0,
+                "prearm_stable_sec": 0.15,
+                "input_timeout_sec": 0.30,
                 "guard_failure_grace_sec": 0.20,
-                "auto_arm": True,
+                "auto_arm": False,
             }
         ],
         output="screen",
@@ -150,6 +153,9 @@ class TestScanMissionExecutor(unittest.TestCase):
         map_pub = node.create_publisher(
             PointCloud2, "/map1/mapground", transient_qos
         )
+        planner_ready_pub = node.create_publisher(
+            PointCloud2, "/weighted_ground", transient_qos
+        )
         status_pub = node.create_publisher(
             String, "/localization_status", transient_qos
         )
@@ -171,9 +177,15 @@ class TestScanMissionExecutor(unittest.TestCase):
         guard_pub = node.create_publisher(
             String, "/scan_planner/command_guard_status", 10
         )
+        arm_client = node.create_client(Trigger, "/scan_multi_point/arm")
 
         def publish_localization(
-            status, x=1.0, y=2.0, z=0.32, yaw=0.5
+            status,
+            x=1.0,
+            y=2.0,
+            z=0.32,
+            yaw=0.5,
+            publish_body=True,
         ):
             status_message = String()
             status_message.data = status
@@ -190,7 +202,8 @@ class TestScanMissionExecutor(unittest.TestCase):
             body.pose.pose.position.z = z
             body.pose.pose.orientation.z = math.sin(yaw / 2.0)
             body.pose.pose.orientation.w = math.cos(yaw / 2.0)
-            body_pub.publish(body)
+            if publish_body:
+                body_pub.publish(body)
             mcl_pose = PoseWithCovarianceStamped()
             mcl_pose.header.stamp = node.get_clock().now().to_msg()
             mcl_pose.header.frame_id = "map"
@@ -254,7 +267,86 @@ class TestScanMissionExecutor(unittest.TestCase):
             while time.monotonic() < transition_deadline:
                 publish_localization("LOCALIZING", 0.0, 0.0, 0.32, 0.0)
                 rclpy.spin_once(node, timeout_sec=0.02)
+            planner_wait_deadline = time.monotonic() + 0.40
+            while time.monotonic() < planner_wait_deadline:
+                publish_localization("TRACKING", 0.0, 0.0, 0.32, 0.0)
+                rclpy.spin_once(node, timeout_sec=0.02)
+            self.assertIn("WAITING_PLANNER", states)
+            self.assertNotIn("READY", states)
+            self.assertFalse(goals)
+
+            planner_ground = PointCloud2()
+            planner_ground.header.frame_id = "map"
+            planner_ground.width = 1
+            planner_ground.height = 1
+            planner_ready_pub.publish(planner_ground)
             deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline and (
+                not states or states[-1] != "READY"
+            ):
+                publish_localization("TRACKING", 0.0, 0.0, 0.32, 0.0)
+                rclpy.spin_once(node, timeout_sec=0.02)
+            self.assertTrue(states and states[-1] == "READY", states)
+            self.assertFalse(goals, "mission armed before operator request")
+
+            # A pre-arm SCAN body-pose gap is recoverable. It must leave READY
+            # without entering the terminal FAILED state.
+            stale_deadline = time.monotonic() + 0.55
+            while time.monotonic() < stale_deadline:
+                publish_localization(
+                    "TRACKING",
+                    0.0,
+                    0.0,
+                    0.32,
+                    0.0,
+                    publish_body=False,
+                )
+                rclpy.spin_once(node, timeout_sec=0.02)
+            self.assertTrue(states and states[-1] == "WAITING_INPUTS", states)
+            self.assertNotIn("FAILED", states)
+
+            self.assertTrue(
+                arm_client.wait_for_service(timeout_sec=2.0),
+                "mission arm service unavailable",
+            )
+            rejected_future = arm_client.call_async(Trigger.Request())
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline and not rejected_future.done():
+                publish_localization(
+                    "TRACKING",
+                    0.0,
+                    0.0,
+                    0.32,
+                    0.0,
+                    publish_body=False,
+                )
+                rclpy.spin_once(node, timeout_sec=0.02)
+            self.assertTrue(rejected_future.done())
+            self.assertFalse(rejected_future.result().success)
+            self.assertIn(
+                "SCAN body pose is stale",
+                rejected_future.result().message,
+            )
+
+            ready_count = states.count("READY")
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline and (
+                states.count("READY") == ready_count
+                or states[-1] != "READY"
+            ):
+                publish_localization("TRACKING", 0.0, 0.0, 0.32, 0.0)
+                rclpy.spin_once(node, timeout_sec=0.02)
+            self.assertGreater(states.count("READY"), ready_count)
+            self.assertEqual(states[-1], "READY")
+
+            arm_future = arm_client.call_async(Trigger.Request())
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline and not arm_future.done():
+                publish_localization("TRACKING", 0.0, 0.0, 0.32, 0.0)
+                rclpy.spin_once(node, timeout_sec=0.02)
+            self.assertTrue(arm_future.done(), "mission arm call timed out")
+            self.assertTrue(arm_future.result().success)
+            deadline = time.monotonic() + 2.0
             while time.monotonic() < deadline and not goals:
                 publish_localization("TRACKING", 0.0, 0.0, 0.32, 0.0)
                 rclpy.spin_once(node, timeout_sec=0.02)
@@ -300,5 +392,6 @@ class TestScanMissionExecutor(unittest.TestCase):
                 enabled_subscription,
             ):
                 node.destroy_subscription(subscription)
+            node.destroy_client(arm_client)
             node.destroy_node()
             rclpy.shutdown()

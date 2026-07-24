@@ -13,6 +13,7 @@
 #include <nav_msgs/msg/path.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
 #include <std_msgs/msg/bool.hpp>
 
 namespace dddmr_scan_planner
@@ -28,6 +29,8 @@ public:
   : Node("scan_route_bridge")
   {
     action_name_ = declare_parameter<std::string>("global_plan_action", "/get_plan");
+    planner_ready_topic_ =
+      declare_parameter<std::string>("planner_ready_topic", "/weighted_ground");
     map_frame_ = declare_parameter<std::string>("map_frame", "map");
     min_path_poses_ = declare_parameter<int>("min_path_poses", 2);
     body_pose_timeout_ = declare_parameter<double>("body_pose_timeout", 0.25);
@@ -35,7 +38,8 @@ public:
     min_path_point_separation_ =
       declare_parameter<double>("min_path_point_separation", 0.02);
     if (
-      action_name_.empty() || map_frame_.empty() || min_path_poses_ < 2 ||
+      action_name_.empty() || planner_ready_topic_.empty() ||
+      planner_ready_topic_.front() != '/' || map_frame_.empty() || min_path_poses_ < 2 ||
       !std::isfinite(body_pose_timeout_) || body_pose_timeout_ <= 0.0 ||
       !std::isfinite(start_exclusion_xy_) || start_exclusion_xy_ < 0.0 ||
       !std::isfinite(min_path_point_separation_) ||
@@ -58,14 +62,18 @@ public:
     body_pose_sub_ = create_subscription<nav_msgs::msg::Odometry>(
       "body_pose", rclcpp::SensorDataQoS(),
       std::bind(&ScanRouteBridge::bodyPoseCallback, this, std::placeholders::_1));
+    planner_ready_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
+      planner_ready_topic_, rclcpp::QoS(1).reliable().transient_local(),
+      std::bind(&ScanRouteBridge::plannerReadyCallback, this, std::placeholders::_1));
     action_client_ = rclcpp_action::create_client<GetPlan>(this, action_name_);
     retry_timer_ = create_wall_timer(
       std::chrono::milliseconds(100), std::bind(&ScanRouteBridge::trySendPendingGoal, this));
 
     publishRouteReady(false);
     RCLCPP_INFO(
-      get_logger(), "SCAN route bridge ready: goals -> %s -> initial_path",
-      action_name_.c_str());
+      get_logger(),
+      "SCAN route bridge ready: wait %s, goals -> %s -> initial_path",
+      planner_ready_topic_.c_str(), action_name_.c_str());
   }
 
 private:
@@ -154,6 +162,20 @@ private:
     body_pose_received_ = true;
   }
 
+  void plannerReadyCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg)
+  {
+    if (
+      msg->header.frame_id != map_frame_ ||
+      msg->width * msg->height == 0)
+    {
+      return;
+    }
+    if (!planner_ready_) {
+      RCLCPP_INFO(get_logger(), "Global planner weighted ground is ready");
+    }
+    planner_ready_ = true;
+  }
+
   void queueGoal(geometry_msgs::msg::PoseStamped goal)
   {
     if (!normalizeGoal(goal)) {
@@ -172,6 +194,12 @@ private:
   void trySendPendingGoal()
   {
     if (request_in_flight_ || !pending_goal_) {
+      return;
+    }
+    if (!planner_ready_) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Holding SCAN goal until global planner weighted ground is ready");
       return;
     }
     if (!bodyPoseIsFresh()) {
@@ -305,6 +333,7 @@ private:
   }
 
   std::string action_name_;
+  std::string planner_ready_topic_;
   std::string map_frame_;
   int min_path_poses_{2};
   double body_pose_timeout_{0.25};
@@ -313,6 +342,7 @@ private:
   uint64_t goal_generation_{0};
   bool request_in_flight_{false};
   bool body_pose_received_{false};
+  bool planner_ready_{false};
   std::optional<geometry_msgs::msg::PoseStamped> pending_goal_;
   geometry_msgs::msg::Point body_position_;
   rclcpp::Time body_pose_receipt_{0, 0, RCL_ROS_TIME};
@@ -323,6 +353,7 @@ private:
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_pose_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr clicked_point_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr body_pose_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr planner_ready_sub_;
   rclcpp::TimerBase::SharedPtr retry_timer_;
 };
 

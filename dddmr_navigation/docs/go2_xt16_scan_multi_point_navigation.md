@@ -64,7 +64,10 @@
 `/initial_3d_pose` 话题。收到地图地面后会先等待 MCL 完成地面树初始化；
 如果没有在新的 `/mcl_pose` 中确认到接近记录值的位置和朝向，则限频重发，
 不会把自动全局定位得到的其他位置误判为 READY。确认固定起点且定位重新达到
-`TRACKING/HEALTHY` 后，才进入 READY。随后必须输入：
+`TRACKING/HEALTHY` 后，还会等待全局规划器发布 `/weighted_ground`，并要求
+SCAN 机身位姿连续稳定。执行前若输入短暂中断，状态会退回
+`WAITING_INPUTS`，恢复后重新进入 READY，不会直接变成永久 FAILED。
+监督脚本在提交服务请求前会再次等待实时 READY。随后必须输入：
 
 ```text
 EXECUTE route_a

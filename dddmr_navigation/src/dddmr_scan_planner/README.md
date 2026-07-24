@@ -94,11 +94,15 @@ The executor loads the saved pose through `/initial_3d_pose`, the same topic as
 RViz `3D Pose Estimate`. It waits briefly after map-ground delivery so MCL can
 finish its ground tree, retries an unconfirmed seed, and requires a fresh
 `/mcl_pose` near the saved position and yaw before accepting post-seed
-`TRACKING` and `HEALTHY`. It remains disabled until the operator types
-`EXECUTE <mission_id>`. It executes each waypoint once, requires both SCAN's
-position/yaw tolerances and a stopped raw command for a continuous window,
-dwells for the waypoint's required `dwell_sec`, and then submits the next
-global-plan request.
+`TRACKING` and `HEALTHY`. Mission readiness also waits for the global
+planner's transient `/weighted_ground` output and a continuous window of fresh
+SCAN body poses. A pre-arm input gap returns to a waiting state instead of
+permanently failing; the supervised launcher rechecks READY before arming.
+Once armed, the original fail-closed behavior remains. The executor stays
+disabled until the operator types `EXECUTE <mission_id>`. It executes each
+waypoint once, requires both SCAN's position/yaw tolerances and a stopped raw
+command for a continuous window, dwells for the waypoint's required
+`dwell_sec`, and then submits the next global-plan request.
 
 The supported multi-point launcher isolates mission goals on
 `/scan_multi_point/goal_pose_3d` and disconnects manual RViz/clicked-point

@@ -584,7 +584,7 @@ read_mission_state() {
 wait_for_mission_ready() {
   local deadline state=""
   deadline=$((SECONDS + mission_ready_timeout_sec))
-  echo "Waiting for fixed initial pose and healthy TRACKING..."
+  echo "Waiting for fixed initial pose, global planner, and stable SCAN inputs..."
   while (( SECONDS < deadline )); do
     if [[ -n "${docker_pid}" ]] && ! kill -0 "${docker_pid}" >/dev/null 2>&1; then
       cat "${docker_log}" >&2 || true
@@ -613,10 +613,10 @@ wait_for_mission_ready() {
 }
 
 confirm_and_arm_mission() {
-  local expected answer response
+  local expected answer response state
   [[ -t 0 ]] || die "SCAN mission arm requires an interactive terminal"
   expected="EXECUTE ${scan_mission_id}"
-  printf '\nMission %s is localized and READY.\n' "${scan_mission_id}"
+  printf '\nMission %s is localized, planner-ready, and READY.\n' "${scan_mission_id}"
   printf 'Type exactly `%s` to submit waypoint 1: ' "${expected}"
   read -r answer
   [[ "${answer}" == "${expected}" ]] || die "mission arm cancelled"
@@ -628,8 +628,25 @@ confirm_and_arm_mission() {
     die "mission arm service failed"
   }
   printf '%s\n' "${response}"
-  grep -Eq 'success[=:][[:space:]]*(true|True)' <<<"${response}" || \
-    die "mission arm service rejected the request"
+  if grep -Eq 'success[=:][[:space:]]*(true|True)' <<<"${response}"; then
+    return 0
+  fi
+
+  state="$(read_mission_state)"
+  if [[ "${state}" == "FAILED" ]] || grep -q 'state=FAILED' <<<"${response}"; then
+    die "mission entered terminal FAILED before arm"
+  fi
+  echo "Mission readiness changed before arm (state=${state:-unknown}); waiting again." >&2
+  return 1
+}
+
+arm_mission_when_ready() {
+  while true; do
+    wait_for_mission_ready
+    if confirm_and_arm_mission; then
+      return 0
+    fi
+  done
 }
 
 monitor_mission() {
@@ -743,8 +760,7 @@ if [[ "${mode}" == "dry-run" ]]; then
     source_host_go2_ros
     start_docker_source "${docker_dry_run_command}"
     wait_for_cmd_publisher
-    wait_for_mission_ready
-    confirm_and_arm_mission
+    arm_mission_when_ready
     mission_result=0
     monitor_mission || mission_result=$?
     stop_mission_container
@@ -784,7 +800,7 @@ start_adapter
 live_runtime_started="true"
 
 if [[ -n "${scan_mission_file}" ]]; then
-  confirm_and_arm_mission
+  arm_mission_when_ready
   mission_result=0
   monitor_mission || mission_result=$?
   stop_mission_container

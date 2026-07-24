@@ -194,6 +194,7 @@ def main():
     assert require_finite(adapter, "transform_max_age_sec") <= 0.25
     assert require_finite(adapter, "transform_max_future_skew_sec") <= 0.05
     assert require_finite(route, "body_pose_timeout") <= 0.25
+    assert route["planner_ready_topic"] == "/weighted_ground"
     assert require_finite(route, "start_exclusion_xy") >= 0.10
     assert require_finite(route, "min_path_point_separation") > 0.0
     assert require_finite(planner_params, "grid_map.double_cylinder_radius") >= 0.26
@@ -272,6 +273,9 @@ def main():
     assert require_finite(mission, "initial_pose_xy_tolerance") <= 1.0
     assert require_finite(mission, "initial_pose_z_tolerance") <= 0.5
     assert require_finite(mission, "initial_pose_yaw_tolerance") <= 0.5
+    assert mission["planner_ready_topic"] == "/weighted_ground"
+    assert require_finite(mission, "planner_ready_timeout_sec") >= 30.0
+    assert require_finite(mission, "prearm_stable_sec") >= 1.0
     assert require_finite(mission, "input_timeout_sec") <= 0.75
     assert mission["auto_arm"] is False
     check_launch(launch_path)

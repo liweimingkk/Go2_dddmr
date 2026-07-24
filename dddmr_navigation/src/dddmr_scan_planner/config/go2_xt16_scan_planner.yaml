@@ -19,6 +19,9 @@ scan_input_adapter:
 scan_route_bridge:
   ros__parameters:
     global_plan_action: "/get_plan"
+    # The action server exists before its expensive static graph is usable.
+    # Keep mission goals queued until this transient planner output arrives.
+    planner_ready_topic: "/weighted_ground"
     map_frame: "map"
     min_path_poses: 2
     body_pose_timeout: 0.25
@@ -162,6 +165,10 @@ scan_mission_executor:
     initial_pose_xy_tolerance: 0.75
     initial_pose_z_tolerance: 0.35
     initial_pose_yaw_tolerance: 0.50
+    planner_ready_topic: "/weighted_ground"
+    planner_ready_timeout_sec: 60.0
+    # Do not expose a one-cycle READY while SCAN body pose is intermittent.
+    prearm_stable_sec: 1.0
     input_timeout_sec: 0.75
     guard_failure_grace_sec: 0.50
     zero_epsilon: 0.001

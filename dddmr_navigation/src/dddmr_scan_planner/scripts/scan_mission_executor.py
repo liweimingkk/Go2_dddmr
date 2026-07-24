@@ -36,6 +36,12 @@ from scan_mission_io import (
 
 class ScanMissionExecutor(Node):
     TERMINAL_STATES = {"COMPLETE", "FAILED"}
+    PREARM_STATES = {
+        "WAITING_PLANNER",
+        "WAITING_INPUTS",
+        "STABILIZING",
+        "READY",
+    }
 
     def __init__(self) -> None:
         super().__init__("scan_mission_executor")
@@ -95,6 +101,12 @@ class ScanMissionExecutor(Node):
         self.initial_pose_yaw_tolerance = self._positive_parameter(
             "initial_pose_yaw_tolerance", 0.50, maximum=math.pi
         )
+        self.planner_ready_timeout_sec = self._positive_parameter(
+            "planner_ready_timeout_sec", 60.0, maximum=300.0
+        )
+        self.prearm_stable_sec = self._positive_parameter(
+            "prearm_stable_sec", 1.0, maximum=10.0
+        )
         self.input_timeout_sec = self._positive_parameter(
             "input_timeout_sec", 0.75, maximum=5.0
         )
@@ -107,6 +119,20 @@ class ScanMissionExecutor(Node):
         self.body_height = self._positive_parameter(
             "body_height", 0.32, maximum=1.0
         )
+        self.planner_ready_topic = self.declare_parameter(
+            "planner_ready_topic", "/weighted_ground"
+        ).value
+        if (
+            not isinstance(self.planner_ready_topic, str)
+            or not self.planner_ready_topic.startswith("/")
+            or any(
+                character.isspace()
+                for character in self.planner_ready_topic
+            )
+        ):
+            raise MissionValidationError(
+                "planner_ready_topic must be a non-empty absolute ROS topic"
+            )
         self.auto_arm = bool(self.declare_parameter("auto_arm", False).value)
 
         self.state = "LOADING_INITIAL_POSE"
@@ -120,6 +146,7 @@ class ScanMissionExecutor(Node):
         self.localization_health: Optional[str] = None
         self.route_ready = False
         self.guard_status: Optional[str] = None
+        self.planner_ready = False
         self.map_ground_ready = False
         self.map_ground_ready_at = 0.0
         self.initial_pose_sent = False
@@ -128,6 +155,10 @@ class ScanMissionExecutor(Node):
         self.initial_pose_confirmed = False
         self.saw_post_seed_nontracking = False
         self.initial_deadline = time.monotonic() + self.initial_pose_timeout_sec
+        self.planner_deadline = (
+            time.monotonic() + self.planner_ready_timeout_sec
+        )
+        self.prearm_ready_since: Optional[float] = None
         self.goal_sent_at = 0.0
         self.goal_route_ready_at = 0.0
         self.route_not_ready_after_goal = False
@@ -189,6 +220,12 @@ class ScanMissionExecutor(Node):
         )
         self.map_ground_subscription = self.create_subscription(
             PointCloud2, "/map1/mapground", self.map_ground_callback, transient_qos
+        )
+        self.create_subscription(
+            PointCloud2,
+            self.planner_ready_topic,
+            self.planner_ready_callback,
+            transient_qos,
         )
         self.create_service(Trigger, "/scan_multi_point/arm", self.arm_callback)
         self.create_service(Trigger, "/scan_multi_point/cancel", self.cancel_callback)
@@ -266,10 +303,34 @@ class ScanMissionExecutor(Node):
                 self.destroy_subscription(self.map_ground_subscription)
                 self.map_ground_subscription = None
 
+    def planner_ready_callback(self, message: PointCloud2) -> None:
+        if (
+            message.header.frame_id == self.initial_pose.frame_id
+            and message.width * message.height > 0
+        ):
+            first_ready = not self.planner_ready
+            self.planner_ready = True
+            self.receipt["planner_ready"] = time.monotonic()
+            if first_ready:
+                self.get_logger().info(
+                    "Global planner weighted ground is ready"
+                )
+
     def arm_callback(self, _request, response):
-        if self.state != "READY":
+        now = time.monotonic()
+        if (
+            self.state != "READY"
+            or not self.planner_ready
+            or not self.localization_is_fresh_and_healthy(now)
+        ):
+            if self.state == "READY":
+                self.prearm_ready_since = None
+                self.update_prearm_readiness(now)
             response.success = False
-            response.message = f"mission is not READY (state={self.state})"
+            response.message = (
+                f"mission is not READY (state={self.state}; "
+                f"{self.prearm_wait_reason(now)})"
+            )
             return response
         self.start_mission()
         response.success = True
@@ -317,18 +378,89 @@ class ScanMissionExecutor(Node):
         )
         self.transition("FAILED")
 
-    def localization_is_fresh_and_healthy(self, now: float) -> bool:
+    def mcl_is_fresh_and_healthy(self, now: float) -> bool:
         return (
             self.localization_status == "TRACKING"
             and self.localization_health == "HEALTHY"
             and self.is_fresh("localization_status", now)
             and self.is_fresh("localization_health", now)
-            and self.is_fresh("body", now)
+        )
+
+    def localization_is_fresh_and_healthy(self, now: float) -> bool:
+        return self.mcl_is_fresh_and_healthy(now) and self.is_fresh(
+            "body", now
         )
 
     def is_fresh(self, name: str, now: float) -> bool:
         timestamp = self.receipt.get(name)
         return timestamp is not None and 0.0 <= now - timestamp <= self.input_timeout_sec
+
+    def input_age(self, name: str, now: float) -> float:
+        timestamp = self.receipt.get(name)
+        if timestamp is None:
+            return math.inf
+        return now - timestamp
+
+    def prearm_wait_reason(self, now: float) -> str:
+        if not self.planner_ready:
+            return "global planner weighted ground is not ready"
+        if (
+            self.localization_status != "TRACKING"
+            or not self.is_fresh("localization_status", now)
+        ):
+            return (
+                "localization status is not fresh TRACKING "
+                f"(value={self.localization_status or 'missing'}, "
+                f"age={self.input_age('localization_status', now):.3f}s)"
+            )
+        if (
+            self.localization_health != "HEALTHY"
+            or not self.is_fresh("localization_health", now)
+        ):
+            return (
+                "localization health is not fresh HEALTHY "
+                f"(value={self.localization_health or 'missing'}, "
+                f"age={self.input_age('localization_health', now):.3f}s)"
+            )
+        if not self.is_fresh("body", now):
+            return (
+                "SCAN body pose is stale "
+                f"(age={self.input_age('body', now):.3f}s)"
+            )
+        if self.prearm_ready_since is None:
+            return "pre-arm inputs have not started their stable window"
+        stable_for = now - self.prearm_ready_since
+        if stable_for < self.prearm_stable_sec:
+            return (
+                "pre-arm inputs are stabilizing "
+                f"({stable_for:.3f}/{self.prearm_stable_sec:.3f}s)"
+            )
+        return "all pre-arm inputs are ready"
+
+    def update_prearm_readiness(self, now: float) -> None:
+        if not self.planner_ready:
+            self.prearm_ready_since = None
+            if now > self.planner_deadline:
+                self.fail(
+                    "timed out waiting for global planner weighted ground"
+                )
+            else:
+                self.transition("WAITING_PLANNER")
+            return
+        if not self.localization_is_fresh_and_healthy(now):
+            self.prearm_ready_since = None
+            self.transition("WAITING_INPUTS")
+            return
+        if self.prearm_ready_since is None:
+            self.prearm_ready_since = now
+        if now - self.prearm_ready_since < self.prearm_stable_sec:
+            self.transition("STABILIZING")
+            return
+        was_ready = self.state == "READY"
+        self.enabled = False
+        self.transition("READY")
+        if self.auto_arm and not was_ready:
+            self.start_mission()
 
     def initial_pose_errors(self) -> tuple[float, float, float]:
         if self.mcl_pose is None:
@@ -544,12 +676,10 @@ class ScanMissionExecutor(Node):
             if (
                 self.saw_post_seed_nontracking
                 and self.initial_pose_confirmed
-                and self.localization_is_fresh_and_healthy(now)
+                and self.mcl_is_fresh_and_healthy(now)
             ):
                 self.enabled = False
-                self.transition("READY")
-                if self.auto_arm:
-                    self.start_mission()
+                self.update_prearm_readiness(now)
                 return
             if (
                 not self.initial_pose_confirmed
@@ -565,11 +695,8 @@ class ScanMissionExecutor(Node):
                 self.publish_initial_pose()
             return
 
-        if self.state == "READY":
-            if not self.localization_is_fresh_and_healthy(now):
-                self.fail("localization lost while waiting for mission arm")
-            else:
-                self.publish_state()
+        if self.state in self.PREARM_STATES:
+            self.update_prearm_readiness(now)
             return
 
         if not self.localization_is_fresh_and_healthy(now):
