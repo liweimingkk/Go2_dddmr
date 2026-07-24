@@ -78,7 +78,7 @@ dddmr_pg_map_server_manager:
 map1:
   ros__parameters:
     # Active synchronized XT16 + mouth-LiDAR map captured on 2026-07-23.
-    pose_graph_dir: "/root/dddmr_bags/go2_xt16_dddmr_mapping_20260723_143841_synced_map_2026_07_23_07_19_55"
+    pose_graph_dir: "/root/dddmr_bags/go2_xt16_mouth_mapping_20260723_153831_cleaned_20260724_130438"
     complete_map_voxel_size: 0.2
     complete_ground_voxel_size: 0.1
     merge_non_ground_surface_into_mapcloud: true
