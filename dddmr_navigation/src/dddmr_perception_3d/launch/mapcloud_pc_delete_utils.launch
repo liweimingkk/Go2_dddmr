@@ -2,9 +2,22 @@
 <launch>
   <arg name="map_topic" default="/map1/mapcloud"/>
   <arg name="ground_topic" default="/map1/mapground"/>
+  <arg name="start_map_server" default="false"/>
+  <arg name="map_config_file" default=""/>
   <arg
     name="rviz_config"
     default="$(find-pkg-share perception_3d)/rviz/mapcloud_pc_delete_utils.rviz"/>
+
+  <!-- Standalone, read-only map source used when no map server is running. -->
+  <node
+    pkg="dddmr_pg_map_server"
+    exec="dddmr_pg_map_server_node"
+    output="screen"
+    respawn="false"
+    if="$(var start_map_server)">
+    <param from="$(var map_config_file)"/>
+    <param name="use_sim_time" value="false"/>
+  </node>
 
   <!--
     This editor only subscribes to the map server products. The delete panel

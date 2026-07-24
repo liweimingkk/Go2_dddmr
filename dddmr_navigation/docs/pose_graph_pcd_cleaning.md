@@ -21,6 +21,10 @@ selection can be made directly against that cloud:
 ./dddmr_navigation/scripts/dddmr_docker_go2_xt16.sh mapcloud-editor
 ```
 
+If `/map1/mapcloud` has no publisher, this command starts only the pose-graph
+map server from `go2_xt16_navigation.yaml`. It does not start localization,
+planning, velocity output, or the Go2 Sport adapter.
+
 The optional positional arguments select other map-server topics:
 
 ```bash

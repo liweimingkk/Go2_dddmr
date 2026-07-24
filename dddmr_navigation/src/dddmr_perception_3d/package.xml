@@ -28,6 +28,7 @@
   <depend>angles</depend>
 
   <exec_depend>dddmr_rviz_default_plugins</exec_depend>
+  <exec_depend>dddmr_pg_map_server</exec_depend>
   <exec_depend>map_delete_panel</exec_depend>
   <exec_depend>mcl_3dl</exec_depend>
   <exec_depend>rviz2</exec_depend>

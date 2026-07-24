@@ -302,7 +302,10 @@ ros2 launch perception_3d pose_graph_pc_delete_utils.launch \\
     fi
     map_topic="${1:-/map1/mapcloud}"
     ground_topic="${2:-/map1/mapground}"
-    run_docker -it "${IMAGE}" bash -lc "${source_prefix}
+    # The map-server cloud may be local or arrive over any active DDS
+    # interface. Do not source the Go2 sensor-specific DDS binding here: its
+    # fail-closed fallback can name an interface that is absent on this host.
+    run_docker -it "${IMAGE}" bash -lc "${offline_source_prefix}
 set +u
 source \"\${DDDMR_INSTALL_BASE}/setup.bash\"
 set -u
@@ -310,10 +313,24 @@ ros2 pkg prefix map_delete_panel >/dev/null 2>&1 || {
   echo \"map_delete_panel is not installed; run build-navigation first.\" >&2
   exit 1
 }
+map_server_config=\"\$(ros2 pkg prefix dddmr_beginner_guide)/share/dddmr_beginner_guide/config/go2_xt16_navigation.yaml\"
+start_map_server=false
+topic_info=\"\$(ros2 topic info \"\$1\" 2>/dev/null || true)\"
+if ! grep -Eq '^Publisher count: [1-9][0-9]*$' <<<\"\${topic_info}\"; then
+  [[ -f \"\${map_server_config}\" ]] || {
+    echo \"Map-server config not found: \${map_server_config}\" >&2
+    exit 1
+  }
+  start_map_server=true
+fi
 echo \"MAPCLOUD_EDITOR_MAP_TOPIC=\$1\"
 echo \"MAPCLOUD_EDITOR_GROUND_TOPIC=\$2\"
+echo \"MAPCLOUD_EDITOR_START_MAP_SERVER=\${start_map_server}\"
+echo \"MAPCLOUD_EDITOR_MAP_CONFIG=\${map_server_config}\"
 ros2 launch perception_3d mapcloud_pc_delete_utils.launch \\
-  map_topic:=\"\$1\" ground_topic:=\"\$2\"" bash "${map_topic}" "${ground_topic}"
+  map_topic:=\"\$1\" ground_topic:=\"\$2\" \\
+  start_map_server:=\"\${start_map_server}\" \\
+  map_config_file:=\"\${map_server_config}\"" bash "${map_topic}" "${ground_topic}"
     ;;
 
   mapping)
