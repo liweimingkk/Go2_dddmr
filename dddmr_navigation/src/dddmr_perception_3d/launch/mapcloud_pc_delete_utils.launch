@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="map_topic" default="/map1/mapcloud"/>
+  <arg name="ground_topic" default="/map1/mapground"/>
+  <arg
+    name="rviz_config"
+    default="$(find-pkg-share perception_3d)/rviz/mapcloud_pc_delete_utils.rviz"/>
+
+  <!--
+    This editor only subscribes to the map server products. The delete panel
+    republishes an in-memory preview and exports a selection; it never writes
+    back to the source topics or pose-graph directory.
+  -->
+  <node
+    name="rviz2_mapcloud_pc_delete"
+    pkg="rviz2"
+    exec="rviz2"
+    args="-d $(var rviz_config)">
+    <remap from="mapcloud" to="$(var map_topic)"/>
+    <remap from="mapground" to="$(var ground_topic)"/>
+  </node>
+</launch>

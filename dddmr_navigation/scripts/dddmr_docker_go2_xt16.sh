@@ -15,6 +15,9 @@ Commands:
                Build the Go2 XT16 DDDMR navigation test chain inside Docker.
   pose-graph-editor <editor_map.pcd> <editor_ground.pcd>
                Open the no-motion RViz point selector for exported pose-graph clouds.
+  mapcloud-editor [map_topic ground_topic]
+               Open the no-motion RViz point selector below the live map-server cloud.
+               Topics default to /map1/mapcloud and /map1/mapground.
   navigation-dry-run
                Run Go2 XT16 DDDMR navigation with /cmd_vel remapped to dry-run topics.
   navigation-live-source
@@ -283,6 +286,34 @@ ros2 pkg prefix map_delete_panel >/dev/null 2>&1 || {
 ros2 launch perception_3d pose_graph_pc_delete_utils.launch \\
   map_dir:=\"\${editor_map}\" ground_dir:=\"\${editor_ground}\" \\
   map_down_sample:=0.10 ground_down_sample:=0.10" bash "$1" "$2"
+    ;;
+
+  mapcloud-editor)
+    if (( $# != 0 && $# != 2 )); then
+      echo "Usage: $0 mapcloud-editor [map_topic ground_topic]" >&2
+      exit 2
+    fi
+    if [[ -z "${DISPLAY:-}" ]]; then
+      echo "DISPLAY is empty; the RViz mapcloud editor requires a graphical session." >&2
+      exit 1
+    fi
+    if command -v xhost >/dev/null 2>&1; then
+      xhost +local:docker >/dev/null || true
+    fi
+    map_topic="${1:-/map1/mapcloud}"
+    ground_topic="${2:-/map1/mapground}"
+    run_docker -it "${IMAGE}" bash -lc "${source_prefix}
+set +u
+source \"\${DDDMR_INSTALL_BASE}/setup.bash\"
+set -u
+ros2 pkg prefix map_delete_panel >/dev/null 2>&1 || {
+  echo \"map_delete_panel is not installed; run build-navigation first.\" >&2
+  exit 1
+}
+echo \"MAPCLOUD_EDITOR_MAP_TOPIC=\$1\"
+echo \"MAPCLOUD_EDITOR_GROUND_TOPIC=\$2\"
+ros2 launch perception_3d mapcloud_pc_delete_utils.launch \\
+  map_topic:=\"\$1\" ground_topic:=\"\$2\"" bash "${map_topic}" "${ground_topic}"
     ;;
 
   mapping)

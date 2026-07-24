@@ -6,9 +6,50 @@ The upstream RViz PCD deleting tool edits one aggregate `map.pcd` and
 pose-graph adapter so a global RViz selection is applied to all contributing
 keyframes.
 
-This workflow is offline and publishes no velocity or Unitree request. Do not
-run it alongside navigation, because the editor uses the global `mapcloud` and
-`mapground` topic names.
+The exported-PCD workflow below is offline and publishes no velocity or
+Unitree request. Do not run `pose-graph-editor` alongside navigation, because
+its PCD publisher uses the global `mapcloud` and `mapground` topic names. The
+direct map-server editor in the next section is subscriber-only, but robot
+motion should still be disabled while selecting and reviewing map points.
+
+## Optional: select directly from `/map1/mapcloud`
+
+When the pose-graph map server is already publishing `/map1/mapcloud`, the
+selection can be made directly against that cloud:
+
+```bash
+./dddmr_navigation/scripts/dddmr_docker_go2_xt16.sh mapcloud-editor
+```
+
+The optional positional arguments select other map-server topics:
+
+```bash
+./dddmr_navigation/scripts/dddmr_docker_go2_xt16.sh mapcloud-editor \
+  /map1/mapcloud /map1/mapground
+```
+
+This entry opens below the map (`Pitch: -0.85`), hides the ground reference,
+and renders editable points at one pixel to reduce accidental selection.
+Activate `DeletePointCloud` or press `S`, zoom in, and use several small
+rectangles. Selected points appear in magenta. Press `Z` immediately if a
+rectangle includes unrelated points.
+
+The editor subscribes to the map-server topics but does not modify them or the
+source pose graph. `Save Modified PointCloud` exports a
+`<timestamp>_deleted_points.pcd`; use that selection with `inspect` and
+`clean-copy` below. Do not replace a pose-graph directory with the aggregate
+`remaining_map.pcd`.
+
+For a live map-server selection, pass the server's
+`complete_map_voxel_size` as `--selection-voxel-size`. The current Go2 XT16
+configuration uses `0.20`:
+
+```bash
+python3 dddmr_navigation/scripts/pose_graph_pcd_cleaner.py inspect \
+  --map-dir /path/to/source_pose_graph \
+  --selection-pcd /path/to/timestamp_deleted_points.pcd \
+  --selection-voxel-size 0.20
+```
 
 ## 1. Build the editor
 
