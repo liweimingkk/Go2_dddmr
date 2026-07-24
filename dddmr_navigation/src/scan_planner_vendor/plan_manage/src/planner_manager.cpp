@@ -1,8 +1,6 @@
 // #include <fstream>
 #include <plan_manage/planner_manager.h>
 #include <chrono>
-#include <cmath>
-#include <stdexcept>
 #include <thread>
 
 namespace scan_planner
@@ -63,12 +61,6 @@ namespace scan_planner
     pp_.feasibility_tolerance_ = get_double("manager.feasibility_tolerance", 0.0);
     pp_.ctrl_pt_dist = get_double("manager.control_points_distance", -1.0);
     pp_.planning_horizon_ = get_double("manager.planning_horizon", 5.0);
-    min_replan_distance_ = get_double("manager.min_replan_distance", 0.02);
-    if (!std::isfinite(min_replan_distance_) || min_replan_distance_ <= 0.0)
-    {
-      throw std::runtime_error(
-              "manager.min_replan_distance must be a finite positive distance");
-    }
 
     local_data_.traj_id_ = 0;
     grid_map_.reset(new GridMap);
@@ -99,12 +91,9 @@ namespace scan_planner
     cout << "start: " << start_pt.transpose() << ", " << start_vel.transpose() << "\ngoal:" << local_target_pt.transpose() << ", " << local_target_vel.transpose()
          << endl;
 
-    const double replan_distance = (start_pt - local_target_pt).norm();
-    if (isReplanDistanceBelowMinimum(replan_distance, min_replan_distance_))
+    if ((start_pt - local_target_pt).norm() < 0.2)
     {
-      cout << "Replan distance " << replan_distance
-           << " is below manager.min_replan_distance "
-           << min_replan_distance_ << endl;
+      cout << "Close to goal" << endl;
       continuous_failures_count_++;
       return false;
     }

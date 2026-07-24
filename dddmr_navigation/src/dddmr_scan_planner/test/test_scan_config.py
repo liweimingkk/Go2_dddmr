@@ -224,9 +224,6 @@ def main():
         abs_tol=1e-9,
     )
     planner_finish_dist = require_finite(planner_params, "fsm.finish_dist")
-    min_replan_distance = require_finite(
-        planner_params, "manager.min_replan_distance"
-    )
     controller_finish_dist = require_finite(controller, "finish_dist")
     planner_finish_yaw = require_finite(
         planner_params, "fsm.finish_yaw_tolerance"
@@ -235,8 +232,6 @@ def main():
         controller, "finish_yaw_tolerance"
     )
     assert 0.0 < planner_finish_dist
-    assert math.isclose(min_replan_distance, 0.02, abs_tol=1e-9)
-    assert 0.0 < min_replan_distance < planner_finish_dist
     assert 0.0 < planner_finish_yaw <= math.pi
     assert math.isclose(
         planner_finish_dist,

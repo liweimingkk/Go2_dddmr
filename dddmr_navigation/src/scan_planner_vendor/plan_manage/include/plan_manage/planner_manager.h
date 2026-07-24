@@ -7,7 +7,6 @@
 #include <bspline_opt/uniform_bspline.h>
 #include <plan_env/grid_map.h>
 #include <plan_manage/plan_container.hpp>
-#include <plan_manage/replan_distance_policy.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <traj_utils/planning_visualization.h>
 
@@ -36,7 +35,6 @@ namespace scan_planner
                                  const std::vector<Eigen::Vector3d> &waypoints, const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc);
 
     void initPlanModules(rclcpp::Node *node, PlanningVisualization::Ptr vis = nullptr);
-    double minReplanDistance() const { return min_replan_distance_; }
 
     PlanParameters pp_;
     LocalTrajData local_data_;
@@ -51,7 +49,6 @@ namespace scan_planner
     BsplineOptimizer::Ptr bspline_optimizer_rebound_;
 
     int continuous_failures_count_{0};
-    double min_replan_distance_{0.02};
 
     void updateTrajInfo(const UniformBspline &position_traj, const rclcpp::Time time_now);
     bool checkDynamicFeasibility(UniformBspline position_traj);

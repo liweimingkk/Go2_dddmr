@@ -101,9 +101,6 @@ scan_planner_node:
     manager.control_points_distance: 0.20
     manager.feasibility_tolerance: 0.30
     manager.planning_horizon: 5.0
-    # Must stay below fsm.finish_dist so every unfinished goal remains
-    # eligible for a short final replan.
-    manager.min_replan_distance: 0.02
 
     optimization.lambda_smooth: 1.0
     optimization.lambda_collision: 1.5

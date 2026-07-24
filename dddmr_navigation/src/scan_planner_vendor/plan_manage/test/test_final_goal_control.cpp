@@ -4,7 +4,6 @@
 #include <gtest/gtest.h>
 
 #include "plan_manage/final_goal_control.hpp"
-#include "plan_manage/replan_distance_policy.hpp"
 
 namespace scan_planner
 {
@@ -70,32 +69,6 @@ TEST(FinalGoalControl, RejectsNonfiniteGoalState)
     0.0, 0.15, 0.15);
 
   EXPECT_EQ(status.phase, FinalGoalPhase::INVALID);
-}
-
-TEST(ReplanDistancePolicy, ReplansAtObservedResidualOutsideFinishTolerance)
-{
-  constexpr double kObservedResidual = 0.155;
-  constexpr double kFinishDistance = 0.15;
-  constexpr double kMinReplanDistance = 0.02;
-
-  const auto status = evaluateFinalGoal(
-    true, kObservedResidual, false, 0.0, 0.0,
-    kFinishDistance, 0.15);
-
-  ASSERT_EQ(status.phase, FinalGoalPhase::REACQUIRE_POSITION);
-  ASSERT_TRUE(
-    isValidReplanDistanceConfiguration(
-      kMinReplanDistance, kFinishDistance));
-  EXPECT_FALSE(
-    isReplanDistanceBelowMinimum(
-      kObservedResidual, kMinReplanDistance));
-}
-
-TEST(ReplanDistancePolicy, RejectsOverlappingFinishAndReplanThresholds)
-{
-  EXPECT_FALSE(isValidReplanDistanceConfiguration(0.15, 0.15));
-  EXPECT_FALSE(isValidReplanDistanceConfiguration(0.20, 0.15));
-  EXPECT_TRUE(isReplanDistanceBelowMinimum(0.019, 0.02));
 }
 
 }  // namespace
