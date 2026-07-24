@@ -31,7 +31,9 @@
 #include <p2p_move_base/p2p_global_plan_manager.h>
 namespace p2p_move_base
 {
-P2PGlobalPlanManager::P2PGlobalPlanManager(std::string name) : Node(name), name_(name), got_first_goal_(false){
+P2PGlobalPlanManager::P2PGlobalPlanManager(std::string name)
+  : Node(name), name_(name), is_planning_(false), got_first_goal_(false)
+{
   clock_ = this->get_clock();
 }
 
@@ -81,8 +83,11 @@ void P2PGlobalPlanManager::initial(){
 }
 
 void P2PGlobalPlanManager::resume(){
-  global_path_.poses.clear();
-  is_planning_ = false;
+  {
+    std::unique_lock<std::mutex> lock(access_);
+    global_path_.poses.clear();
+    is_planning_ = false;
+  }
   loop_timer_->reset();
   RCLCPP_INFO(this->get_logger(), "Global plan manager is resumed");
 }
@@ -134,6 +139,10 @@ void P2PGlobalPlanManager::queryThread(){
 void P2PGlobalPlanManager::global_planner_client_goal_response_callback(const rclcpp_action::ClientGoalHandle<dddmr_sys_core::action::GetPlan>::SharedPtr & goal_handle)
 {
   if (!goal_handle) {
+    {
+      std::unique_lock<std::mutex> lock(access_);
+      is_planning_ = false;
+    }
     if(global_plan_query_frequency_>2)
       RCLCPP_ERROR_THROTTLE(this->get_logger(), *clock_, 5000, "Goal was rejected by: %s", global_planner_action_name_.c_str());
     else
@@ -148,6 +157,7 @@ void P2PGlobalPlanManager::global_planner_client_goal_response_callback(const rc
 
 void P2PGlobalPlanManager::global_planner_client_result_callback(const rclcpp_action::ClientGoalHandle<dddmr_sys_core::action::GetPlan>::WrappedResult & result)
 {
+  std::unique_lock<std::mutex> lock(access_);
   switch (result.code) {
     case rclcpp_action::ResultCode::SUCCEEDED:
       //RCLCPP_INFO(this->get_logger(), "Global Planner ---> %s: Global plan is found", global_planner_action_name_.c_str());

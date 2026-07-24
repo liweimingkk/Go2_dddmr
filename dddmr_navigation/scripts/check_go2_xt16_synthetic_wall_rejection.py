@@ -102,6 +102,7 @@ def request_plan(
     goal_y: float,
     timeout: float,
     goal_z: float = 0.0,
+    action_name: str = "/get_plan",
 ) -> tuple[int, int]:
     request = GetPlan.Goal()
     request.goal.header.frame_id = "map"
@@ -115,15 +116,15 @@ def request_plan(
     send_future = client.send_goal_async(request)
     rclpy.spin_until_future_complete(node, send_future, timeout_sec=timeout)
     if not send_future.done() or send_future.result() is None:
-        raise RuntimeError("timed out sending /get_plan goal")
+        raise RuntimeError(f"timed out sending {action_name} goal")
     goal_handle = send_future.result()
     if not goal_handle.accepted:
-        raise RuntimeError("/get_plan rejected the test goal")
+        raise RuntimeError(f"{action_name} rejected the test goal")
 
     result_future = goal_handle.get_result_async()
     rclpy.spin_until_future_complete(node, result_future, timeout_sec=timeout)
     if not result_future.done() or result_future.result() is None:
-        raise RuntimeError("timed out waiting for /get_plan result")
+        raise RuntimeError(f"timed out waiting for {action_name} result")
     wrapped = result_future.result()
     return wrapped.status, len(wrapped.result.path.poses)
 
@@ -154,7 +155,26 @@ def main() -> int:
         default=0.0,
         help="Create a centered doorway and require the cross-wall plan to pass.",
     )
+    parser.add_argument(
+        "--dwa-handoff-refreshes",
+        type=int,
+        default=0,
+        help=(
+            "Also overload DWA recomputation at 1 kHz and require this many "
+            "same-goal /get_dwa_plan refresh results."
+        ),
+    )
+    parser.add_argument(
+        "--dwa-handoff-timeout",
+        type=float,
+        default=2.0,
+        help="Per-request timeout for the optional DWA action handoff check.",
+    )
     args = parser.parse_args()
+    if args.dwa_handoff_refreshes < 0:
+        parser.error("--dwa-handoff-refreshes must be non-negative")
+    if args.dwa_handoff_timeout <= 0.0:
+        parser.error("--dwa-handoff-timeout must be positive")
 
     ros2 = shutil.which("ros2")
     if ros2 is None:
@@ -174,18 +194,24 @@ def main() -> int:
     child_env["RCUTILS_LOGGING_SEVERITY"] = "WARN"
 
     output = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
+    planner_command = [
+        ros2,
+        "run",
+        "global_planner",
+        "global_planner_node",
+        "--ros-args",
+        "--params-file",
+        str(args.config),
+        "-p",
+        "map.traversed_stair_clearance.enabled:=false",
+    ]
+    if args.dwa_handoff_refreshes:
+        # Deliberately keep the recompute timer overdue. The action callback
+        # must still return snapshots instead of being starved by timer work.
+        planner_command.extend(["-p", "recompute_frequency:=1000.0"])
+
     process = subprocess.Popen(
-        [
-            ros2,
-            "run",
-            "global_planner",
-            "global_planner_node",
-            "--ros-args",
-            "--params-file",
-            str(args.config),
-            "-p",
-            "map.traversed_stair_clearance.enabled:=false",
-        ],
+        planner_command,
         env=child_env,
         stdout=output,
         stderr=subprocess.STDOUT,
@@ -210,6 +236,7 @@ def main() -> int:
     )
     sensor_pub = node.create_publisher(PointCloud2, "segmented_cloud_pure", sensor_qos)
     client = ActionClient(node, GetPlan, "/get_plan")
+    dwa_client = ActionClient(node, GetPlan, "/get_dwa_plan")
     broadcaster = StaticTransformBroadcaster(node)
 
     status = 1
@@ -277,6 +304,28 @@ def main() -> int:
                     f"status={blocked_status} poses={blocked_poses}"
                 )
 
+        max_dwa_handoff_sec = 0.0
+        if args.dwa_handoff_refreshes:
+            if not dwa_client.wait_for_server(timeout_sec=args.timeout):
+                raise RuntimeError("/get_dwa_plan action server did not start")
+            for refresh_index in range(args.dwa_handoff_refreshes + 1):
+                started = time.monotonic()
+                dwa_status, dwa_poses = request_plan(
+                    node,
+                    dwa_client,
+                    -1.2,
+                    0.8,
+                    args.dwa_handoff_timeout,
+                    action_name="/get_dwa_plan",
+                )
+                elapsed = time.monotonic() - started
+                max_dwa_handoff_sec = max(max_dwa_handoff_sec, elapsed)
+                if dwa_status != GoalStatus.STATUS_SUCCEEDED or dwa_poses == 0:
+                    raise RuntimeError(
+                        "DWA action handoff failed at refresh "
+                        f"{refresh_index}: status={dwa_status} poses={dwa_poses}"
+                    )
+
         print(f"same_side_status={same_status} same_side_poses={same_poses}")
         print(
             f"projected_status={projected_status} "
@@ -296,11 +345,18 @@ def main() -> int:
             )
         else:
             print("SYNTHETIC_WALL_REJECTION_STATUS=PASS")
+        if args.dwa_handoff_refreshes:
+            print(
+                "DWA_ACTION_HANDOFF_STATUS=PASS "
+                f"refreshes={args.dwa_handoff_refreshes} "
+                f"max_result_sec={max_dwa_handoff_sec:.3f}"
+            )
         status = 0
     except Exception as exc:  # The node log is printed below for diagnosis.
         print(f"SYNTHETIC_WALL_REJECTION_STATUS=FAIL: {exc}")
     finally:
         client.destroy()
+        dwa_client.destroy()
         node.destroy_node()
         rclpy.shutdown()
         process.stdout = output

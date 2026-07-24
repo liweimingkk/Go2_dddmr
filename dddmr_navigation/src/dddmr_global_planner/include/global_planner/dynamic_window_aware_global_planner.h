@@ -66,6 +66,7 @@
 #include <geometry_msgs/msg/point_stamped.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 
+#include <cstdint>
 #include <mutex>
 
 namespace global_planner
@@ -100,6 +101,7 @@ class DWA_GlobalPlanner : public rclcpp::Node {
       rclcpp_action::Server<dddmr_sys_core::action::GetPlan>::SharedPtr action_server_global_planner_;
 
       rclcpp::CallbackGroup::SharedPtr action_server_group_;
+      rclcpp::CallbackGroup::SharedPtr recompute_group_;
       
       rclcpp::Clock::SharedPtr clock_;
       rclcpp::TimerBase::SharedPtr threading_timer_;
@@ -120,6 +122,7 @@ class DWA_GlobalPlanner : public rclcpp::Node {
       double max_path_join_xy_;
       double max_path_join_z_;
       std::mutex path_mutex_;
+      std::uint64_t path_generation_{0};
       
       pcl::KdTreeFLANN<pcl::PointXYZ>::Ptr kdtree_global_path_; 
       pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_global_path_;

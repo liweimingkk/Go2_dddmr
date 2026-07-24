@@ -109,12 +109,14 @@ void DWA_GlobalPlanner::initial(const std::shared_ptr<perception_3d::Perception3
   pub_path_ = this->create_publisher<nav_msgs::msg::Path>("awared_global_path", 1);
 
   action_server_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  recompute_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   //@ Callback should be the last, because all parameters should be ready before cb
   rclcpp::SubscriptionOptions sub_options;
   sub_options.callback_group = action_server_group_;
 
   auto loop_time = std::chrono::milliseconds(int(1000/recompute_frequency_));
-  threading_timer_ = this->create_wall_timer(loop_time, std::bind(&DWA_GlobalPlanner::determineDWAPlan, this), action_server_group_);
+  threading_timer_ = this->create_wall_timer(
+    loop_time, std::bind(&DWA_GlobalPlanner::determineDWAPlan, this), recompute_group_);
   threading_timer_->cancel();
   //@Create action server
   this->action_server_global_planner_ = rclcpp_action::create_server<dddmr_sys_core::action::GetPlan>(
@@ -133,6 +135,7 @@ DWA_GlobalPlanner::~DWA_GlobalPlanner(){
 }
 
 bool DWA_GlobalPlanner::isNewGoal(){
+  std::lock_guard<std::mutex> path_lock(path_mutex_);
   if(new_goal_.pose.position.x==current_goal_.pose.position.x && 
       new_goal_.pose.position.y==current_goal_.pose.position.y && 
         new_goal_.pose.position.z==current_goal_.pose.position.z && 
@@ -170,42 +173,54 @@ void DWA_GlobalPlanner::makePlan(const std::shared_ptr<rclcpp_action::ServerGoal
   
   if(isNewGoal()){
     threading_timer_->cancel();
-    std::lock_guard<std::mutex> path_lock(path_mutex_);
     geometry_msgs::msg::PoseStamped start;
     perception_3d_ros_->getGlobalPose(start);
 
-    global_path_ = global_planner_->makeROSPlan(start, goal_handle->get_goal()->goal);
+    nav_msgs::msg::Path new_global_path =
+      global_planner_->makeROSPlan(start, goal_handle->get_goal()->goal);
     auto result = std::make_shared<dddmr_sys_core::action::GetPlan::Result>();
-    result->path = global_path_;
+    result->path = new_global_path;
 
-    if(global_path_.poses.empty()){
-      global_dwa_path_ = nav_msgs::msg::Path{};
-      pcl_global_path_->clear();
-      kdtree_global_path_.reset();
+    if(new_global_path.poses.empty()){
+      {
+        std::lock_guard<std::mutex> path_lock(path_mutex_);
+        ++path_generation_;
+        global_path_ = nav_msgs::msg::Path{};
+        global_dwa_path_ = nav_msgs::msg::Path{};
+        pcl_global_path_.reset(new pcl::PointCloud<pcl::PointXYZ>);
+        kdtree_global_path_.reset();
+      }
       goal_handle->abort(result);
     }
     else{
-      current_goal_ = new_goal_;
-      result->path = global_path_;
-      goal_handle->succeed(result);
-      
       //@move global plan to pcl
-      pcl_global_path_->points.clear();
-      for(auto it=global_path_.poses.begin(); it!=global_path_.poses.end(); it++){
+      pcl::PointCloud<pcl::PointXYZ>::Ptr new_pcl_global_path(
+        new pcl::PointCloud<pcl::PointXYZ>);
+      for(auto it=new_global_path.poses.begin(); it!=new_global_path.poses.end(); it++){
         pcl::PointXYZ pt;
         pt.x = (*it).pose.position.x; pt.y = (*it).pose.position.y; pt.z = (*it).pose.position.z;
-        pcl_global_path_->push_back(pt);
+        new_pcl_global_path->push_back(pt);
       }
       //@ generate kd-tree
-      kdtree_global_path_.reset(new pcl::KdTreeFLANN<pcl::PointXYZ>());
-      kdtree_global_path_->setInputCloud(pcl_global_path_); 
+      pcl::KdTreeFLANN<pcl::PointXYZ>::Ptr new_kdtree_global_path(
+        new pcl::KdTreeFLANN<pcl::PointXYZ>);
+      new_kdtree_global_path->setInputCloud(new_pcl_global_path);
 
-      // Until the first dynamic recomputation completes, the original global
-      // path remains a valid continuous fallback.
-      global_dwa_path_ = global_path_;
+      {
+        std::lock_guard<std::mutex> path_lock(path_mutex_);
+        ++path_generation_;
+        current_goal_ = new_goal_;
+        global_path_ = new_global_path;
+        pcl_global_path_ = std::move(new_pcl_global_path);
+        kdtree_global_path_ = std::move(new_kdtree_global_path);
+        // Until the first dynamic recomputation completes, the original global
+        // path remains a valid continuous fallback.
+        global_dwa_path_ = new_global_path;
+      }
+      goal_handle->succeed(result);
       threading_timer_->reset();
     }
-    pub_path_->publish(global_path_);
+    pub_path_->publish(new_global_path);
   }
   else{
     auto result = std::make_shared<dddmr_sys_core::action::GetPlan::Result>();
@@ -227,11 +242,28 @@ void DWA_GlobalPlanner::makePlan(const std::shared_ptr<rclcpp_action::ServerGoal
 
 void DWA_GlobalPlanner::determineDWAPlan(){
 
-  std::lock_guard<std::mutex> path_lock(path_mutex_);
-  if (!kdtree_global_path_ || !pcl_global_path_ || pcl_global_path_->empty() ||
-    global_path_.poses.empty())
+  nav_msgs::msg::Path reference_path;
+  pcl::KdTreeFLANN<pcl::PointXYZ>::Ptr reference_kdtree;
+  pcl::PointCloud<pcl::PointXYZ>::Ptr reference_cloud;
+  std::uint64_t generation = 0;
   {
-    global_dwa_path_.poses.clear();
+    // Action result requests only need this same short snapshot lock. Never
+    // hold it while perception or graph planning runs, otherwise an overrun
+    // recompute timer can starve /get_dwa_plan result delivery indefinitely.
+    std::lock_guard<std::mutex> path_lock(path_mutex_);
+    reference_path = global_path_;
+    reference_kdtree = kdtree_global_path_;
+    reference_cloud = pcl_global_path_;
+    generation = path_generation_;
+  }
+
+  if (!reference_kdtree || !reference_cloud || reference_cloud->empty() ||
+    reference_path.poses.empty())
+  {
+    std::lock_guard<std::mutex> path_lock(path_mutex_);
+    if (generation == path_generation_) {
+      global_dwa_path_.poses.clear();
+    }
     RCLCPP_ERROR_THROTTLE(
       this->get_logger(), *clock_, 1000,
       "Cannot recompute DWA path because the reference path is unavailable.");
@@ -244,12 +276,15 @@ void DWA_GlobalPlanner::determineDWAPlan(){
   start_pt.x = start.pose.position.x; start_pt.y = start.pose.position.y; start_pt.z = start.pose.position.z;
   std::vector<float> resultant_distances;
   std::vector<int> indices;
-  kdtree_global_path_->nearestKSearch(start_pt, 1, indices, resultant_distances);
+  reference_kdtree->nearestKSearch(start_pt, 1, indices, resultant_distances);
 
   if(indices.empty()){
-    global_dwa_path_ = nav_msgs::msg::Path{};
-    global_dwa_path_.header.frame_id = global_frame_;
-    global_dwa_path_.header.stamp = clock_->now();
+    std::lock_guard<std::mutex> path_lock(path_mutex_);
+    if (generation == path_generation_) {
+      global_dwa_path_ = nav_msgs::msg::Path{};
+      global_dwa_path_.header.frame_id = global_frame_;
+      global_dwa_path_.header.stamp = clock_->now();
+    }
     RCLCPP_ERROR_THROTTLE(
       this->get_logger(), *clock_, 1000,
       "Cannot find the robot on the reference path; publishing no DWA path.");
@@ -265,9 +300,9 @@ void DWA_GlobalPlanner::determineDWAPlan(){
 
     double accumulative_distance = 0.0;
     int pivot = indices[0];
-    pcl::PointXYZ last_point = pcl_global_path_->points[pivot];
-    while(accumulative_distance<look_ahead_distance_+look_ahead_step && pivot<pcl_global_path_->points.size()-1){
-      pcl::PointXYZ current_point = pcl_global_path_->points[pivot];
+    pcl::PointXYZ last_point = reference_cloud->points[pivot];
+    while(accumulative_distance<look_ahead_distance_+look_ahead_step && pivot<reference_cloud->points.size()-1){
+      pcl::PointXYZ current_point = reference_cloud->points[pivot];
       double dx = current_point.x - last_point.x;
       double dy = current_point.y - last_point.y;
       double dz = current_point.z - last_point.z;
@@ -276,12 +311,12 @@ void DWA_GlobalPlanner::determineDWAPlan(){
       pivot++;
     }
 
-    if(pivot>=pcl_global_path_->points.size()-1){
-      dwa_pivot = pcl_global_path_->points.size()-1;
+    if(pivot>=reference_cloud->points.size()-1){
+      dwa_pivot = reference_cloud->points.size()-1;
       if(recompute_frequency_>2.0)
-        RCLCPP_INFO_THROTTLE(this->get_logger(), *clock_, 5000, "DWA goal reach the global path end at: %.2f, %.2f, %.2f", pcl_global_path_->points[dwa_pivot].x, pcl_global_path_->points[dwa_pivot].y, pcl_global_path_->points[dwa_pivot].z);
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *clock_, 5000, "DWA goal reach the global path end at: %.2f, %.2f, %.2f", reference_cloud->points[dwa_pivot].x, reference_cloud->points[dwa_pivot].y, reference_cloud->points[dwa_pivot].z);
       else
-        RCLCPP_INFO(this->get_logger(), "DWA goal reach the global path end at: %.2f, %.2f, %.2f", pcl_global_path_->points[dwa_pivot].x, pcl_global_path_->points[dwa_pivot].y, pcl_global_path_->points[dwa_pivot].z);
+        RCLCPP_INFO(this->get_logger(), "DWA goal reach the global path end at: %.2f, %.2f, %.2f", reference_cloud->points[dwa_pivot].x, reference_cloud->points[dwa_pivot].y, reference_cloud->points[dwa_pivot].z);
       break;
     }
 
@@ -294,16 +329,16 @@ void DWA_GlobalPlanner::determineDWAPlan(){
     std::vector<int> pointIdxRadiusSearch;
     std::vector<float> pointRadiusSquaredDistance;
     pcl::PointXYZI ipt;
-    ipt.x = pcl_global_path_->points[pivot].x;
-    ipt.y = pcl_global_path_->points[pivot].y;
-    ipt.z = pcl_global_path_->points[pivot].z;
+    ipt.x = reference_cloud->points[pivot].x;
+    ipt.y = reference_cloud->points[pivot].y;
+    ipt.z = reference_cloud->points[pivot].z;
     perception_3d_ros_->getSharedDataPtr()->kdtree_ground_->radiusSearch(ipt, 0.25, pointIdxRadiusSearch, pointRadiusSquaredDistance);
     
     double inscribed_radius = perception_3d_ros_->getGlobalUtils()->getInscribedRadius();
     if(pointIdxRadiusSearch.empty()){
       look_ahead_step+=1.0;
       dwa_goal_clear = false;
-      RCLCPP_INFO_THROTTLE(this->get_logger(), *clock_, 1000,  "No ground is found for DWA goal at: %.2f, %.2f, %.2f", pcl_global_path_->points[pivot].x, pcl_global_path_->points[pivot].y, pcl_global_path_->points[pivot].z);
+      RCLCPP_INFO_THROTTLE(this->get_logger(), *clock_, 1000,  "No ground is found for DWA goal at: %.2f, %.2f, %.2f", reference_cloud->points[pivot].x, reference_cloud->points[pivot].y, reference_cloud->points[pivot].z);
     }
     else{
       for(auto it=pointIdxRadiusSearch.begin();it!=pointIdxRadiusSearch.end();it++){
@@ -313,7 +348,7 @@ void DWA_GlobalPlanner::determineDWAPlan(){
         if(dGraphValue<inscribed_radius){
           look_ahead_step+=1.0;
           dwa_goal_clear = false;
-          RCLCPP_INFO_THROTTLE(this->get_logger(), *clock_, 1000, "DWA goal is blocked at: %.2f, %.2f, %.2f", pcl_global_path_->points[pivot].x, pcl_global_path_->points[pivot].y, pcl_global_path_->points[pivot].z);
+          RCLCPP_INFO_THROTTLE(this->get_logger(), *clock_, 1000, "DWA goal is blocked at: %.2f, %.2f, %.2f", reference_cloud->points[pivot].x, reference_cloud->points[pivot].y, reference_cloud->points[pivot].z);
           break;
         }
         else{
@@ -326,28 +361,37 @@ void DWA_GlobalPlanner::determineDWAPlan(){
 
   geometry_msgs::msg::PoseStamped dwa_goal;
   dwa_goal.header.frame_id = global_frame_;
-  dwa_goal.pose.position.x = pcl_global_path_->points[dwa_pivot].x;
-  dwa_goal.pose.position.y = pcl_global_path_->points[dwa_pivot].y;
-  dwa_goal.pose.position.z = pcl_global_path_->points[dwa_pivot].z;
+  dwa_goal.pose.position.x = reference_cloud->points[dwa_pivot].x;
+  dwa_goal.pose.position.y = reference_cloud->points[dwa_pivot].y;
+  dwa_goal.pose.position.z = reference_cloud->points[dwa_pivot].z;
   
   RCLCPP_DEBUG(this->get_logger(), "DWA pivot: %d is at %.2f, %.2f, %.2f with start: %.2f, %.2f, %.2f", 
         dwa_pivot, dwa_goal.pose.position.x, dwa_goal.pose.position.y, dwa_goal.pose.position.z,
         start.pose.position.x, start.pose.position.y, start.pose.position.z);
 
+  // The graph planner takes its own ground-data locks. Release the direct
+  // perception snapshot lock first so a new-goal action and this recompute
+  // cannot acquire the two lock domains in opposite order.
+  lock.unlock();
   const nav_msgs::msg::Path connector =
     global_planner_->makeROSPlan(start, dwa_goal);
   nav_msgs::msg::Path stitched_path;
   std::string failure_reason;
   if (!stitchDwaPath(
-      connector, global_path_, static_cast<std::size_t>(dwa_pivot),
+      connector, reference_path, static_cast<std::size_t>(dwa_pivot),
       max_path_join_xy_, max_path_join_z_, stitched_path, &failure_reason))
   {
     // Fail closed. The old implementation appended the remote reference tail
     // even when connector planning failed, producing a path whose first point
     // was about three metres ahead of the robot at the meeting-room gate.
-    global_dwa_path_ = nav_msgs::msg::Path{};
-    global_dwa_path_.header.frame_id = global_frame_;
-    global_dwa_path_.header.stamp = clock_->now();
+    {
+      std::lock_guard<std::mutex> path_lock(path_mutex_);
+      if (generation == path_generation_) {
+        global_dwa_path_ = nav_msgs::msg::Path{};
+        global_dwa_path_.header.frame_id = global_frame_;
+        global_dwa_path_.header.stamp = clock_->now();
+      }
+    }
     RCLCPP_ERROR_THROTTLE(
       this->get_logger(), *clock_, 1000,
       "DWA connector rejected (%s); publishing no path instead of a remote tail. "
@@ -359,7 +403,17 @@ void DWA_GlobalPlanner::determineDWAPlan(){
       dwa_goal.pose.position.z);
     return;
   }
-  global_dwa_path_ = std::move(stitched_path);
+  {
+    std::lock_guard<std::mutex> path_lock(path_mutex_);
+    if (generation != path_generation_) {
+      RCLCPP_DEBUG(
+        this->get_logger(),
+        "Discarding DWA path computed for superseded generation %llu.",
+        static_cast<unsigned long long>(generation));
+      return;
+    }
+    global_dwa_path_ = std::move(stitched_path);
+  }
 }
 
 }
