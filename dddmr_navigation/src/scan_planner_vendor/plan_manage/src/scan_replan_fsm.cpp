@@ -76,6 +76,12 @@ namespace scan_planner
     visualization_.reset(new PlanningVisualization(node_));
     planner_manager_.reset(new SCANPlannerManager);
     planner_manager_->initPlanModules(node_, visualization_);
+    if (!isValidReplanDistanceConfiguration(
+        planner_manager_->minReplanDistance(), finish_dist_))
+    {
+      throw std::runtime_error(
+              "manager.min_replan_distance must be smaller than fsm.finish_dist");
+    }
 
     /* callback */
     exec_timer_ = node_->create_wall_timer(std::chrono::milliseconds(10),
