@@ -633,11 +633,16 @@ start_container() {
   local p2p_goals_enabled="true"
   local start_p2p_mission="false"
   local p2p_mission_file=""
+  local p2p_mission_launch_command=""
   if [[ "${multi_mode}" == "true" ]]; then
     start_clicked_to_goal="false"
     p2p_goals_enabled="false"
     start_p2p_mission="true"
     p2p_mission_file="${mission_file_container}"
+    # ROS 2 rejects an explicit empty `name:=` launch override. Append this
+    # argument only when a validated multi-point mission actually exists.
+    printf -v p2p_mission_launch_command \
+      'launch_args+=(%q)' "p2p_mission_file:=${p2p_mission_file}"
   elif [[ "${record_mode}" == "true" ]]; then
     start_clicked_to_goal="false"
     p2p_goals_enabled="false"
@@ -681,33 +686,36 @@ source /root/dddmr_navigation/scripts/setup_go2_dds_env.sh
 source /root/dddmr_navigation/${INSTALL_BASE_VALUE}/setup.bash
 set -u
 cd /root/dddmr_navigation
+launch_args=(
+  \"rviz:=${RVIZ_VALUE}\"
+  \"publish_static_tf:=${PUBLISH_STATIC_TF_VALUE}\"
+  \"odom_sync_enabled:=true\"
+  \"odom_sync_tolerance_sec:=${ODOM_SYNC_TOLERANCE_SEC_VALUE}\"
+  \"odom_sync_wait_timeout_sec:=${ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE}\"
+  \"odom_time_offset_sec:=${ODOM_TIME_OFFSET_SEC_VALUE}\"
+  \"local_lidar_expected_sensor_time_sec:=${LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC_VALUE}\"
+  \"omni_min_vel_y:=${OMNI_MIN_Y_VALUE}\"
+  \"omni_max_vel_y:=${MAX_Y_VALUE}\"
+  \"go2_nav_cmd_gate_max_x:=${MAX_X_VALUE}\"
+  \"go2_nav_cmd_gate_max_y:=${MAX_Y_VALUE}\"
+  \"sport_dry_run_max_x:=${MAX_X_VALUE}\"
+  \"sport_dry_run_max_y:=${MAX_Y_VALUE}\"
+  \"go2_sport_max_x:=${MAX_X_VALUE}\"
+  \"go2_sport_max_y:=${MAX_Y_VALUE}\"
+  \"go2_nav_cmd_gate_max_yaw:=${MAX_YAW_VALUE}\"
+  \"sport_dry_run_max_yaw:=${MAX_YAW_VALUE}\"
+  \"start_clicked_to_goal:=${start_clicked_to_goal}\"
+  \"p2p_goals_enabled:=${p2p_goals_enabled}\"
+  \"start_p2p_mission:=${start_p2p_mission}\"
+  \"start_sport_dry_run_adapter:=true\"
+  \"start_go2_sport_adapter:=false\"
+  \"go2_sport_enable_output:=false\"
+  \"go2_sport_allow_real_request_topic:=false\"
+  \"go2_sport_max_yaw:=${MAX_YAW_VALUE}\"
+)
+${p2p_mission_launch_command}
 exec ros2 launch dddmr_beginner_guide go2_xt16_navigation.launch \
-  rviz:=${RVIZ_VALUE} \
-  publish_static_tf:=${PUBLISH_STATIC_TF_VALUE} \
-  odom_sync_enabled:=true \
-  odom_sync_tolerance_sec:=${ODOM_SYNC_TOLERANCE_SEC_VALUE} \
-  odom_sync_wait_timeout_sec:=${ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE} \
-  odom_time_offset_sec:=${ODOM_TIME_OFFSET_SEC_VALUE} \
-  local_lidar_expected_sensor_time_sec:=${LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC_VALUE} \
-  omni_min_vel_y:=${OMNI_MIN_Y_VALUE} \
-  omni_max_vel_y:=${MAX_Y_VALUE} \
-  go2_nav_cmd_gate_max_x:=${MAX_X_VALUE} \
-  go2_nav_cmd_gate_max_y:=${MAX_Y_VALUE} \
-  sport_dry_run_max_x:=${MAX_X_VALUE} \
-  sport_dry_run_max_y:=${MAX_Y_VALUE} \
-  go2_sport_max_x:=${MAX_X_VALUE} \
-  go2_sport_max_y:=${MAX_Y_VALUE} \
-  go2_nav_cmd_gate_max_yaw:=${MAX_YAW_VALUE} \
-  sport_dry_run_max_yaw:=${MAX_YAW_VALUE} \
-  start_clicked_to_goal:=${start_clicked_to_goal} \
-  p2p_goals_enabled:=${p2p_goals_enabled} \
-  start_p2p_mission:=${start_p2p_mission} \
-  p2p_mission_file:=${p2p_mission_file} \
-  start_sport_dry_run_adapter:=true \
-  start_go2_sport_adapter:=false \
-  go2_sport_enable_output:=false \
-  go2_sport_allow_real_request_topic:=false \
-  go2_sport_max_yaw:=${MAX_YAW_VALUE}" >/dev/null
+  \"\${launch_args[@]}\"" >/dev/null
 
   printf '%s\n' "${CONTAINER_NAME}" >/tmp/go2_xt16_nav_current_name.txt
 }
