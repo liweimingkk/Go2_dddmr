@@ -60,7 +60,11 @@
   --multi-dry-run bags/scan_missions/route_a.json
 ```
 
-程序加载固定初始位姿并等待定位重新进入 READY。随后必须输入：
+程序会把固定初始位姿发布到 RViz `3D Pose Estimate` 使用的同一
+`/initial_3d_pose` 话题。收到地图地面后会先等待 MCL 完成地面树初始化；
+如果没有在新的 `/mcl_pose` 中确认到接近记录值的位置和朝向，则限频重发，
+不会把自动全局定位得到的其他位置误判为 READY。确认固定起点且定位重新达到
+`TRACKING/HEALTHY` 后，才进入 READY。随后必须输入：
 
 ```text
 EXECUTE route_a

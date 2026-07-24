@@ -262,6 +262,11 @@ def main():
     )
     assert require_finite(mission, "arrival_stable_sec") >= 0.5
     assert require_finite(mission, "planning_timeout_sec") <= 10.0
+    assert require_finite(mission, "initial_pose_map_settle_sec") >= 1.0
+    assert require_finite(mission, "initial_pose_retry_sec") >= 1.0
+    assert require_finite(mission, "initial_pose_xy_tolerance") <= 1.0
+    assert require_finite(mission, "initial_pose_z_tolerance") <= 0.5
+    assert require_finite(mission, "initial_pose_yaw_tolerance") <= 0.5
     assert require_finite(mission, "input_timeout_sec") <= 0.75
     assert mission["auto_arm"] is False
     check_launch(launch_path)

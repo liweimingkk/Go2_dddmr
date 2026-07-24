@@ -95,6 +95,11 @@ def generate_test_description():
                 "planning_timeout_sec": 2.0,
                 "waypoint_timeout_sec": 5.0,
                 "initial_pose_timeout_sec": 5.0,
+                "initial_pose_map_settle_sec": 0.10,
+                "initial_pose_retry_sec": 0.30,
+                "initial_pose_xy_tolerance": 0.50,
+                "initial_pose_z_tolerance": 0.25,
+                "initial_pose_yaw_tolerance": 0.35,
                 "input_timeout_sec": 1.0,
                 "guard_failure_grace_sec": 0.20,
                 "auto_arm": True,
@@ -154,6 +159,9 @@ class TestScanMissionExecutor(unittest.TestCase):
         body_pub = node.create_publisher(
             Odometry, "/scan_planner/body_pose", qos_profile_sensor_data
         )
+        mcl_pose_pub = node.create_publisher(
+            PoseWithCovarianceStamped, "/mcl_pose", 10
+        )
         command_pub = node.create_publisher(
             Twist, "/scan_planner/raw_cmd_vel", 10
         )
@@ -183,6 +191,11 @@ class TestScanMissionExecutor(unittest.TestCase):
             body.pose.pose.orientation.z = math.sin(yaw / 2.0)
             body.pose.pose.orientation.w = math.cos(yaw / 2.0)
             body_pub.publish(body)
+            mcl_pose = PoseWithCovarianceStamped()
+            mcl_pose.header.stamp = node.get_clock().now().to_msg()
+            mcl_pose.header.frame_id = "map"
+            mcl_pose.pose.pose = body.pose.pose
+            mcl_pose_pub.publish(mcl_pose)
 
         def publish_route_cycle():
             not_ready = Bool()
@@ -214,15 +227,36 @@ class TestScanMissionExecutor(unittest.TestCase):
                 rclpy.spin_once(node, timeout_sec=0.05)
             self.assertTrue(initial_messages, "executor did not publish fixed initial pose")
 
-            # Prove the post-seed localization transition before TRACKING.
-            transition_deadline = time.monotonic() + 0.25
+            # A healthy but unrelated auto-global result must not arm the
+            # mission. With no matching /mcl_pose, the fixed seed is retried.
+            transition_deadline = time.monotonic() + 0.15
             while time.monotonic() < transition_deadline:
-                publish_localization("LOCALIZING")
+                publish_localization(
+                    "LOCALIZING", 12.92, 7.10, 0.21, 1.20
+                )
                 rclpy.spin_once(node, timeout_sec=0.02)
+            wrong_pose_deadline = time.monotonic() + 0.70
+            while time.monotonic() < wrong_pose_deadline:
+                publish_localization("TRACKING", 12.92, 7.10, 0.21, 1.20)
+                rclpy.spin_once(node, timeout_sec=0.02)
+            self.assertFalse(
+                goals,
+                f"wrong global-localization pose armed mission; states={states}",
+            )
+            self.assertGreaterEqual(
+                len(initial_messages),
+                2,
+                "executor did not retry an unconfirmed fixed initial pose",
+            )
 
+            # Prove the saved pose is observed after a post-seed transition.
+            transition_deadline = time.monotonic() + 0.20
+            while time.monotonic() < transition_deadline:
+                publish_localization("LOCALIZING", 0.0, 0.0, 0.32, 0.0)
+                rclpy.spin_once(node, timeout_sec=0.02)
             deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline and not goals:
-                publish_localization("TRACKING")
+                publish_localization("TRACKING", 0.0, 0.0, 0.32, 0.0)
                 rclpy.spin_once(node, timeout_sec=0.02)
             self.assertTrue(goals, f"executor did not submit waypoint; states={states}")
             self.assertAlmostEqual(goals[-1].pose.position.x, 1.0)

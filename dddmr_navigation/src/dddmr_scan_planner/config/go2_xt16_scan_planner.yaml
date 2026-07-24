@@ -151,6 +151,14 @@ scan_mission_executor:
     planning_timeout_sec: 10.0
     waypoint_timeout_sec: 120.0
     initial_pose_timeout_sec: 60.0
+    # /map1/mapground can arrive just before MCL finishes its ground KD-tree.
+    # Delay the RViz-equivalent seed, retry until it is observed on /mcl_pose,
+    # and never arm a mission from an unrelated global-localization result.
+    initial_pose_map_settle_sec: 1.0
+    initial_pose_retry_sec: 5.0
+    initial_pose_xy_tolerance: 0.75
+    initial_pose_z_tolerance: 0.35
+    initial_pose_yaw_tolerance: 0.50
     input_timeout_sec: 0.75
     guard_failure_grace_sec: 0.50
     zero_epsilon: 0.001

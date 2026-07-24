@@ -80,6 +80,21 @@ class ScanMissionExecutor(Node):
         self.initial_pose_timeout_sec = self._positive_parameter(
             "initial_pose_timeout_sec", 60.0, maximum=300.0
         )
+        self.initial_pose_map_settle_sec = self._positive_parameter(
+            "initial_pose_map_settle_sec", 1.0, maximum=30.0
+        )
+        self.initial_pose_retry_sec = self._positive_parameter(
+            "initial_pose_retry_sec", 5.0, maximum=60.0
+        )
+        self.initial_pose_xy_tolerance = self._positive_parameter(
+            "initial_pose_xy_tolerance", 0.75, maximum=5.0
+        )
+        self.initial_pose_z_tolerance = self._positive_parameter(
+            "initial_pose_z_tolerance", 0.35, maximum=2.0
+        )
+        self.initial_pose_yaw_tolerance = self._positive_parameter(
+            "initial_pose_yaw_tolerance", 0.50, maximum=math.pi
+        )
         self.input_timeout_sec = self._positive_parameter(
             "input_timeout_sec", 0.75, maximum=5.0
         )
@@ -99,13 +114,18 @@ class ScanMissionExecutor(Node):
         self.enabled = False
         self.current_index = -1
         self.body_pose: Optional[Odometry] = None
+        self.mcl_pose: Optional[PoseWithCovarianceStamped] = None
         self.raw_command: Optional[Twist] = None
         self.localization_status: Optional[str] = None
         self.localization_health: Optional[str] = None
         self.route_ready = False
         self.guard_status: Optional[str] = None
         self.map_ground_ready = False
+        self.map_ground_ready_at = 0.0
         self.initial_pose_sent = False
+        self.initial_pose_sent_at = 0.0
+        self.initial_pose_attempts = 0
+        self.initial_pose_confirmed = False
         self.saw_post_seed_nontracking = False
         self.initial_deadline = time.monotonic() + self.initial_pose_timeout_sec
         self.goal_sent_at = 0.0
@@ -140,6 +160,12 @@ class ScanMissionExecutor(Node):
             "/scan_planner/body_pose",
             self.body_callback,
             qos_profile_sensor_data,
+        )
+        self.create_subscription(
+            PoseWithCovarianceStamped,
+            "/mcl_pose",
+            self.mcl_pose_callback,
+            10,
         )
         self.create_subscription(
             Twist, "/scan_planner/raw_cmd_vel", self.raw_command_callback, 10
@@ -192,6 +218,11 @@ class ScanMissionExecutor(Node):
             self.body_pose = message
             self.receipt["body"] = time.monotonic()
 
+    def mcl_pose_callback(self, message: PoseWithCovarianceStamped) -> None:
+        if message.header.frame_id == self.initial_pose.frame_id:
+            self.mcl_pose = message
+            self.receipt["mcl_pose"] = time.monotonic()
+
     def raw_command_callback(self, message: Twist) -> None:
         self.raw_command = message
         self.receipt["raw_command"] = time.monotonic()
@@ -225,7 +256,12 @@ class ScanMissionExecutor(Node):
     def map_ground_callback(self, message: PointCloud2) -> None:
         if message.width * message.height > 0:
             self.map_ground_ready = True
-            self.receipt["map_ground"] = time.monotonic()
+            self.map_ground_ready_at = time.monotonic()
+            self.receipt["map_ground"] = self.map_ground_ready_at
+            self.get_logger().info(
+                "Map ground received; waiting %.2fs for MCL ground-tree setup"
+                % self.initial_pose_map_settle_sec
+            )
             if self.map_ground_subscription is not None:
                 self.destroy_subscription(self.map_ground_subscription)
                 self.map_ground_subscription = None
@@ -294,6 +330,49 @@ class ScanMissionExecutor(Node):
         timestamp = self.receipt.get(name)
         return timestamp is not None and 0.0 <= now - timestamp <= self.input_timeout_sec
 
+    def initial_pose_errors(self) -> tuple[float, float, float]:
+        if self.mcl_pose is None:
+            return (math.inf, math.inf, math.inf)
+        pose = self.mcl_pose.pose.pose
+        horizontal = math.hypot(
+            float(pose.position.x) - self.initial_pose.position[0],
+            float(pose.position.y) - self.initial_pose.position[1],
+        )
+        height = abs(float(pose.position.z) - self.initial_pose.position[2])
+        pose_yaw = yaw_from_quaternion(
+            (
+                pose.orientation.x,
+                pose.orientation.y,
+                pose.orientation.z,
+                pose.orientation.w,
+            )
+        )
+        initial_yaw = yaw_from_quaternion(self.initial_pose.orientation)
+        yaw_error = abs(normalize_angle(initial_yaw - pose_yaw))
+        return (horizontal, height, yaw_error)
+
+    def confirm_initial_pose(self, now: float) -> None:
+        if self.initial_pose_confirmed or not self.initial_pose_sent:
+            return
+        receipt = self.receipt.get("mcl_pose", 0.0)
+        if (
+            receipt <= self.initial_pose_sent_at
+            or not self.is_fresh("mcl_pose", now)
+        ):
+            return
+        horizontal, height, yaw_error = self.initial_pose_errors()
+        if (
+            horizontal <= self.initial_pose_xy_tolerance
+            and height <= self.initial_pose_z_tolerance
+            and yaw_error <= self.initial_pose_yaw_tolerance
+        ):
+            self.initial_pose_confirmed = True
+            self.get_logger().info(
+                "MCL accepted fixed initial pose "
+                "(xy_error=%.3f z_error=%.3f yaw_error=%.3f)"
+                % (horizontal, height, yaw_error)
+            )
+
     def publish_initial_pose(self) -> None:
         message = PoseWithCovarianceStamped()
         message.header.stamp = self.get_clock().now().to_msg()
@@ -306,12 +385,15 @@ class ScanMissionExecutor(Node):
         message.pose.pose.orientation.z = self.initial_pose.orientation[2]
         message.pose.pose.orientation.w = self.initial_pose.orientation[3]
         message.pose.covariance = list(self.initial_pose.covariance)
-        self.initial_pose_pub.publish(message)
+        self.initial_pose_attempts += 1
         self.initial_pose_sent = True
+        self.initial_pose_sent_at = time.monotonic()
+        self.initial_pose_confirmed = False
         self.saw_post_seed_nontracking = False
+        self.initial_pose_pub.publish(message)
         self.get_logger().info(
-            "Published fixed initial pose at [%.3f, %.3f, %.3f]"
-            % self.initial_pose.position
+            "Published fixed initial pose attempt %d at [%.3f, %.3f, %.3f]"
+            % (self.initial_pose_attempts, *self.initial_pose.position)
         )
         self.transition("LOCALIZING")
 
@@ -440,6 +522,8 @@ class ScanMissionExecutor(Node):
                 return
             if (
                 self.map_ground_ready
+                and now - self.map_ground_ready_at
+                >= self.initial_pose_map_settle_sec
                 and self.initial_pose_pub.get_subscription_count() > 0
             ):
                 self.publish_initial_pose()
@@ -447,16 +531,38 @@ class ScanMissionExecutor(Node):
 
         if self.state == "LOCALIZING":
             if now > self.initial_deadline:
-                self.fail("fixed initial pose did not produce healthy TRACKING")
+                if not self.initial_pose_confirmed:
+                    self.fail(
+                        "MCL never confirmed the saved fixed initial pose"
+                    )
+                else:
+                    self.fail(
+                        "fixed initial pose did not produce healthy TRACKING"
+                    )
                 return
+            self.confirm_initial_pose(now)
             if (
                 self.saw_post_seed_nontracking
+                and self.initial_pose_confirmed
                 and self.localization_is_fresh_and_healthy(now)
             ):
                 self.enabled = False
                 self.transition("READY")
                 if self.auto_arm:
                     self.start_mission()
+                return
+            if (
+                not self.initial_pose_confirmed
+                and now - self.initial_pose_sent_at
+                >= self.initial_pose_retry_sec
+            ):
+                horizontal, height, yaw_error = self.initial_pose_errors()
+                self.get_logger().warning(
+                    "Saved initial pose is not confirmed "
+                    "(xy_error=%.3f z_error=%.3f yaw_error=%.3f); retrying"
+                    % (horizontal, height, yaw_error)
+                )
+                self.publish_initial_pose()
             return
 
         if self.state == "READY":
