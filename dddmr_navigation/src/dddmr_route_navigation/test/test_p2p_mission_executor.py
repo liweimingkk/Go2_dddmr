@@ -172,7 +172,7 @@ class TestP2PMissionExecutor(unittest.TestCase):
             return response
 
         node.create_service(
-            SetBool, "/p2p_move_base_node/set_enabled", enable_callback
+            SetBool, "/p2p_move_base/set_enabled", enable_callback
         )
 
         def goal_callback(_request):

@@ -95,6 +95,17 @@ class P2PMissionExecutor(Node):
             "zero_epsilon", 0.001, maximum=0.05
         )
         self.auto_arm = bool(self.declare_parameter("auto_arm", False).value)
+        self.p2p_enable_service = self.declare_parameter(
+            "p2p_enable_service", "/p2p_move_base/set_enabled"
+        ).value
+        if (
+            not isinstance(self.p2p_enable_service, str)
+            or not self.p2p_enable_service.startswith("/")
+            or any(character.isspace() for character in self.p2p_enable_service)
+        ):
+            raise MissionValidationError(
+                "p2p_enable_service must be a non-empty absolute ROS service"
+            )
 
         self.state = "LOADING_INITIAL_POSE"
         self.failure_reason = ""
@@ -170,7 +181,7 @@ class P2PMissionExecutor(Node):
         )
         self.action_client = ActionClient(self, PToPMoveBase, "/p2p_move_base")
         self.enable_client = self.create_client(
-            SetBool, "/p2p_move_base_node/set_enabled"
+            SetBool, self.p2p_enable_service
         )
         self.create_service(Trigger, "/p2p_multi_point/arm", self.arm_callback)
         self.create_service(
