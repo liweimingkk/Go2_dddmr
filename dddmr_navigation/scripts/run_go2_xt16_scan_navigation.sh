@@ -31,6 +31,12 @@ Optional speed overrides:
   GO2_SPORT_MAX_Y=0.0
   GO2_SPORT_MAX_YAW=0.40
 
+Live odom/XT16 preflight:
+  At startup, select:
+    1  Quick: two consistent 3-second windows, no retry windows.
+    2  Full:  two consistent 8-second windows, up to four attempts.
+  Set GO2_ODOM_PREFLIGHT_MODE=quick or full to preselect the mode.
+
 Existing running Go2/DDDMR navigation containers are stopped and removed
 before this launcher starts a new navigation runtime.
 EOF
@@ -254,7 +260,53 @@ find_latest_probe_summary() {
   printf '%s\n' "${latest}"
 }
 
+configure_live_odom_preflight() {
+  local selection="${GO2_ODOM_PREFLIGHT_MODE:-}"
+
+  if [[ -n "${ODOM_TIME_OFFSET_SEC:-}" ]]; then
+    printf 'ODOM_PREFLIGHT_MODE=explicit-offset\n'
+    printf 'Using caller-provided ODOM_TIME_OFFSET_SEC; interactive preflight selection skipped.\n'
+    return
+  fi
+
+  if [[ -z "${selection}" ]]; then
+    [[ -t 0 ]] || \
+      die "live mode requires an interactive terminal or GO2_ODOM_PREFLIGHT_MODE=quick|full"
+    printf '\nSelect the read-only odom/XT16 time-sync preflight:\n'
+    printf '  1) Quick test: two consistent 3-second windows; fail closed on any problem.\n'
+    printf '  2) Full test: two consistent 8-second windows; retry up to four times.\n'
+    printf 'Enter 1 for the quick test; use 2 if the quick test reports a problem. [1/2] '
+    read -r selection
+  fi
+
+  case "${selection}" in
+    1|quick)
+      export GO2_ODOM_PREFLIGHT_MODE="quick"
+      export ODOM_OFFSET_MEASURE_SECONDS="3"
+      export ODOM_OFFSET_MEASURE_ATTEMPTS="2"
+      export ODOM_OFFSET_CONFIRMATIONS="2"
+      ;;
+    2|full)
+      export GO2_ODOM_PREFLIGHT_MODE="full"
+      export ODOM_OFFSET_MEASURE_SECONDS="8"
+      export ODOM_OFFSET_MEASURE_ATTEMPTS="4"
+      export ODOM_OFFSET_CONFIRMATIONS="2"
+      ;;
+    *)
+      die "select odom/XT16 preflight 1 (quick) or 2 (full)"
+      ;;
+  esac
+
+  printf 'ODOM_PREFLIGHT_MODE=%s\n' "${GO2_ODOM_PREFLIGHT_MODE}"
+  printf 'ODOM_PREFLIGHT_SETTINGS=window:%ss attempts:%s confirmations:%s\n' \
+    "${ODOM_OFFSET_MEASURE_SECONDS}" \
+    "${ODOM_OFFSET_MEASURE_ATTEMPTS}" \
+    "${ODOM_OFFSET_CONFIRMATIONS}"
+}
+
 if [[ "${mode}" == "--live" || "${mode}" == "--multi-live" ]]; then
+  configure_live_odom_preflight
+
   if [[ -z "${GO2_SPORT_PROBE_SUMMARY:-}" ]]; then
     GO2_SPORT_PROBE_SUMMARY="$(find_latest_probe_summary)"
   fi

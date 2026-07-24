@@ -82,6 +82,14 @@ terminal-yaw alignment.
   --multi-live bags/scan_missions/route_a.json
 ```
 
+Before live SCAN startup, the launcher asks for an odom/XT16 time-sync
+preflight mode. Option `1` is a fail-closed quick check with two consistent
+3-second windows and no retry window. If it reports unstable or unavailable
+timing, rerun and choose option `2`, which keeps the full two-confirmation,
+8-second-window check with up to four attempts. The supervisor allows 90
+seconds for this preflight plus Docker/ROS startup before requiring the
+`/dddmr_go2/safe_cmd_vel` publisher.
+
 The executor loads the saved pose through `/initial_3d_pose`, the same topic as
 RViz `3D Pose Estimate`. It waits briefly after map-ground delivery so MCL can
 finish its ground tree, retries an unconfirmed seed, and requires a fresh

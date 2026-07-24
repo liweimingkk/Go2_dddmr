@@ -46,6 +46,7 @@ Environment:
   GO2_MAX_CONTINUOUS_YAW_ARC_SEC=4.0
   GO2_NAV_DRY_RUN_COMMAND=navigation-dry-run
   GO2_NAV_DOCKER_COMMAND=navigation-live-source
+  GO2_NAV_CMD_PUBLISHER_TIMEOUT_SEC=90
   GO2_SCAN_MISSION_FILE_CONTAINER=/root/dddmr_bags/<mission.json>
   GO2_SCAN_MISSION_ID=<mission_id>
 
@@ -117,6 +118,7 @@ nav_request_id_base="$(date +%s)"
 docker_name="go2_xt16_nav_live_${stamp}"
 docker_dry_run_command="${GO2_NAV_DRY_RUN_COMMAND:-navigation-dry-run}"
 docker_live_command="${GO2_NAV_DOCKER_COMMAND:-navigation-live-source}"
+cmd_publisher_timeout_sec="${GO2_NAV_CMD_PUBLISHER_TIMEOUT_SEC:-90}"
 scan_mission_file="${GO2_SCAN_MISSION_FILE_CONTAINER:-}"
 scan_mission_id="${GO2_SCAN_MISSION_ID:-}"
 mission_state_topic="/scan_multi_point/state"
@@ -251,9 +253,22 @@ check_topic_type() {
 }
 
 wait_for_cmd_publisher() {
-  local deadline=$((SECONDS + 20))
-  local info
+  local deadline=$((SECONDS + cmd_publisher_timeout_sec))
+  local info=""
+  local docker_status=0
+
+  echo "Waiting up to ${cmd_publisher_timeout_sec}s for Docker velocity source publisher on ${CMD_TOPIC}..."
   while (( SECONDS < deadline )); do
+    if [[ -n "${docker_pid}" ]] && ! kill -0 "${docker_pid}" >/dev/null 2>&1; then
+      set +e
+      wait "${docker_pid}"
+      docker_status=$?
+      set -e
+      docker_pid=""
+      tail -n 120 "${docker_log}" >&2 || true
+      die "Docker navigation source exited with status ${docker_status} before publishing ${CMD_TOPIC}"
+    fi
+
     info="$(ros2 topic info "${CMD_TOPIC}" 2>&1 || true)"
     if [[ "${info}" == *"Type: geometry_msgs/msg/Twist"* ]] && \
        [[ "${info}" =~ Publisher\ count:\ [1-9][0-9]* ]]; then
@@ -264,7 +279,15 @@ wait_for_cmd_publisher() {
     sleep 1
   done
   echo "${info:-}" >&2
+  tail -n 120 "${docker_log}" >&2 || true
   die "timed out waiting for Docker velocity source publisher on ${CMD_TOPIC}"
+}
+
+validate_cmd_publisher_timeout() {
+  [[ "${cmd_publisher_timeout_sec}" =~ ^[1-9][0-9]*$ ]] || \
+    die "GO2_NAV_CMD_PUBLISHER_TIMEOUT_SEC must be a positive integer"
+  (( cmd_publisher_timeout_sec >= 30 && cmd_publisher_timeout_sec <= 300 )) || \
+    die "GO2_NAV_CMD_PUBLISHER_TIMEOUT_SEC must be within [30, 300]"
 }
 
 validate_probe_summary() {
@@ -688,6 +711,7 @@ start_request_echo() {
 
 assert_no_conflicting_runtime
 validate_lateral_limit
+validate_cmd_publisher_timeout
 
 case "${docker_dry_run_command}" in
   navigation-dry-run|scan-navigation-dry-run|outdoor-indoor-dry-run) ;;
