@@ -431,12 +431,18 @@ source \"\${DDDMR_INSTALL_BASE}/setup.bash\"
 set -u
 ros2 launch dddmr_scan_planner go2_xt16_scan_navigation.launch rviz:=${rviz} publish_static_tf:=${publish_static_tf} odom_sync_enabled:=true odom_sync_tolerance_sec:=${ODOM_SYNC_TOLERANCE_SEC_VALUE} odom_sync_wait_timeout_sec:=${ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE} odom_time_offset_sec:=${odom_time_offset_sec} scan_max_vel_x:=${GO2_NAV_MAX_X_VALUE} scan_max_vel_y:=${GO2_NAV_MAX_Y_VALUE} scan_max_vel_yaw:=${GO2_NAV_MAX_YAW_VALUE} scan_max_plan_vel:=${scan_max_translation} scan_max_translation:=${scan_max_translation} start_sport_dry_run_adapter:=${start_dry_adapter}${mission_launch_args} \"\$@\""
     if [[ "${command}" == "scan-navigation-record" ]]; then
+      record_log_name="go2_xt16_scan_record_$(date +%Y%m%d_%H%M%S)_launch.log"
+      record_log_host="${WS_ROOT}/run_logs/${record_log_name}"
+      record_log_container="/root/dddmr_navigation/run_logs/${record_log_name}"
+      mkdir -p -- "$(dirname -- "${record_log_host}")"
+      printf 'SCAN_RECORD_LAUNCH_LOG=%s\n' "${record_log_host}"
       run_docker -it "${IMAGE}" bash -lc "${source_prefix}
 set +u
 source \"\${DDDMR_INSTALL_BASE}/setup.bash\"
 set -u
 mission_file=\"\$1\"
 initial_pose_file=\"\$2\"
+launch_log=\"\$3\"
 launch_pid=\"\"
 cleanup_scan_recording() {
   if [[ -n \"\${launch_pid}\" ]]; then
@@ -456,11 +462,18 @@ ros2 launch dddmr_scan_planner go2_xt16_scan_navigation.launch \\
   scan_max_vel_yaw:=${GO2_NAV_MAX_YAW_VALUE} \\
   scan_max_plan_vel:=${scan_max_translation} \\
   scan_max_translation:=${scan_max_translation} \\
-  start_sport_dry_run_adapter:=true &
+  start_sport_dry_run_adapter:=true >\"\${launch_log}\" 2>&1 &
 launch_pid=\$!
+sleep 1
+if ! kill -0 \"\${launch_pid}\" >/dev/null 2>&1; then
+  echo \"SCAN recording launch exited during startup; recent log:\" >&2
+  tail -n 80 \"\${launch_log}\" >&2 || true
+  exit 1
+fi
 ros2 run dddmr_scan_planner scan_waypoint_recorder.py \\
   --mission-file \"\${mission_file}\" \\
-  --initial-pose-file \"\${initial_pose_file}\"" bash "$1" "$2"
+  --initial-pose-file \"\${initial_pose_file}\"" \
+        bash "$1" "$2" "${record_log_container}"
     elif [[ -n "${run_seconds}" ]]; then
       run_docker "${IMAGE}" bash -lc "${source_prefix}
 timeout -s TERM -k 5s ${run_seconds}s bash -lc '${launch_cmd}' bash \"\$@\"" bash "$@"
