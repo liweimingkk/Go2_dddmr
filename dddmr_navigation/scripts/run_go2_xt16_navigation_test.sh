@@ -34,7 +34,7 @@ Modes:
 
 Common environment overrides:
   MAX_X=0.50
-  MAX_Y=0.20             Dry-run default. Live defaults to 0.0 unless explicit.
+  MAX_Y=0.20             Default for dry-run and supervised live; 0 disables lateral motion.
   MAX_YAW=0.50
   RVIZ=true
   PUBLISH_STATIC_TF=true
@@ -158,10 +158,8 @@ MAX_X_VALUE="${MAX_X:-0.50}"
 MAX_YAW_VALUE="${MAX_YAW:-0.50}"
 if [[ -n "${MAX_Y+x}" ]]; then
   MAX_Y_VALUE="${MAX_Y}"
-elif [[ "${live_mode}" != "true" ]]; then
-  MAX_Y_VALUE="0.20"
 else
-  MAX_Y_VALUE="0.0"
+  MAX_Y_VALUE="0.20"
 fi
 OMNI_MIN_Y_VALUE=""
 RUN_SECONDS_VALUE="${RUN_SECONDS:-}"

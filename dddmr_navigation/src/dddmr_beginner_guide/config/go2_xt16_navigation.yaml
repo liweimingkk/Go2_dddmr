@@ -381,18 +381,18 @@ mpc_critics:
       plugin: "mpc_critics::RouteCorridorModel"
       trajectory_generator: omni_drive_simple
       # The global path is sampled at roughly 0.10 m. Keep every predicted body
-      # centre within a narrow hard corridor at doors and map edges. For a
-      # genuine body-frame lateral candidate only, permit enough offset to
-      # complete the 1.5 s / 0.20 m/s sidestep when fused static-map and
-      # live-lidar clearance proves a full Go2-radius envelope and nearby
-      # traversable ground. Missing clearance data fails back to the hard
-      # corridor. Forward/yaw arcs never receive this relaxation. Z includes
-      # the normal base_link-to-ground offset.
-      max_xy_distance: 0.20
+      # centre within a 0.25 m hard corridor at doors and map edges. For a
+      # genuine body-frame lateral candidate only, permit the full 1.5 s /
+      # 0.20 m/s sidestep plus one half path-sample of tolerance when fused
+      # static-map and live-lidar clearance proves a full Go2-radius envelope
+      # and nearby traversable ground. Missing clearance data fails back to the
+      # hard corridor. Forward/yaw arcs never receive this relaxation. Z
+      # includes the normal base_link-to-ground offset.
+      max_xy_distance: 0.25
       max_z_distance: 0.60
       adaptive_xy_enabled: true
       adaptive_requires_lateral_motion: true
-      adaptive_max_xy_distance: 0.32
+      adaptive_max_xy_distance: 0.35
       adaptive_min_obstacle_clearance: 0.52
       adaptive_max_ground_distance: 0.15
     stick_path:

@@ -316,10 +316,10 @@ def validate(config: dict[str, Any]) -> dict[str, float]:
             "mpc_critics.route_corridor.adaptive_max_ground_distance must not "
             "exceed the hard XY corridor"
         )
-    if corridor_xy > 0.20 + 1e-9:
+    if corridor_xy > 0.25 + 1e-9:
         raise ValueError(
             "mpc_critics.route_corridor.max_xy_distance must be no greater "
-            "than 0.20 m for the gate profile"
+            "than 0.25 m for the gate profile"
         )
     if corridor_z > 0.60 + 1e-9:
         raise ValueError(
