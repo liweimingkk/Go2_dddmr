@@ -49,6 +49,10 @@ def check_launch(launch_path):
     assert launch_args["scan_max_vel_y"]["default"] == "0.0"
     assert launch_args["scan_max_plan_vel"]["default"] == "0.50"
     assert launch_args["start_sport_dry_run_adapter"]["default"] == "true"
+    assert launch_args["start_scan_mission"]["default"] == "false"
+    assert launch_args["scan_mission_file"]["default"] == ""
+    assert launch_args["scan_goal_topic"]["default"] == "/goal_pose_3d"
+    assert launch_args["scan_clicked_point_topic"]["default"] == "/clicked_point"
 
     includes = root.findall("include")
     assert len(includes) == 1
@@ -81,10 +85,34 @@ def check_launch(launch_path):
         guard_remaps["planner_heartbeat"]["to"]
         == "/scan_planner/planning/data_display"
     )
+    assert (
+        guard_remaps["mission_enabled"]["to"]
+        == "/scan_multi_point/enabled"
+    )
+    guard_params = child_attributes(nodes["scan_command_guard"], "param", "name")
+    assert (
+        guard_params["require_mission_enabled"]["value"]
+        == "$(var start_scan_mission)"
+    )
     controller_remaps = child_attributes(
         nodes["closed_loop_controller"], "remap", "from"
     )
     assert controller_remaps["cmd_vel"]["to"] == "/scan_planner/raw_cmd_vel"
+
+    mission_node = nodes["scan_mission_executor"]
+    assert mission_node.attrib["if"] == "$(var start_scan_mission)"
+    assert mission_node.attrib["exec"] == "scan_mission_executor.py"
+    mission_params = child_attributes(mission_node, "param", "name")
+    assert mission_params["mission_file"]["value"] == "$(var scan_mission_file)"
+    assert mission_params["goal_topic"]["value"] == "$(var scan_goal_topic)"
+    route_remaps = child_attributes(
+        nodes["scan_route_bridge"], "remap", "from"
+    )
+    assert route_remaps["goal_pose_3d"]["to"] == "$(var scan_goal_topic)"
+    assert (
+        route_remaps["clicked_point"]["to"]
+        == "$(var scan_clicked_point_topic)"
+    )
 
 
 def check_rviz(rviz_path):
@@ -152,6 +180,10 @@ def main():
         config["scan_route_bridge"]["ros__parameters"],
         "scan_route_bridge.ros__parameters",
     )
+    mission = require_mapping(
+        config["scan_mission_executor"]["ros__parameters"],
+        "scan_mission_executor.ros__parameters",
+    )
 
     assert planner_params["fsm.navi_mode"] == 3
     assert planner_params["grid_map.frame_id"] == "map"
@@ -216,6 +248,22 @@ def main():
     assert require_finite(guard, "odom_timeout") <= 0.25
     assert require_finite(guard, "raw_command_timeout") <= 0.15
     assert require_finite(guard, "planner_timeout") <= 0.50
+    assert guard["require_mission_enabled"] is False
+    assert require_finite(guard, "mission_enabled_timeout") <= 0.30
+    assert math.isclose(
+        require_finite(mission, "position_tolerance"),
+        planner_finish_dist,
+        abs_tol=1e-9,
+    )
+    assert math.isclose(
+        require_finite(mission, "yaw_tolerance"),
+        planner_finish_yaw,
+        abs_tol=1e-9,
+    )
+    assert require_finite(mission, "arrival_stable_sec") >= 0.5
+    assert require_finite(mission, "planning_timeout_sec") <= 10.0
+    assert require_finite(mission, "input_timeout_sec") <= 0.75
+    assert mission["auto_arm"] is False
     check_launch(launch_path)
     check_rviz(rviz_path)
 

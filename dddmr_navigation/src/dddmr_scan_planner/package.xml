@@ -16,9 +16,11 @@
   <depend>nav_msgs</depend>
   <depend>rclcpp</depend>
   <depend>rclcpp_action</depend>
+  <exec_depend>rclpy</exec_depend>
   <depend>scan_planner_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
   <depend>tf2</depend>
   <depend>tf2_geometry_msgs</depend>
   <depend>tf2_ros</depend>
@@ -28,6 +30,8 @@
   <exec_depend>scan_planner</exec_depend>
 
   <test_depend>ament_cmake_gtest</test_depend>
+  <test_depend>launch_testing_ament_cmake</test_depend>
+  <test_depend>python3-pytest</test_depend>
   <test_depend>python3-yaml</test_depend>
 
   <export>

@@ -52,6 +52,10 @@ CommandGuardResult CommandGuardPolicy::evaluate(const CommandGuardInput & input)
 {
   CommandGuardResult result;
 
+  if (!input.mission_enabled) {
+    result.reason = "mission_disabled";
+    return result;
+  }
   if (!input.route_ready) {
     result.reason = "route_not_ready";
     return result;

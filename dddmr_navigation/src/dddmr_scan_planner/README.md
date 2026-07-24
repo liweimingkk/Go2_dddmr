@@ -59,6 +59,45 @@ export GO2_NAV_DOCKER_COMMAND=scan-navigation-live-source
 The live mode still requires all confirmations and probe evidence enforced by
 `run_go2_xt16_navigation_supervised_live.sh`.
 
+## Sequential waypoint missions
+
+The top-level SCAN launcher also supports a fail-closed mission layer. It does
+not replace SCAN path tracking: every waypoint is submitted to the existing
+DDDMR global planner, and SCAN tracks the returned path before performing the
+terminal-yaw alignment.
+
+```bash
+# First-time fixed-start calibration and waypoint recording. Set a correct
+# RViz 3D Pose Estimate, press i to save it, then record each waypoint.
+./scripts/run_go2_xt16_scan_navigation.sh \
+  --record bags/scan_missions/route_a.json \
+  --initial-pose bags/scan_missions/go2_start.json
+
+# Full mission state machine, no real Unitree Sport output.
+./scripts/run_go2_xt16_scan_navigation.sh \
+  --multi-dry-run bags/scan_missions/route_a.json
+
+# Supervised physical execution.
+./scripts/run_go2_xt16_scan_navigation.sh \
+  --multi-live bags/scan_missions/route_a.json
+```
+
+The executor loads the saved pose through `/initial_3d_pose`, waits for a
+post-seed `TRACKING` and `HEALTHY` localization state, and remains disabled
+until the operator types `EXECUTE <mission_id>`. It executes each waypoint
+once, requires both SCAN's position/yaw tolerances and a stopped raw command
+for a continuous window, dwells for the waypoint's required `dwell_sec`, and
+then submits the next global-plan request.
+
+The supported multi-point launcher isolates mission goals on
+`/scan_multi_point/goal_pose_3d` and disconnects manual RViz/clicked-point
+goals while the mission is active. Legacy single-goal modes keep their original
+goal topics.
+
+Mission files deliberately do not contain a map fingerprint. Their `map`
+coordinates are valid only while the operator keeps the selected map frame
+consistent with the recording session.
+
 ## Upstream
 
 The semantically unmodified planner-only ROS 2 source is under

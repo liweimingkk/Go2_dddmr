@@ -31,6 +31,7 @@ struct CommandGuardLimits
 
 struct CommandGuardInput
 {
+  bool mission_enabled{true};
   bool route_ready{false};
   bool raw_command_received{false};
   bool odom_received{false};

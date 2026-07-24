@@ -53,6 +53,18 @@ TEST(CommandGuardPolicy, StopsUntilRouteIsReady)
   EXPECT_DOUBLE_EQ(result.command.x, 0.0);
 }
 
+TEST(CommandGuardPolicy, StopsWhileMissionIsDisabled)
+{
+  const CommandGuardPolicy policy(CommandGuardLimits{});
+  auto input = validInput();
+  input.mission_enabled = false;
+  const auto result = policy.evaluate(input);
+  EXPECT_FALSE(result.allowed);
+  EXPECT_EQ(result.reason, "mission_disabled");
+  EXPECT_DOUBLE_EQ(result.command.x, 0.0);
+  EXPECT_DOUBLE_EQ(result.command.yaw, 0.0);
+}
+
 TEST(CommandGuardPolicy, StopsForEveryStaleSafetyInput)
 {
   const CommandGuardPolicy policy(CommandGuardLimits{});

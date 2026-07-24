@@ -46,6 +46,8 @@ Environment:
   GO2_MAX_CONTINUOUS_YAW_ARC_SEC=4.0
   GO2_NAV_DRY_RUN_COMMAND=navigation-dry-run
   GO2_NAV_DOCKER_COMMAND=navigation-live-source
+  GO2_SCAN_MISSION_FILE_CONTAINER=/root/dddmr_bags/<mission.json>
+  GO2_SCAN_MISSION_ID=<mission_id>
 
 Live runtime shape:
   Docker: DDDMR navigation/RViz publishes /dddmr_go2/dry_run_cmd_vel,
@@ -115,6 +117,11 @@ nav_request_id_base="$(date +%s)"
 docker_name="go2_xt16_nav_live_${stamp}"
 docker_dry_run_command="${GO2_NAV_DRY_RUN_COMMAND:-navigation-dry-run}"
 docker_live_command="${GO2_NAV_DOCKER_COMMAND:-navigation-live-source}"
+scan_mission_file="${GO2_SCAN_MISSION_FILE_CONTAINER:-}"
+scan_mission_id="${GO2_SCAN_MISSION_ID:-}"
+mission_state_topic="/scan_multi_point/state"
+mission_arm_service="/scan_multi_point/arm"
+mission_ready_timeout_sec="${GO2_SCAN_MISSION_READY_TIMEOUT_SEC:-90}"
 docker_log="${log_dir}/go2_xt16_nav_live_${stamp}_docker.log"
 adapter_log="${log_dir}/go2_xt16_nav_live_${stamp}_adapter.log"
 request_echo_log="${log_dir}/go2_xt16_nav_live_${stamp}_request_echo.log"
@@ -187,6 +194,8 @@ REQUIRE_MOTION_DECISION=${require_motion_decision}
 MOTION_ALLOWED_DECISIONS=${motion_allowed_decisions}
 ZERO_YAW_ONLY_WHEN_SHIM_DISALLOWED=${zero_yaw_only_when_shim_disallowed}
 MAX_CONTINUOUS_YAW_ARC_SEC=${max_continuous_yaw_arc_sec}
+SCAN_MISSION_FILE=${scan_mission_file}
+SCAN_MISSION_ID=${scan_mission_id}
 EOF
     echo "SUMMARY_LOG=${summary_log}"
     echo "DOCKER_LOG=${docker_log}"
@@ -512,6 +521,7 @@ PY
 }
 
 start_docker_source() {
+  local source_command="${1:-${docker_live_command}}"
   echo "DOCKER_NAME=${docker_name}"
   echo "DOCKER_LOG=${docker_log}"
   DDDMR_DOCKER_NAME="${docker_name}" \
@@ -520,13 +530,114 @@ start_docker_source() {
   GO2_NAV_MAX_YAW="${sport_max_yaw}" \
   RVIZ="${rviz}" \
   PUBLISH_STATIC_TF="${publish_static_tf}" \
-    "${DOCKER_WRAPPER}" "${docker_live_command}" \
+    "${DOCKER_WRAPPER}" "${source_command}" \
     >"${docker_log}" 2>&1 &
   docker_pid="$!"
   sleep 1
   if ! kill -0 "${docker_pid}" >/dev/null 2>&1; then
     cat "${docker_log}" >&2 || true
     die "Docker navigation source exited during startup"
+  fi
+}
+
+read_mission_state() {
+  local report state
+  report="$(
+    timeout 3 ros2 topic echo --no-daemon --spin-time 2 \
+      "${mission_state_topic}" std_msgs/msg/String --once 2>/dev/null || true
+  )"
+  state="$(
+    awk -F': ' '
+      $1 == "data" {
+        gsub(/^["'\'']|["'\'']$/, "", $2)
+        print $2
+        exit
+      }
+    ' <<<"${report}"
+  )"
+  printf '%s\n' "${state}"
+}
+
+wait_for_mission_ready() {
+  local deadline state=""
+  deadline=$((SECONDS + mission_ready_timeout_sec))
+  echo "Waiting for fixed initial pose and healthy TRACKING..."
+  while (( SECONDS < deadline )); do
+    if [[ -n "${docker_pid}" ]] && ! kill -0 "${docker_pid}" >/dev/null 2>&1; then
+      cat "${docker_log}" >&2 || true
+      die "Docker mission source exited before READY"
+    fi
+    state="$(read_mission_state)"
+    case "${state}" in
+      READY)
+        echo "SCAN_MISSION_STATE=READY"
+        return 0
+        ;;
+      FAILED)
+        cat "${docker_log}" >&2 || true
+        die "SCAN mission failed before arm"
+        ;;
+      "")
+        ;;
+      *)
+        echo "SCAN_MISSION_STATE=${state}"
+        ;;
+    esac
+    sleep 1
+  done
+  cat "${docker_log}" >&2 || true
+  die "timed out waiting for SCAN mission READY"
+}
+
+confirm_and_arm_mission() {
+  local expected answer response
+  [[ -t 0 ]] || die "SCAN mission arm requires an interactive terminal"
+  expected="EXECUTE ${scan_mission_id}"
+  printf '\nMission %s is localized and READY.\n' "${scan_mission_id}"
+  printf 'Type exactly `%s` to submit waypoint 1: ' "${expected}"
+  read -r answer
+  [[ "${answer}" == "${expected}" ]] || die "mission arm cancelled"
+  response="$(
+    timeout 10 ros2 service call \
+      "${mission_arm_service}" std_srvs/srv/Trigger '{}' 2>&1
+  )" || {
+    printf '%s\n' "${response}" >&2
+    die "mission arm service failed"
+  }
+  printf '%s\n' "${response}"
+  grep -Eq 'success[=:][[:space:]]*(true|True)' <<<"${response}" || \
+    die "mission arm service rejected the request"
+}
+
+monitor_mission() {
+  local state=""
+  while true; do
+    if [[ -n "${docker_pid}" ]] && ! kill -0 "${docker_pid}" >/dev/null 2>&1; then
+      cat "${docker_log}" >&2 || true
+      return 1
+    fi
+    state="$(read_mission_state)"
+    case "${state}" in
+      COMPLETE)
+        echo "RESULT: GO2_XT16_SCAN_MISSION_COMPLETE"
+        return 0
+        ;;
+      FAILED)
+        echo "RESULT: GO2_XT16_SCAN_MISSION_FAILED" >&2
+        cat "${docker_log}" >&2 || true
+        return 1
+        ;;
+    esac
+    sleep 0.5
+  done
+}
+
+stop_mission_container() {
+  if docker ps --format '{{.Names}}' 2>/dev/null | rg -qx "${docker_name}"; then
+    docker stop --time 5 "${docker_name}" >/dev/null
+  fi
+  if [[ -n "${docker_pid}" ]]; then
+    wait "${docker_pid}" >/dev/null 2>&1 || true
   fi
 }
 
@@ -587,7 +698,34 @@ case "${docker_live_command}" in
   *) die "unsupported GO2_NAV_DOCKER_COMMAND=${docker_live_command}" ;;
 esac
 
+if [[ -n "${scan_mission_file}" || -n "${scan_mission_id}" ]]; then
+  [[ -n "${scan_mission_file}" && -n "${scan_mission_id}" ]] || \
+    die "GO2_SCAN_MISSION_FILE_CONTAINER and GO2_SCAN_MISSION_ID must be set together"
+  [[ "${scan_mission_file}" =~ ^/root/dddmr_bags/[A-Za-z0-9._/-]+$ ]] || \
+    die "GO2_SCAN_MISSION_FILE_CONTAINER must stay under /root/dddmr_bags"
+  [[ "${scan_mission_id}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || \
+    die "GO2_SCAN_MISSION_ID is invalid"
+  [[ "${mission_ready_timeout_sec}" =~ ^[0-9]+$ ]] && \
+    (( mission_ready_timeout_sec >= 10 && mission_ready_timeout_sec <= 300 )) || \
+    die "GO2_SCAN_MISSION_READY_TIMEOUT_SEC must be an integer in [10, 300]"
+  [[ "${docker_dry_run_command}" == "scan-navigation-dry-run" ]] || \
+    die "SCAN missions require GO2_NAV_DRY_RUN_COMMAND=scan-navigation-dry-run"
+  [[ "${docker_live_command}" == "scan-navigation-live-source" ]] || \
+    die "SCAN missions require GO2_NAV_DOCKER_COMMAND=scan-navigation-live-source"
+fi
+
 if [[ "${mode}" == "dry-run" ]]; then
+  if [[ -n "${scan_mission_file}" ]]; then
+    source_host_go2_ros
+    start_docker_source "${docker_dry_run_command}"
+    wait_for_cmd_publisher
+    wait_for_mission_ready
+    confirm_and_arm_mission
+    mission_result=0
+    monitor_mission || mission_result=$?
+    stop_mission_container
+    exit "${mission_result}"
+  fi
   echo "Launching Docker Go2 XT16 navigation in dry-run RViz mode."
   exec env GO2_NAV_MAX_X="${sport_max_x}" GO2_NAV_MAX_Y="${sport_max_y}" \
     GO2_NAV_MAX_YAW="${sport_max_yaw}" \
@@ -612,12 +750,23 @@ check_topic_type "/lowstate" "unitree_go/msg/LowState"
 echo "LIVE NAVIGATION CAN MOVE THE GO2 AFTER RViz GOALS."
 echo "Launching Docker velocity source and host Sport adapter with request_id_base=${nav_request_id_base}."
 echo "Yaw arc shim: enabled=${enable_yaw_arc_shim} mode=${yaw_arc_shim_mode} allowed_decisions=${yaw_arc_allowed_decisions} decision_topic=${decision_topic}"
-start_docker_source
+start_docker_source "${docker_live_command}"
 wait_for_cmd_publisher
+if [[ -n "${scan_mission_file}" ]]; then
+  wait_for_mission_ready
+fi
 start_request_echo
 start_adapter
 live_runtime_started="true"
 
-echo "RESULT: GO2_XT16_MIXED_LIVE_NAV_RUNNING"
-echo "Click only a short, nearby, clear-space RViz goal. Press Ctrl-C here to stop and send StopMove."
-wait "${docker_pid}"
+if [[ -n "${scan_mission_file}" ]]; then
+  confirm_and_arm_mission
+  mission_result=0
+  monitor_mission || mission_result=$?
+  stop_mission_container
+  exit "${mission_result}"
+else
+  echo "RESULT: GO2_XT16_MIXED_LIVE_NAV_RUNNING"
+  echo "Click only a short, nearby, clear-space RViz goal. Press Ctrl-C here to stop and send StopMove."
+  wait "${docker_pid}"
+fi

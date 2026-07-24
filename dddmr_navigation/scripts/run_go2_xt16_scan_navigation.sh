@@ -6,12 +6,25 @@ usage() {
 Usage:
   ./scripts/run_go2_xt16_scan_navigation.sh --live
   ./scripts/run_go2_xt16_scan_navigation.sh --dry-run
+  ./scripts/run_go2_xt16_scan_navigation.sh --record MISSION.json \
+    --initial-pose INITIAL_POSE.json
+  ./scripts/run_go2_xt16_scan_navigation.sh --multi-dry-run MISSION.json
+  ./scripts/run_go2_xt16_scan_navigation.sh --multi-live MISSION.json
 
 One-command launcher for the Go2 XT16 SCAN-Planner integration.
 
   --live     Start the existing supervised live-navigation workflow after an
              interactive onsite-supervision confirmation.
   --dry-run  Start SCAN-Planner with real Unitree Sport output disabled.
+  --record   Start localization with real Sport output disabled. Save the
+             fixed initial pose and current localized positions interactively.
+  --multi-dry-run
+             Load the fixed initial pose and execute one sequential mission
+             through dry-run command topics.
+  --multi-live
+             Execute one sequential mission through the supervised Sport
+             adapter. Requires both normal live evidence and a mission-specific
+             `EXECUTE <mission_id>` confirmation after localization is ready.
 
 Optional speed overrides:
   GO2_SPORT_MAX_X=0.40
@@ -28,14 +41,36 @@ die() {
   exit 1
 }
 
-if (( $# != 1 )); then
+if (( $# == 0 )); then
   usage >&2
   exit 2
 fi
 
 mode="$1"
+mission_file=""
+initial_pose_file=""
 case "${mode}" in
-  --live|--dry-run) ;;
+  --live|--dry-run)
+    (( $# == 1 )) || {
+      usage >&2
+      exit 2
+    }
+    ;;
+  --multi-live|--multi-dry-run)
+    (( $# == 2 )) || {
+      usage >&2
+      exit 2
+    }
+    mission_file="$2"
+    ;;
+  --record)
+    (( $# == 4 )) && [[ "$3" == "--initial-pose" ]] || {
+      usage >&2
+      exit 2
+    }
+    mission_file="$2"
+    initial_pose_file="$4"
+    ;;
   -h|--help)
     usage
     exit 0
@@ -52,10 +87,36 @@ SUPERVISOR="${SCRIPT_DIR}/run_go2_xt16_navigation_supervised_live.sh"
 ADAPTER="${NAV_ROOT}/src/dddmr_beginner_guide/scripts/go2_sport_cmd_vel_adapter.py"
 LOG_DIR="${GO2_NAV_LOG_DIR:-${NAV_ROOT}/run_logs}"
 GO2_DDS_IP="${GO2_DDS_IP:-192.168.123.18}"
+BAGS_DIR="${DDDMR_BAGS_DIR:-${NAV_ROOT}/../bags}"
+MISSION_IO="${NAV_ROOT}/src/dddmr_scan_planner/scripts/scan_mission_io.py"
+DOCKER_WRAPPER="${SCRIPT_DIR}/dddmr_docker_go2_xt16.sh"
 
 [[ -x "${SUPERVISOR}" ]] || die "missing supervisor: ${SUPERVISOR}"
 [[ -f "${ADAPTER}" ]] || die "missing Sport adapter: ${ADAPTER}"
+[[ -x "${DOCKER_WRAPPER}" ]] || die "missing Docker wrapper: ${DOCKER_WRAPPER}"
+[[ -f "${MISSION_IO}" ]] || die "missing mission validator: ${MISSION_IO}"
 mkdir -p -- "${LOG_DIR}"
+
+BAGS_DIR="$(realpath -m -- "${BAGS_DIR}")"
+
+resolve_bags_path() {
+  local requested="$1"
+  local resolved
+  resolved="$(realpath -m -- "${requested}")"
+  if [[ "${resolved}" != "${BAGS_DIR}"/* && "${requested}" != /* ]]; then
+    requested="${requested#./}"
+    requested="${requested#bags/}"
+    resolved="$(realpath -m -- "${BAGS_DIR}/${requested}")"
+  fi
+  [[ "${resolved}" == "${BAGS_DIR}"/* ]] || \
+    die "mission data must stay under ${BAGS_DIR}: ${requested}"
+  printf '%s\n' "${resolved}"
+}
+
+container_bags_path() {
+  local host_path="$1"
+  printf '/root/dddmr_bags/%s\n' "${host_path#"${BAGS_DIR}"/}"
+}
 
 remove_conflicting_navigation_containers() {
   local container_list id name image remove_error attempt
@@ -141,6 +202,35 @@ export GO2_SPORT_MAX_YAW="${GO2_SPORT_MAX_YAW:-0.40}"
 export GO2_ENABLE_YAW_ARC_SHIM="${GO2_ENABLE_YAW_ARC_SHIM:-false}"
 export RVIZ="${RVIZ:-true}"
 export PUBLISH_STATIC_TF="${PUBLISH_STATIC_TF:-true}"
+unset GO2_SCAN_MISSION_FILE_CONTAINER GO2_SCAN_MISSION_ID
+
+mission_id=""
+mission_container=""
+initial_pose_container=""
+if [[ -n "${mission_file}" ]]; then
+  mission_file="$(resolve_bags_path "${mission_file}")"
+  mission_container="$(container_bags_path "${mission_file}")"
+fi
+if [[ -n "${initial_pose_file}" ]]; then
+  initial_pose_file="$(resolve_bags_path "${initial_pose_file}")"
+  initial_pose_container="$(container_bags_path "${initial_pose_file}")"
+fi
+
+if [[ "${mode}" == "--record" ]]; then
+  [[ "${mission_file}" != "${initial_pose_file}" ]] || \
+    die "mission and initial-pose files must be different"
+  mkdir -p -- "$(dirname -- "${mission_file}")" "$(dirname -- "${initial_pose_file}")"
+elif [[ "${mode}" == "--multi-live" || "${mode}" == "--multi-dry-run" ]]; then
+  [[ -f "${mission_file}" ]] || die "mission file does not exist: ${mission_file}"
+  /usr/bin/python3 "${MISSION_IO}" validate \
+    --mission "${mission_file}" --root "${BAGS_DIR}"
+  mission_id="$(
+    /usr/bin/python3 "${MISSION_IO}" mission-id \
+      --mission "${mission_file}" --root "${BAGS_DIR}"
+  )"
+  export GO2_SCAN_MISSION_FILE_CONTAINER="${mission_container}"
+  export GO2_SCAN_MISSION_ID="${mission_id}"
+fi
 
 find_latest_probe_summary() {
   local adapter_sha summary summary_sha summary_mtime
@@ -164,7 +254,7 @@ find_latest_probe_summary() {
   printf '%s\n' "${latest}"
 }
 
-if [[ "${mode}" == "--live" ]]; then
+if [[ "${mode}" == "--live" || "${mode}" == "--multi-live" ]]; then
   if [[ -z "${GO2_SPORT_PROBE_SUMMARY:-}" ]]; then
     GO2_SPORT_PROBE_SUMMARY="$(find_latest_probe_summary)"
   fi
@@ -187,9 +277,32 @@ printf 'SCAN_MODE=%s\n' "${mode#--}"
 printf 'GO2_NET_IFACE=%s\n' "${GO2_NET_IFACE}"
 printf 'SCAN_SPEED_LIMITS=x:%s y:%s yaw:%s\n' \
   "${GO2_SPORT_MAX_X}" "${GO2_SPORT_MAX_Y}" "${GO2_SPORT_MAX_YAW}"
-if [[ "${mode}" == "--live" ]]; then
+if [[ -n "${mission_file}" ]]; then
+  printf 'SCAN_MISSION_FILE=%s\n' "${mission_file}"
+fi
+if [[ -n "${mission_id}" ]]; then
+  printf 'SCAN_MISSION_ID=%s\n' "${mission_id}"
+fi
+if [[ "${mode}" == "--live" || "${mode}" == "--multi-live" ]]; then
   printf 'GO2_SPORT_PROBE_SUMMARY=%s\n' "${GO2_SPORT_PROBE_SUMMARY}"
 fi
 
 remove_conflicting_navigation_containers
-exec "${SUPERVISOR}" "${mode}"
+case "${mode}" in
+  --record)
+    exec env DDDMR_BAGS_DIR="${BAGS_DIR}" \
+      "${DOCKER_WRAPPER}" scan-navigation-record \
+      "${mission_container}" "${initial_pose_container}"
+    ;;
+  --multi-dry-run)
+    exec env DDDMR_BAGS_DIR="${BAGS_DIR}" \
+      "${SUPERVISOR}" --dry-run
+    ;;
+  --multi-live)
+    exec env DDDMR_BAGS_DIR="${BAGS_DIR}" \
+      "${SUPERVISOR}" --live
+    ;;
+  *)
+    exec "${SUPERVISOR}" "${mode}"
+    ;;
+esac

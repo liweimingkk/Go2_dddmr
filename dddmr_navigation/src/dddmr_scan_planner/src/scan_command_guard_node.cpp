@@ -43,6 +43,19 @@ public:
     limits.max_future_skew = declare_parameter<double>("max_future_skew", 0.05);
     limits.zero_epsilon = declare_parameter<double>("zero_epsilon", 0.001);
     policy_ = std::make_unique<CommandGuardPolicy>(limits);
+    require_mission_enabled_ =
+      declare_parameter<bool>("require_mission_enabled", false);
+    mission_enabled_timeout_ =
+      declare_parameter<double>("mission_enabled_timeout", 0.30);
+    if (
+      !std::isfinite(mission_enabled_timeout_) ||
+      mission_enabled_timeout_ <= 0.0 ||
+      mission_enabled_timeout_ > 1.0)
+    {
+      throw std::invalid_argument(
+              "mission_enabled_timeout must be finite and within (0, 1] second");
+    }
+    state_.mission_enabled = !require_mission_enabled_;
 
     const double publish_rate = declare_parameter<double>("publish_rate", 50.0);
     if (!std::isfinite(publish_rate) || publish_rate < 10.0 || publish_rate > 100.0) {
@@ -71,6 +84,12 @@ public:
     route_ready_sub_ = create_subscription<std_msgs::msg::Bool>(
       "route_ready", rclcpp::QoS(1).reliable().transient_local(),
       std::bind(&ScanCommandGuard::routeReadyCallback, this, std::placeholders::_1));
+    if (require_mission_enabled_) {
+      mission_enabled_sub_ = create_subscription<std_msgs::msg::Bool>(
+        "mission_enabled", rclcpp::QoS(1).reliable().transient_local(),
+        std::bind(
+          &ScanCommandGuard::missionEnabledCallback, this, std::placeholders::_1));
+    }
 
     const auto period = std::chrono::duration<double>(1.0 / publish_rate);
     publish_timer_ = create_wall_timer(
@@ -137,9 +156,25 @@ private:
     }
   }
 
+  void missionEnabledCallback(const std_msgs::msg::Bool::ConstSharedPtr msg)
+  {
+    mission_enabled_value_ = msg->data;
+    mission_enabled_receipt_ = now();
+    mission_enabled_received_ = true;
+  }
+
   void publishCycle()
   {
     const rclcpp::Time current_time = now();
+    if (require_mission_enabled_) {
+      const double mission_age = ageOrInfinity(
+        mission_enabled_received_, current_time, mission_enabled_receipt_);
+      state_.mission_enabled =
+        mission_enabled_value_ &&
+        std::isfinite(mission_age) &&
+        mission_age >= 0.0 &&
+        mission_age <= mission_enabled_timeout_;
+    }
     state_.raw_command_age = ageOrInfinity(
       state_.raw_command_received, current_time, raw_command_receipt_);
     state_.odom_age = ageOrInfinity(
@@ -171,7 +206,10 @@ private:
     if (result.reason != last_reason_) {
       if (result.allowed) {
         RCLCPP_INFO(get_logger(), "SCAN command guard enabled");
-      } else if (result.reason == "route_not_ready") {
+      } else if (
+        result.reason == "route_not_ready" ||
+        result.reason == "mission_disabled")
+      {
         RCLCPP_INFO(get_logger(), "SCAN command guard waiting for a valid route");
       } else {
         RCLCPP_WARN(
@@ -183,11 +221,16 @@ private:
 
   std::unique_ptr<CommandGuardPolicy> policy_;
   CommandGuardInput state_;
+  bool require_mission_enabled_{false};
+  bool mission_enabled_received_{false};
+  bool mission_enabled_value_{false};
+  double mission_enabled_timeout_{0.30};
   std::string last_reason_;
   rclcpp::Time raw_command_receipt_{0, 0, RCL_ROS_TIME};
   rclcpp::Time odom_receipt_{0, 0, RCL_ROS_TIME};
   rclcpp::Time cloud_receipt_{0, 0, RCL_ROS_TIME};
   rclcpp::Time planner_heartbeat_receipt_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time mission_enabled_receipt_{0, 0, RCL_ROS_TIME};
   rclcpp::Time odom_header_{0, 0, RCL_ROS_TIME};
   rclcpp::Time cloud_header_{0, 0, RCL_ROS_TIME};
 
@@ -201,6 +244,7 @@ private:
   rclcpp::Subscription<scan_planner_msgs::msg::DataDisp>::SharedPtr
     planner_heartbeat_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr route_ready_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr mission_enabled_sub_;
   rclcpp::TimerBase::SharedPtr publish_timer_;
 };
 

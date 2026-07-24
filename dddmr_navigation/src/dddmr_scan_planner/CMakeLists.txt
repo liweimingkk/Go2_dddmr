@@ -71,9 +71,19 @@ install(TARGETS
 
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
+install(PROGRAMS
+  scripts/scan_mission_executor.py
+  scripts/scan_waypoint_recorder.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+install(FILES
+  scripts/scan_mission_io.py
+  DESTINATION lib/${PROJECT_NAME}
+)
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  find_package(launch_testing_ament_cmake REQUIRED)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
   ament_add_gtest(test_command_guard_policy
@@ -90,6 +100,13 @@ if(BUILD_TESTING)
       ${CMAKE_CURRENT_SOURCE_DIR}/launch/go2_xt16_scan_navigation.launch
       ${CMAKE_CURRENT_SOURCE_DIR}/../dddmr_beginner_guide/rviz/go2_xt16_navigation.rviz
   )
+  add_test(
+    NAME test_scan_mission_io
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/test/test_scan_mission_io.py
+      ${CMAKE_CURRENT_SOURCE_DIR}/scripts/scan_mission_io.py
+  )
+  add_launch_test(test/test_scan_mission_executor.py TIMEOUT 30)
 endif()
 
 ament_export_include_directories(include)

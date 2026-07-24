@@ -30,6 +30,11 @@
   <arg name="scan_max_vel_yaw" default="0.50"/>
   <arg name="scan_max_plan_vel" default="0.50"/>
   <arg name="scan_max_translation" default="0.50"/>
+  <arg name="start_scan_mission" default="false"/>
+  <arg name="scan_mission_file" default=""/>
+  <arg name="scan_mission_auto_arm" default="false"/>
+  <arg name="scan_goal_topic" default="/goal_pose_3d"/>
+  <arg name="scan_clicked_point_topic" default="/clicked_point"/>
 
   <!-- Reuse DDDMR mapping, localization, static global planning, RViz, and
        command safety. Omit only the original P2PMoveBase/local planner. -->
@@ -79,8 +84,8 @@
   <node pkg="dddmr_scan_planner" exec="scan_route_bridge_node"
         name="scan_route_bridge" output="screen" respawn="false">
     <param from="$(var scan_config_file)"/>
-    <remap from="goal_pose_3d" to="/goal_pose_3d"/>
-    <remap from="clicked_point" to="/clicked_point"/>
+    <remap from="goal_pose_3d" to="$(var scan_goal_topic)"/>
+    <remap from="clicked_point" to="$(var scan_clicked_point_topic)"/>
     <remap from="body_pose" to="/scan_planner/body_pose"/>
     <remap from="initial_path" to="/scan_planner/initial_path"/>
     <remap from="route_ready" to="/scan_planner/route_ready"/>
@@ -125,6 +130,8 @@
     <param name="max_yaw" value="$(var scan_max_vel_yaw)" type="float"/>
     <param name="max_translation"
            value="$(var scan_max_translation)" type="float"/>
+    <param name="require_mission_enabled"
+           value="$(var start_scan_mission)" type="bool"/>
     <remap from="raw_cmd" to="/scan_planner/raw_cmd_vel"/>
     <remap from="body_pose" to="/scan_planner/body_pose"/>
     <remap from="cloud" to="/scan_planner/cloud"/>
@@ -132,8 +139,18 @@
     <remap from="planner_heartbeat"
            to="/scan_planner/planning/data_display"/>
     <remap from="route_ready" to="/scan_planner/route_ready"/>
+    <remap from="mission_enabled" to="/scan_multi_point/enabled"/>
     <remap from="guarded_cmd" to="/dddmr_go2/dry_run_cmd_vel"/>
     <remap from="decision" to="/dddmr_go2/p2p_decision"/>
     <remap from="status" to="/scan_planner/command_guard_status"/>
+  </node>
+
+  <node pkg="dddmr_scan_planner" exec="scan_mission_executor.py"
+        name="scan_mission_executor" output="screen" respawn="false"
+        if="$(var start_scan_mission)">
+    <param from="$(var scan_config_file)"/>
+    <param name="mission_file" value="$(var scan_mission_file)" type="str"/>
+    <param name="auto_arm" value="$(var scan_mission_auto_arm)" type="bool"/>
+    <param name="goal_topic" value="$(var scan_goal_topic)" type="str"/>
   </node>
 </launch>

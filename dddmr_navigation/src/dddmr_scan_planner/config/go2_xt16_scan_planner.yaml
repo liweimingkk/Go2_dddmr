@@ -123,6 +123,10 @@ closed_loop_controller:
 
 scan_command_guard:
   ros__parameters:
+    # Direct/single-goal launches remain compatible. The mission launch
+    # overrides this to true and then requires the executor's latched arm bit.
+    require_mission_enabled: false
+    mission_enabled_timeout: 0.30
     max_x: 0.50
     max_y: 0.20
     max_yaw: 0.50
@@ -136,3 +140,19 @@ scan_command_guard:
     cloud_header_max_age: 0.35
     max_future_skew: 0.05
     zero_epsilon: 0.001
+
+scan_mission_executor:
+  ros__parameters:
+    allowed_root: "/root/dddmr_bags"
+    position_tolerance: 0.15
+    height_tolerance: 0.20
+    yaw_tolerance: 0.15
+    arrival_stable_sec: 0.50
+    planning_timeout_sec: 10.0
+    waypoint_timeout_sec: 120.0
+    initial_pose_timeout_sec: 60.0
+    input_timeout_sec: 0.75
+    guard_failure_grace_sec: 0.50
+    zero_epsilon: 0.001
+    body_height: 0.32
+    auto_arm: false
