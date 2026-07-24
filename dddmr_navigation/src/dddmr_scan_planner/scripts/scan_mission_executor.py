@@ -12,7 +12,12 @@ from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
 from nav_msgs.msg import Odometry
 from rclpy.logging import get_logger
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import (
+    DurabilityPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+    qos_profile_sensor_data,
+)
 from sensor_msgs.msg import PointCloud2
 from std_msgs.msg import Bool, Int32, String
 from std_srvs.srv import Trigger
@@ -131,7 +136,10 @@ class ScanMissionExecutor(Node):
         )
 
         self.create_subscription(
-            Odometry, "/scan_planner/body_pose", self.body_callback, 10
+            Odometry,
+            "/scan_planner/body_pose",
+            self.body_callback,
+            qos_profile_sensor_data,
         )
         self.create_subscription(
             Twist, "/scan_planner/raw_cmd_vel", self.raw_command_callback, 10

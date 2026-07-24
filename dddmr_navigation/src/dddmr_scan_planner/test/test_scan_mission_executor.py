@@ -16,7 +16,12 @@ import rclpy
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import (
+    DurabilityPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+    qos_profile_sensor_data,
+)
 from sensor_msgs.msg import PointCloud2
 from std_msgs.msg import Bool, String
 
@@ -147,7 +152,7 @@ class TestScanMissionExecutor(unittest.TestCase):
             String, "/localization_health", transient_qos
         )
         body_pub = node.create_publisher(
-            Odometry, "/scan_planner/body_pose", 10
+            Odometry, "/scan_planner/body_pose", qos_profile_sensor_data
         )
         command_pub = node.create_publisher(
             Twist, "/scan_planner/raw_cmd_vel", 10

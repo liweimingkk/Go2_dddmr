@@ -17,7 +17,12 @@ import rclpy
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import (
+    DurabilityPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+    qos_profile_sensor_data,
+)
 from rclpy.utilities import remove_ros_args
 from std_msgs.msg import String
 
@@ -73,7 +78,10 @@ class ScanWaypointRecorder(Node):
         transient_qos.reliability = ReliabilityPolicy.RELIABLE
         transient_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
         self.create_subscription(
-            Odometry, "/scan_planner/body_pose", self.body_callback, 10
+            Odometry,
+            "/scan_planner/body_pose",
+            self.body_callback,
+            qos_profile_sensor_data,
         )
         self.create_subscription(
             PoseWithCovarianceStamped, "/mcl_pose", self.mcl_callback, 10
