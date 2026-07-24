@@ -8,6 +8,7 @@ import math
 import select
 import sys
 import termios
+import threading
 import time
 import tty
 from pathlib import Path
@@ -16,6 +17,7 @@ from typing import List, Optional
 import rclpy
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from nav_msgs.msg import Odometry
+from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import (
     DurabilityPolicy,
@@ -104,11 +106,11 @@ class ScanWaypointRecorder(Node):
             self.mcl_receipt = time.monotonic()
 
     def status_callback(self, message: String) -> None:
-        self.localization_status = message.data
+        self.localization_status = message.data.strip().upper()
         self.status_receipt = time.monotonic()
 
     def health_callback(self, message: String) -> None:
-        self.localization_health = message.data
+        self.localization_health = message.data.strip().upper()
         self.health_receipt = time.monotonic()
 
     def localization_ready(self, require_mcl: bool = False) -> bool:
@@ -122,10 +124,29 @@ class ScanWaypointRecorder(Node):
             and all(receipt > 0.0 and now - receipt <= STATUS_FRESHNESS_SEC for receipt in times)
         )
 
+    def readiness_summary(self) -> str:
+        now = time.monotonic()
+
+        def age(receipt: float) -> str:
+            if receipt <= 0.0:
+                return "missing"
+            return f"{max(0.0, now - receipt):.3f}s"
+
+        return (
+            f"status={self.localization_status or 'missing'}"
+            f"(age={age(self.status_receipt)}) "
+            f"health={self.localization_health or 'missing'}"
+            f"(age={age(self.health_receipt)}) "
+            f"body_age={age(self.body_receipt)} "
+            f"mcl_age={age(self.mcl_receipt)}"
+        )
+
     def record_initial_pose(self, settings) -> None:
-        if not self.localization_ready(require_mcl=True) or self.latest_mcl_pose is None:
+        latest_mcl_pose = self.latest_mcl_pose
+        if not self.localization_ready(require_mcl=True) or latest_mcl_pose is None:
             self.get_logger().warning(
-                "Initial pose not saved: require fresh TRACKING, HEALTHY, body pose and mcl_pose"
+                "Initial pose not saved: require fresh TRACKING, HEALTHY, "
+                f"body pose and mcl_pose; {self.readiness_summary()}"
             )
             return
         if self.initial_pose_path.exists():
@@ -136,7 +157,7 @@ class ScanWaypointRecorder(Node):
             if answer != "OVERWRITE":
                 self.get_logger().warning("Initial-pose overwrite cancelled")
                 return
-        pose = self.latest_mcl_pose.pose
+        pose = latest_mcl_pose.pose
         document = initial_pose_document(
             "map",
             (
@@ -156,12 +177,14 @@ class ScanWaypointRecorder(Node):
         self.get_logger().info(f"Saved fixed initial pose: {self.initial_pose_path}")
 
     def current_waypoint(self, dwell_sec: float, waypoint_id: str) -> Optional[Waypoint]:
-        if not self.localization_ready() or self.latest_body is None:
+        latest_body = self.latest_body
+        if not self.localization_ready() or latest_body is None:
             self.get_logger().warning(
-                "Waypoint not recorded: require fresh TRACKING, HEALTHY and map body pose"
+                "Waypoint not recorded: require fresh TRACKING, HEALTHY and "
+                f"map body pose; {self.readiness_summary()}"
             )
             return None
-        pose = self.latest_body.pose.pose
+        pose = latest_body.pose.pose
         values = (
             pose.position.x,
             pose.position.y,
@@ -317,6 +340,14 @@ class ScanWaypointRecorder(Node):
     def run(self) -> None:
         if not sys.stdin.isatty():
             raise RuntimeError("waypoint recording requires an interactive TTY")
+        executor = SingleThreadedExecutor(context=self.context)
+        executor.add_node(self)
+        spin_thread = threading.Thread(
+            target=executor.spin,
+            name="scan_waypoint_recorder_ros",
+            daemon=True,
+        )
+        spin_thread.start()
         print(
             "i: save fixed initial pose | Enter/Space/a: add waypoint | "
             "r: replace | d: delete | u: undo | l: list | s: save | q: save+quit"
@@ -328,10 +359,10 @@ class ScanWaypointRecorder(Node):
         settings = termios.tcgetattr(sys.stdin)
         tty.setcbreak(sys.stdin.fileno())
         try:
-            while rclpy.ok():
-                rclpy.spin_once(self, timeout_sec=0.05)
+            while rclpy.ok(context=self.context):
                 ready, _, _ = select.select([sys.stdin], [], [], 0.0)
                 if not ready:
+                    time.sleep(0.02)
                     continue
                 key = sys.stdin.read(1)
                 lowered = key.lower()
@@ -355,6 +386,9 @@ class ScanWaypointRecorder(Node):
                         break
         finally:
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
+            executor.shutdown(timeout_sec=1.0)
+            spin_thread.join(timeout=1.0)
+            executor.remove_node(self)
 
 
 def main() -> int:
