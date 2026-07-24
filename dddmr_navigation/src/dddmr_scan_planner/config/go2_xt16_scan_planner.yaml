@@ -40,6 +40,8 @@ scan_planner_node:
     fsm.emergency_time: 0.8
     fsm.fail_safe: true
     fsm.max_replan_fail_count: 20
+    fsm.finish_dist: 0.15
+    fsm.finish_yaw_tolerance: 0.15
 
     # The global DDDMR observation is already non-ground and voxel-filtered;
     # scan_input_adapter transforms it from base_link into map. A 0.10 m grid
@@ -117,6 +119,7 @@ closed_loop_controller:
     max_vy: 0.20
     max_vyaw: 0.50
     finish_dist: 0.15
+    finish_yaw_tolerance: 0.15
 
 scan_command_guard:
   ros__parameters:

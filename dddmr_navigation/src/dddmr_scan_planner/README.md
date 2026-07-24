@@ -30,6 +30,11 @@ into the map frame, and rejects stale localization transforms. The command
 guard requires fresh odometry, obstacle cloud, controller output, and SCAN
 planner heartbeat.
 
+The bridge preserves the final quaternion from a `3D Goal Pose`. SCAN tracks
+the route tangent while translating, then holds position and aligns to that
+terminal yaw. A goal is complete only when both the position and yaw
+tolerances are satisfied.
+
 Direct launches cannot publish Unitree Sport requests.
 
 ## Build and no-motion run

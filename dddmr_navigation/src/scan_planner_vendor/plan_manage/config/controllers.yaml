@@ -9,6 +9,7 @@ closed_loop_controller:
     max_vy: 0.35
     max_vyaw: 1.0
     finish_dist: 0.15
+    finish_yaw_tolerance: 0.15
 
 open_loop_controller:
   ros__parameters:

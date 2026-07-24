@@ -118,6 +118,11 @@ private:
       goal.pose.orientation.y = 0.0;
       goal.pose.orientation.z = 0.0;
       goal.pose.orientation.w = 1.0;
+    } else {
+      goal.pose.orientation.x /= norm;
+      goal.pose.orientation.y /= norm;
+      goal.pose.orientation.z /= norm;
+      goal.pose.orientation.w /= norm;
     }
     return true;
   }

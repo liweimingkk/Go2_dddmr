@@ -2,6 +2,7 @@
 #include <cmath>
 #include <cstdint>
 #include <memory>
+#include <stdexcept>
 #include <vector>
 
 #include <Eigen/Eigen>
@@ -14,6 +15,7 @@
 #include <tf2/utils.hpp>
 
 #include "bspline_opt/uniform_bspline.h"
+#include "plan_manage/final_goal_control.hpp"
 
 namespace scan_planner
 {
@@ -30,6 +32,15 @@ public:
     max_vy_ = declare_parameter<double>("max_vy", 0.35);
     max_vyaw_ = std::min(declare_parameter<double>("max_vyaw", 1.0), kMaxVYawLimit);
     finish_dist_ = declare_parameter<double>("finish_dist", 0.15);
+    finish_yaw_tolerance_ = declare_parameter<double>("finish_yaw_tolerance", 0.15);
+    if (
+      !std::isfinite(finish_dist_) || finish_dist_ <= 0.0 ||
+      !std::isfinite(finish_yaw_tolerance_) ||
+      finish_yaw_tolerance_ <= 0.0 || finish_yaw_tolerance_ > M_PI)
+    {
+      throw std::invalid_argument(
+              "finish_dist and finish_yaw_tolerance must be finite positive tolerances");
+    }
 
     bspline_sub_ = create_subscription<scan_planner_msgs::msg::Bspline>(
         "planning/bspline", 10,
@@ -47,13 +58,6 @@ public:
 
 private:
   static constexpr double kMaxVYawLimit = 1.0;
-
-  static double normalizeAngle(double angle)
-  {
-    while (angle > M_PI) angle -= 2.0 * M_PI;
-    while (angle < -M_PI) angle += 2.0 * M_PI;
-    return angle;
-  }
 
   static Eigen::Vector2d clampNorm(const Eigen::Vector2d &value, double max_norm)
   {
@@ -85,6 +89,76 @@ private:
     execution_frozen_pub_->publish(msg);
   }
 
+  void logFinalPhase(
+    const FinalGoalStatus & status, const double position_error)
+  {
+    if (status.phase == final_goal_phase_) {
+      return;
+    }
+    final_goal_phase_ = status.phase;
+
+    switch (status.phase) {
+      case FinalGoalPhase::REACQUIRE_POSITION:
+        RCLCPP_WARN(
+          get_logger(),
+          "Trajectory ended %.3f m from the goal; holding for a safe replan",
+          position_error);
+        break;
+      case FinalGoalPhase::ALIGN_YAW:
+        RCLCPP_INFO(
+          get_logger(),
+          "Final position reached; aligning yaw (error %.3f rad, tolerance %.3f rad)",
+          status.yaw_error, finish_yaw_tolerance_);
+        break;
+      case FinalGoalPhase::COMPLETE:
+        RCLCPP_INFO(
+          get_logger(),
+          "Goal pose reached (position error %.3f m, yaw error %.3f rad)",
+          position_error, status.yaw_error);
+        break;
+      case FinalGoalPhase::INVALID:
+        RCLCPP_ERROR(get_logger(), "Invalid final-goal state; commanding stop");
+        break;
+      case FinalGoalPhase::TRACKING:
+        break;
+    }
+  }
+
+  bool handleFinishedTrajectory(
+    const Eigen::Vector3d & position_desired,
+    const rclcpp::Time & current_time)
+  {
+    const Eigen::Vector2d position_error(
+      position_desired.x() - odom_pos_.x(),
+      position_desired.y() - odom_pos_.y());
+    const FinalGoalStatus status = evaluateFinalGoal(
+      exec_time_ >= traj_duration_,
+      position_error.norm(),
+      has_final_yaw_,
+      final_yaw_,
+      odom_yaw_,
+      finish_dist_,
+      finish_yaw_tolerance_);
+
+    if (status.phase == FinalGoalPhase::TRACKING) {
+      return false;
+    }
+
+    logFinalPhase(status, position_error.norm());
+    last_update_time_ = current_time;
+    if (status.phase == FinalGoalPhase::ALIGN_YAW) {
+      publishExecutionFrozen(true);
+      publishStop(kp_yaw_ * status.yaw_error);
+    } else if (status.phase == FinalGoalPhase::INVALID) {
+      publishExecutionFrozen(true);
+      publishStop();
+    } else {
+      publishExecutionFrozen(false);
+      publishStop();
+    }
+    return true;
+  }
+
   void bsplineCallback(const scan_planner_msgs::msg::Bspline::ConstSharedPtr msg)
   {
     if (msg->pos_pts.empty() || msg->knots.empty() || msg->order <= 0)
@@ -103,11 +177,33 @@ private:
     traj_.push_back(traj_[1].getDerivative());
     traj_duration_ = traj_[0].getTimeSum();
     traj_id_ = msg->traj_id;
+    has_final_yaw_ = !msg->yaw_pts.empty();
+    if (has_final_yaw_) {
+      const double terminal_yaw = msg->yaw_pts.back();
+      if (!std::isfinite(terminal_yaw)) {
+        receive_traj_ = false;
+        publishExecutionFrozen(true);
+        publishStop();
+        RCLCPP_ERROR(
+          get_logger(), "Trajectory %lld has a non-finite terminal yaw; commanding stop",
+          static_cast<long long>(traj_id_));
+        return;
+      }
+      final_yaw_ = normalizeAngle(terminal_yaw);
+    }
     exec_time_ = 0.0;
     last_update_time_ = now();
     receive_traj_ = true;
-    RCLCPP_INFO(get_logger(), "Received trajectory %lld, duration %.3fs",
-                static_cast<long long>(traj_id_), traj_duration_);
+    final_goal_phase_ = FinalGoalPhase::TRACKING;
+    if (has_final_yaw_) {
+      RCLCPP_INFO(
+        get_logger(), "Received trajectory %lld, duration %.3fs, final yaw %.3f rad",
+        static_cast<long long>(traj_id_), traj_duration_, final_yaw_);
+    } else {
+      RCLCPP_INFO(
+        get_logger(), "Received trajectory %lld, duration %.3fs, no final yaw",
+        static_cast<long long>(traj_id_), traj_duration_);
+    }
   }
 
   void odomCallback(const nav_msgs::msg::Odometry::ConstSharedPtr msg)
@@ -130,6 +226,9 @@ private:
     if (dt < 0.0 || dt > 0.2) dt = 0.0;
     const double t_eval = std::min(exec_time_, traj_duration_);
     Eigen::Vector3d pos_des = traj_[0].evaluateDeBoorT(t_eval);
+    if (handleFinishedTrajectory(pos_des, current_time)) {
+      return;
+    }
     const double yaw_error = normalizeAngle(estimateDesiredYaw(t_eval, pos_des) - odom_yaw_);
     const double yaw_command = std::clamp(kp_yaw_ * yaw_error, -max_vyaw_, max_vyaw_);
     if (std::abs(yaw_error) > heading_error_threshold_)
@@ -144,6 +243,9 @@ private:
     exec_time_ = std::min(traj_duration_, exec_time_ + dt);
     last_update_time_ = current_time;
     pos_des = traj_[0].evaluateDeBoorT(exec_time_);
+    if (handleFinishedTrajectory(pos_des, current_time)) {
+      return;
+    }
     const Eigen::Vector3d vel_des = traj_[1].evaluateDeBoorT(exec_time_);
     const Eigen::Vector2d pos_error(pos_des.x() - odom_pos_.x(), pos_des.y() - odom_pos_.y());
     const Eigen::Vector2d vel_world = clampNorm(
@@ -155,8 +257,6 @@ private:
     command.linear.x = std::clamp(c * vel_world.x() + s * vel_world.y(), -max_vx_, max_vx_);
     command.linear.y = std::clamp(-s * vel_world.x() + c * vel_world.y(), -max_vy_, max_vy_);
     command.angular.z = yaw_command;
-    if (exec_time_ >= traj_duration_ && pos_error.norm() < finish_dist_)
-      command = geometry_msgs::msg::Twist();
     cmd_vel_pub_->publish(command);
   }
 
@@ -167,15 +267,18 @@ private:
   rclcpp::TimerBase::SharedPtr cmd_timer_;
   bool receive_traj_{false};
   bool have_odom_{false};
+  bool has_final_yaw_{false};
   std::vector<UniformBspline> traj_;
   double traj_duration_{0.0};
   std::int64_t traj_id_{0};
   Eigen::Vector3d odom_pos_{Eigen::Vector3d::Zero()};
   double odom_yaw_{0.0};
+  double final_yaw_{0.0};
   double exec_time_{0.0};
   rclcpp::Time last_update_time_{0, 0, RCL_ROS_TIME};
+  FinalGoalPhase final_goal_phase_{FinalGoalPhase::TRACKING};
   double time_forward_, heading_error_threshold_, kp_pos_, kp_yaw_;
-  double max_vx_, max_vy_, max_vyaw_, finish_dist_;
+  double max_vx_, max_vy_, max_vyaw_, finish_dist_, finish_yaw_tolerance_;
 };
 }  // namespace scan_planner
 

@@ -190,6 +190,26 @@ def main():
         require_finite(guard, "max_yaw"),
         abs_tol=1e-9,
     )
+    planner_finish_dist = require_finite(planner_params, "fsm.finish_dist")
+    controller_finish_dist = require_finite(controller, "finish_dist")
+    planner_finish_yaw = require_finite(
+        planner_params, "fsm.finish_yaw_tolerance"
+    )
+    controller_finish_yaw = require_finite(
+        controller, "finish_yaw_tolerance"
+    )
+    assert 0.0 < planner_finish_dist
+    assert 0.0 < planner_finish_yaw <= math.pi
+    assert math.isclose(
+        planner_finish_dist,
+        controller_finish_dist,
+        abs_tol=1e-9,
+    )
+    assert math.isclose(
+        planner_finish_yaw,
+        controller_finish_yaw,
+        abs_tol=1e-9,
+    )
     assert require_finite(guard, "max_y") <= 0.20
     assert require_finite(guard, "max_yaw") <= 0.50
     assert require_finite(guard, "cloud_timeout") <= 0.35

@@ -14,6 +14,7 @@
 
 #include <bspline_opt/bspline_optimizer.h>
 #include <plan_env/grid_map.h>
+#include <plan_manage/final_goal_control.hpp>
 #include <scan_planner_msgs/msg/bspline.hpp>
 #include <scan_planner_msgs/msg/data_disp.hpp>
 #include <plan_manage/planner_manager.h>
@@ -57,6 +58,7 @@ namespace scan_planner
     int waypoint_num_;
     double planning_horizon_;
     double emergency_time_;
+    double finish_dist_, finish_yaw_tolerance_;
     double rviz_goal_height_;
     double self_inflation_z_up_, self_inflation_z_down_;
     double self_double_cylinder_radius_, self_double_cylinder_offset_;
@@ -65,6 +67,7 @@ namespace scan_planner
 
     /* planning data */
     bool trigger_, have_target_, have_odom_, have_new_target_;
+    bool has_final_yaw_{false};
     bool preset_started_{false};
     bool rviz_height_ready_;
     bool go2_execution_frozen_;
@@ -80,6 +83,7 @@ namespace scan_planner
 
     Eigen::Vector3d init_pt_, start_pt_, start_vel_, start_acc_, start_yaw_; // start state
     Eigen::Vector3d end_pt_, end_vel_;                                       // goal state
+    double final_yaw_{0.0};
     Eigen::Vector3d local_target_pt_, local_target_vel_;                     // local target state
     std::vector<Eigen::Vector3d> active_waypoints_;
     int current_wp_;
@@ -113,6 +117,10 @@ namespace scan_planner
     bool planNextWaypoint();
     bool isWaypointSequenceMode() const;
     bool adjustGlobalTargetIfOccupied();
+    bool isTerminalYawSweepCollisionFree(
+      const Eigen::Vector3d & position, double start_yaw) const;
+    bool extractGoalYaw(
+      const geometry_msgs::msg::Quaternion & orientation, double & yaw) const;
     void getLocalTarget();
     void finishProcess();
     void publishSelfInflationMarker();

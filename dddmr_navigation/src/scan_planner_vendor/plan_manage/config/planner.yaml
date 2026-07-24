@@ -9,6 +9,8 @@ scan_planner_node:
     fsm.emergency_time: 1.0
     fsm.fail_safe: true
     fsm.max_replan_fail_count: 1000
+    fsm.finish_dist: 0.15
+    fsm.finish_yaw_tolerance: 0.15
 
     grid_map.resolution: 0.05
     grid_map.sliding_map_size_x: 10.0

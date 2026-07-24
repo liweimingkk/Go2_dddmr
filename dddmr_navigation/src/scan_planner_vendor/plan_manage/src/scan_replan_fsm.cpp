@@ -38,6 +38,9 @@ namespace scan_planner
     no_replan_thresh_ = load_parameter<double>(node_, "fsm.thresh_no_replan", -1.0);
     planning_horizon_ = load_parameter<double>(node_, "fsm.planning_horizon", -1.0);
     emergency_time_ = load_parameter<double>(node_, "fsm.emergency_time", 1.0);
+    finish_dist_ = load_parameter<double>(node_, "fsm.finish_dist", 0.15);
+    finish_yaw_tolerance_ =
+      load_parameter<double>(node_, "fsm.finish_yaw_tolerance", 0.15);
     enable_fail_safe_ = load_parameter<bool>(node_, "fsm.fail_safe", true);
     max_replan_fail_count_ = load_parameter<int>(node_, "fsm.max_replan_fail_count", 1000);
     self_inflation_z_up_ = load_parameter<double>(node_, "grid_map.obstacles_inflation_z_up", 0.0);
@@ -46,6 +49,14 @@ namespace scan_planner
     self_double_cylinder_offset_ = load_parameter<double>(node_, "grid_map.double_cylinder_offset", 0.0);
     body_height_ = load_parameter<double>(node_, "grid_map.body_height", 0.4);
     self_inflation_frame_id_ = load_parameter<std::string>(node_, "grid_map.frame_id", "world");
+    if (
+      !std::isfinite(finish_dist_) || finish_dist_ <= 0.0 ||
+      !std::isfinite(finish_yaw_tolerance_) ||
+      finish_yaw_tolerance_ <= 0.0 || finish_yaw_tolerance_ > M_PI)
+    {
+      throw std::runtime_error(
+              "fsm.finish_dist and fsm.finish_yaw_tolerance must be finite positive tolerances");
+    }
 
     if (navi_mode_ == NAVI_MODE::PRESET_TARGET)
     {
@@ -112,6 +123,7 @@ namespace scan_planner
 
     active_waypoints_ = wps;
     current_wp_ = 0;
+    has_final_yaw_ = false;
     trigger_ = true;
     init_pt_ = odom_pos_;
 
@@ -154,9 +166,21 @@ namespace scan_planner
     if (msg->poses[0].pose.position.z < -0.1)
       return;
 
+    double requested_final_yaw = 0.0;
+    if (!extractGoalYaw(msg->poses[0].pose.orientation, requested_final_yaw))
+    {
+      RCLCPP_ERROR(node_->get_logger(), "Goal rejected: final orientation is invalid");
+      return;
+    }
+
     cout << "Triggered!" << endl;
     trigger_ = true;
     init_pt_ = odom_pos_;
+
+    const bool previous_has_final_yaw = has_final_yaw_;
+    const double previous_final_yaw = final_yaw_;
+    has_final_yaw_ = true;
+    final_yaw_ = requested_final_yaw;
 
     bool success = false;
     end_pt_ << msg->poses[0].pose.position.x, msg->poses[0].pose.position.y, rviz_goal_height_;
@@ -169,7 +193,6 @@ namespace scan_planner
 
     if (success)
     {
-
       /*** display ***/
       constexpr double step_size_t = 0.1;
       int i_end = floor(planner_manager_->global_data_.global_duration_ / step_size_t);
@@ -194,6 +217,8 @@ namespace scan_planner
     }
     else
     {
+      has_final_yaw_ = previous_has_final_yaw;
+      final_yaw_ = previous_final_yaw;
       RCLCPP_ERROR(node_->get_logger(), "Unable to generate global trajectory");
     }
   }
@@ -256,6 +281,7 @@ namespace scan_planner
     }
 
     end_pt_ = active_waypoints_[current_wp_];
+    has_final_yaw_ = false;
     setStartStateFromOdomOrCurrentTraj();
 
     bool success = planner_manager_->planGlobalTraj(
@@ -300,20 +326,64 @@ namespace scan_planner
     return navi_mode_ == NAVI_MODE::PRESET_TARGET;
   }
 
+  bool SCANReplanFSM::isTerminalYawSweepCollisionFree(
+    const Eigen::Vector3d & position, const double start_yaw) const
+  {
+    auto map = planner_manager_->grid_map_;
+    if (!map)
+      return true;
+    if (!position.allFinite() || !std::isfinite(start_yaw))
+      return false;
+    if (map->getInflateOccupancy(position, normalizeAngle(start_yaw)) != 0)
+      return false;
+    if (!has_final_yaw_)
+      return true;
+
+    const double yaw_delta = normalizeAngle(final_yaw_ - start_yaw);
+    if (!std::isfinite(yaw_delta))
+      return false;
+
+    // Sample the same shortest-yaw rotation used by the controller. A small
+    // angular step keeps both inflated cylinder centers inside the checked arc.
+    constexpr double yaw_step = 0.05;
+    const int sample_num =
+      std::max(1, static_cast<int>(std::ceil(std::abs(yaw_delta) / yaw_step)));
+    for (int i = 1; i <= sample_num; ++i)
+    {
+      const double yaw =
+        normalizeAngle(start_yaw + yaw_delta * static_cast<double>(i) / sample_num);
+      if (!std::isfinite(yaw) || map->getInflateOccupancy(position, yaw) != 0)
+        return false;
+    }
+    return true;
+  }
+
   bool SCANReplanFSM::adjustGlobalTargetIfOccupied()
   {
     auto map = planner_manager_->grid_map_;
     auto &global_data = planner_manager_->global_data_;
     const double duration = global_data.global_duration_;
-    if (!map || duration < 1e-3)
+    if (!map)
       return true;
+    if (duration < 1e-3)
+    {
+      const bool sweep_is_free =
+        isTerminalYawSweepCollisionFree(end_pt_, getOdomYaw());
+      if (!sweep_is_free)
+      {
+        RCLCPP_ERROR(
+          node_->get_logger(),
+          "Target position or its in-place final yaw sweep is occupied");
+      }
+      return sweep_is_free;
+    }
 
     constexpr double sample_dt = 0.05;
     const int sample_num = std::max(1, static_cast<int>(std::ceil(duration / sample_dt)));
     const Eigen::Vector3d final_pt = global_data.global_traj_.evaluate(duration);
     const Eigen::Vector3d final_prev = global_data.global_traj_.evaluate(duration * (sample_num - 1) / sample_num);
-    const int final_occ = map->getInflateOccupancy(final_pt, estimateYawFromSegment(final_prev, final_pt));
-    if (final_occ <= 0)
+    const double final_approach_yaw = estimateYawFromSegment(final_prev, final_pt);
+    if (isTerminalYawSweepCollisionFree(final_pt, final_approach_yaw))
       return true;
 
     for (int i = sample_num; i >= 0; --i)
@@ -323,22 +393,49 @@ namespace scan_planner
       const Eigen::Vector3d pt = global_data.global_traj_.evaluate(t);
       const Eigen::Vector3d prev_pt = global_data.global_traj_.evaluate(prev_t);
 
-      if (map->getInflateOccupancy(pt, estimateYawFromSegment(prev_pt, pt)) == 0)
+      if (isTerminalYawSweepCollisionFree(
+          pt, estimateYawFromSegment(prev_pt, pt)))
       {
         const Eigen::Vector3d raw_end = end_pt_;
         end_pt_ = pt;
         global_data.global_duration_ = t;
         global_data.last_progress_time_ = std::min(global_data.last_progress_time_, t);
         RCLCPP_WARN(node_->get_logger(),
-                    "Target [%.2f, %.2f, %.2f] is occupied; using [%.2f, %.2f, %.2f]",
+                    "Target [%.2f, %.2f, %.2f] or its final yaw sweep is occupied; "
+                    "using [%.2f, %.2f, %.2f]",
                     raw_end(0), raw_end(1), raw_end(2), end_pt_(0), end_pt_(1), end_pt_(2));
         return true;
       }
     }
 
     RCLCPP_ERROR(node_->get_logger(),
-                 "Target is occupied and no collision-free point was found on the global trajectory");
+                 "Target or its final yaw sweep is occupied and no collision-free point "
+                 "was found on the global trajectory");
     return false;
+  }
+
+  bool SCANReplanFSM::extractGoalYaw(
+    const geometry_msgs::msg::Quaternion & orientation, double & yaw) const
+  {
+    const double norm = std::sqrt(
+      orientation.x * orientation.x +
+      orientation.y * orientation.y +
+      orientation.z * orientation.z +
+      orientation.w * orientation.w);
+    if (!std::isfinite(norm) || norm < 1e-6)
+      return false;
+
+    const Eigen::Quaterniond quaternion(
+      orientation.w / norm,
+      orientation.x / norm,
+      orientation.y / norm,
+      orientation.z / norm);
+    const Eigen::Vector3d heading = quaternion.toRotationMatrix().col(0);
+    if (!heading.allFinite() || heading.head<2>().squaredNorm() < 1e-8)
+      return false;
+
+    yaw = normalizeAngle(std::atan2(heading(1), heading(0)));
+    return std::isfinite(yaw);
   }
 
   void SCANReplanFSM::pathCallback(const nav_msgs::msg::Path::ConstSharedPtr &msg)
@@ -347,6 +444,13 @@ namespace scan_planner
     {
       RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 1000,
                            "Received empty initial_path; ignoring");
+      return;
+    }
+
+    double requested_final_yaw = 0.0;
+    if (!extractGoalYaw(msg->poses.back().pose.orientation, requested_final_yaw))
+    {
+      RCLCPP_ERROR(node_->get_logger(), "Initial path rejected: final orientation is invalid");
       return;
     }
 
@@ -363,6 +467,11 @@ namespace scan_planner
       wp(2) = pose_stamped.pose.position.z + body_height_; // Adjust for body height
       waypoints.push_back(wp);
     }
+
+    const bool previous_has_final_yaw = has_final_yaw_;
+    const double previous_final_yaw = final_yaw_;
+    has_final_yaw_ = true;
+    final_yaw_ = requested_final_yaw;
     bool success = planGlobalTrajByWaypoints(waypoints);
 
     if (success)
@@ -381,6 +490,8 @@ namespace scan_planner
     }
     else
     {
+      has_final_yaw_ = previous_has_final_yaw;
+      final_yaw_ = previous_final_yaw;
       RCLCPP_ERROR(node_->get_logger(), "Unable to generate global trajectory from reference path");
     }
   }
@@ -659,7 +770,43 @@ namespace scan_planner
           current_wp_ = 0;
         }
 
+        const double position_error =
+          (end_pt_.head<2>() - odom_pos_.head<2>()).norm();
+        const FinalGoalStatus final_status = evaluateFinalGoal(
+          true,
+          position_error,
+          has_final_yaw_,
+          final_yaw_,
+          getOdomYaw(),
+          finish_dist_,
+          finish_yaw_tolerance_);
+        if (final_status.phase == FinalGoalPhase::REACQUIRE_POSITION)
+        {
+          RCLCPP_WARN_THROTTLE(
+            node_->get_logger(), *node_->get_clock(), 1000,
+            "Trajectory ended %.3f m from the goal; replanning before completion",
+            position_error);
+          changeFSMExecState(REPLAN_TRAJ, "GOAL_POSITION");
+          return;
+        }
+        if (final_status.phase == FinalGoalPhase::ALIGN_YAW)
+        {
+          RCLCPP_INFO_THROTTLE(
+            node_->get_logger(), *node_->get_clock(), 1000,
+            "Waiting for final yaw alignment: error %.3f rad, tolerance %.3f rad",
+            final_status.yaw_error, finish_yaw_tolerance_);
+          return;
+        }
+        if (final_status.phase != FinalGoalPhase::COMPLETE)
+        {
+          RCLCPP_ERROR_THROTTLE(
+            node_->get_logger(), *node_->get_clock(), 1000,
+            "Final goal state is invalid; refusing to report completion");
+          return;
+        }
+
         have_target_ = false;
+        has_final_yaw_ = false;
 
         changeFSMExecState(WAIT_TARGET, "FSM");
         return;
@@ -817,6 +964,31 @@ namespace scan_planner
     constexpr double time_step = 0.01;
     double t_cur = (node_->now() - info->start_time_).seconds();
     double t_2_3 = info->duration_ * 2 / 3;
+    if (exec_state_ == EXEC_TRAJ && has_final_yaw_)
+    {
+      const double position_error =
+        (end_pt_.head<2>() - odom_pos_.head<2>()).norm();
+      const FinalGoalStatus final_status = evaluateFinalGoal(
+        true,
+        position_error,
+        true,
+        final_yaw_,
+        getOdomYaw(),
+        finish_dist_,
+        finish_yaw_tolerance_);
+      if (
+        final_status.phase == FinalGoalPhase::ALIGN_YAW &&
+        !isTerminalYawSweepCollisionFree(odom_pos_, getOdomYaw()))
+      {
+        RCLCPP_WARN_THROTTLE(
+          node_->get_logger(), *node_->get_clock(), 1000,
+          "Final yaw sweep is occupied; stopping before replanning");
+        flag_escape_emergency_ = true;
+        changeFSMExecState(EMERGENCY_STOP, "FINAL_YAW_SAFETY");
+        return;
+      }
+    }
+
     for (double t = t_cur; t < info->duration_; t += time_step)
     {
       if (t_cur < t_2_3 && t >= t_2_3) // If t_cur < t_2_3, only the first 2/3 partition of the trajectory is considered valid and will get checked.
@@ -888,6 +1060,13 @@ namespace scan_planner
       for (int i = 0; i < knots.rows(); ++i)
       {
         bspline.knots.push_back(knots(i));
+      }
+
+      if (has_final_yaw_)
+      {
+        // The last yaw sample is the terminal body heading for this trajectory.
+        bspline.yaw_pts.push_back(final_yaw_);
+        bspline.yaw_dt = 0.0;
       }
 
       bspline_pub_->publish(bspline);
