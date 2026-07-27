@@ -11,6 +11,9 @@ WORKSPACE = pathlib.Path(__file__).resolve().parents[3]
 CHECK_SCRIPT = WORKSPACE / "scripts" / "check_go2_dds_receive_buffers.sh"
 DDS_SETUP = WORKSPACE / "scripts" / "setup_go2_dds_env.sh"
 DOCKER_WRAPPER = WORKSPACE / "scripts" / "dddmr_docker_go2_xt16.sh"
+MOUTH_MAPPING_WRAPPER = (
+    WORKSPACE / "scripts" / "run_go2_xt16_mouth_mapping_save_to_nav.sh"
+)
 
 
 class Go2DdsReceiveBuffersTest(unittest.TestCase):
@@ -158,6 +161,16 @@ class Go2DdsReceiveBuffersTest(unittest.TestCase):
         result = self.run_wrapper_with_fake_docker("x64")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("GO2_DDS_RCVBUF_MIN=16MiB", result.stdout)
+
+    def test_mouth_mapping_containers_source_unitree_dds_overlay(self):
+        script = MOUTH_MAPPING_WRAPPER.read_text(encoding="utf-8")
+        overlay_then_config = (
+            "if [[ -f /opt/unitree_ros2/setup.bash ]]; then\n"
+            "  source /opt/unitree_ros2/setup.bash\n"
+            "fi\n"
+            "source /root/dddmr_navigation/scripts/setup_go2_dds_env.sh"
+        )
+        self.assertEqual(script.count(overlay_then_config), 5)
 
 
 if __name__ == "__main__":

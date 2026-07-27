@@ -385,6 +385,9 @@ docker_ros() {
   docker exec "${CONTAINER_NAME}" bash -lc "set -eo pipefail
 set +u
 source ${ROS_SETUP_FILE_VALUE}
+if [[ -f /opt/unitree_ros2/setup.bash ]]; then
+  source /opt/unitree_ros2/setup.bash
+fi
 source /root/dddmr_navigation/scripts/setup_go2_dds_env.sh
 source /root/dddmr_navigation/${INSTALL_BASE_VALUE}/setup.bash
 set -u
@@ -430,6 +433,9 @@ start_map_result_rviz() {
   docker exec "${CONTAINER_NAME}" bash -lc "set -e
 set +u
 source ${ROS_SETUP_FILE_VALUE}
+if [[ -f /opt/unitree_ros2/setup.bash ]]; then
+  source /opt/unitree_ros2/setup.bash
+fi
 source /root/dddmr_navigation/scripts/setup_go2_dds_env.sh
 source /root/dddmr_navigation/${INSTALL_BASE_VALUE}/setup.bash
 set -u
@@ -584,6 +590,9 @@ measure_mouth_time_offset() {
       bash -lc 'set -eo pipefail
 set +u
 source "/opt/ros/${ROS_DISTRO}/setup.bash"
+if [[ -f /opt/unitree_ros2/setup.bash ]]; then
+  source /opt/unitree_ros2/setup.bash
+fi
 source /root/dddmr_navigation/scripts/setup_go2_dds_env.sh
 set -u
 exec python3 /root/dddmr_navigation/scripts/measure_go2_mouth_xt16_time_offset.py \
@@ -725,6 +734,9 @@ measure_odom_time_offset() {
       bash -lc 'set -eo pipefail
 set +u
 source "/opt/ros/${ROS_DISTRO}/setup.bash"
+if [[ -f /opt/unitree_ros2/setup.bash ]]; then
+  source /opt/unitree_ros2/setup.bash
+fi
 source /root/dddmr_navigation/scripts/setup_go2_dds_env.sh
 set -u
 exec python3 /root/dddmr_navigation/scripts/measure_go2_odom_xt16_time_offset.py \
@@ -802,6 +814,9 @@ start_mapping_container() {
 cd /root/dddmr_navigation
 set +u
 source ${ROS_SETUP_FILE_VALUE}
+if [[ -f /opt/unitree_ros2/setup.bash ]]; then
+  source /opt/unitree_ros2/setup.bash
+fi
 source /root/dddmr_navigation/scripts/setup_go2_dds_env.sh
 source /root/dddmr_navigation/${INSTALL_BASE_VALUE}/setup.bash
 set -u
