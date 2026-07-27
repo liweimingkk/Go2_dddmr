@@ -102,6 +102,7 @@ class Go2DdsReceiveBuffersTest(unittest.TestCase):
     def test_cyclone_receive_minimum_is_numeric(self):
         command = (
             "set -u; "
+            "unset GO2_DDS_RCVBUF_MIN; "
             "GO2_NET_IFACE=lo; "
             f"source {DDS_SETUP}; "
             "printf '%s' \"${CYCLONEDDS_URI}\""
@@ -155,6 +156,16 @@ class Go2DdsReceiveBuffersTest(unittest.TestCase):
             )
             fake_docker.chmod(0o755)
             environment = os.environ.copy()
+            for inherited_name in (
+                "DDDMR_BASE_IMAGE",
+                "DDDMR_BUILD_BASE",
+                "DDDMR_IMAGE",
+                "DDDMR_INSTALL_BASE",
+                "DDDMR_LOG_BASE",
+                "DDDMR_ROS_DISTRO",
+                "GO2_DDS_RCVBUF_MIN",
+            ):
+                environment.pop(inherited_name, None)
             environment.update(
                 {
                     "PATH": f"{fake_bin}:{environment['PATH']}",
