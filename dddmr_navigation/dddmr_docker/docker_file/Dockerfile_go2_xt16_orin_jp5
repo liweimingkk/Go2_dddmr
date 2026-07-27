@@ -15,16 +15,28 @@ ENV ROS_DISTRO=${ROS_DISTRO} \
 # Unitree Go2 uses CycloneDDS 0.10.2. Build that exact middleware and the
 # matching Foxy RMW overlay, then install only the Unitree message packages.
 # No Unitree motion examples or control binaries are copied into this image.
-RUN mkdir -p /opt/unitree_ws/src \
-  && git clone https://github.com/eclipse-cyclonedds/cyclonedds.git \
+RUN clone_exact() { \
+      local repository="$1" destination="$2" commit="$3"; \
+      git init -q "${destination}"; \
+      git -C "${destination}" remote add origin "${repository}"; \
+      git -C "${destination}" -c protocol.version=2 fetch \
+        --depth 1 --no-tags origin "${commit}"; \
+      git -C "${destination}" -c advice.detachedHead=false \
+        checkout -q --detach FETCH_HEAD; \
+    } \
+  && mkdir -p /opt/unitree_ws/src \
+  && clone_exact \
+    https://github.com/eclipse-cyclonedds/cyclonedds.git \
     /opt/unitree_ws/src/cyclonedds \
-  && git -C /opt/unitree_ws/src/cyclonedds checkout "${CYCLONEDDS_COMMIT}" \
-  && git clone https://github.com/ros2/rmw_cyclonedds.git \
+    "${CYCLONEDDS_COMMIT}" \
+  && clone_exact \
+    https://github.com/ros2/rmw_cyclonedds.git \
     /opt/unitree_ws/src/rmw_cyclonedds \
-  && git -C /opt/unitree_ws/src/rmw_cyclonedds checkout "${RMW_CYCLONEDDS_COMMIT}" \
-  && git clone https://github.com/unitreerobotics/unitree_ros2.git \
+    "${RMW_CYCLONEDDS_COMMIT}" \
+  && clone_exact \
+    https://github.com/unitreerobotics/unitree_ros2.git \
     /tmp/unitree_ros2 \
-  && git -C /tmp/unitree_ros2 checkout "${UNITREE_ROS2_COMMIT}" \
+    "${UNITREE_ROS2_COMMIT}" \
   && cp -a /tmp/unitree_ros2/cyclonedds_ws/src/unitree/unitree_api \
     /opt/unitree_ws/src/ \
   && cp -a /tmp/unitree_ros2/cyclonedds_ws/src/unitree/unitree_go \
