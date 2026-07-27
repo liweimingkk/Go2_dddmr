@@ -231,7 +231,7 @@ transformPointCloudSequentially (const pcl::PointCloud<PointT> &cloud_in,
     cloud_out.header   = cloud_in.header;
     cloud_out.is_dense = cloud_in.is_dense;
     cloud_out.reserve (cloud_in.size ());
-    cloud_out.assign (cloud_in.begin (), cloud_in.end ());
+    cloud_out.points.assign (cloud_in.begin (), cloud_in.end ());
     cloud_out.width = cloud_in.width;
     cloud_out.height = cloud_in.height;
     cloud_out.sensor_orientation_ = cloud_in.sensor_orientation_;

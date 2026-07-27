@@ -72,6 +72,9 @@ install(TARGETS
 install(
   DIRECTORY include/
   DESTINATION include/
+  FILES_MATCHING
+    PATTERN "*.h"
+    PATTERN "*.hpp"
 )
 
 install(DIRECTORY

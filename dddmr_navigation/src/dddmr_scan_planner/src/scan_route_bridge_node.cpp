@@ -5,9 +5,9 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
-#include <type_traits>
 
 #include <dddmr_sys_core/action/get_plan.hpp>
+#include <dddmr_sys_core/action_client_compat.hpp>
 #include <geometry_msgs/msg/point_stamped.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <nav_msgs/msg/odometry.hpp>
@@ -227,14 +227,8 @@ private:
     options.goal_response_callback =
       [this, generation](auto response)
       {
-        GoalHandle::SharedPtr handle;
-        if constexpr (
-          std::is_same_v<std::decay_t<decltype(response)>, GoalHandle::SharedPtr>)
-        {
-          handle = response;
-        } else {
-          handle = response.get();
-        }
+        const auto handle =
+          dddmr_sys_core::action_client_compat::unwrap_goal_response<GoalHandle>(response);
         if (!handle) {
           request_in_flight_ = false;
         }

@@ -51,6 +51,9 @@ ament_target_dependencies(scan_input_adapter_node ${common_dependencies})
 add_executable(scan_route_bridge_node
   src/scan_route_bridge_node.cpp
 )
+target_include_directories(scan_route_bridge_node PRIVATE
+  ${dddmr_sys_core_INCLUDE_DIRS}
+)
 ament_target_dependencies(scan_route_bridge_node ${common_dependencies})
 
 add_executable(scan_command_guard_node

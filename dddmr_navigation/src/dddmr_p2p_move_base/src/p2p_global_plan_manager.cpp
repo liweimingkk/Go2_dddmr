@@ -29,7 +29,7 @@
 * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 #include <p2p_move_base/p2p_global_plan_manager.h>
-#include <type_traits>
+#include <dddmr_sys_core/action_client_compat.hpp>
 namespace p2p_move_base
 {
 P2PGlobalPlanManager::P2PGlobalPlanManager(std::string name)
@@ -103,11 +103,8 @@ void P2PGlobalPlanManager::stop(){
     send_goal_options.goal_response_callback =
       [this](auto response) {
         using GoalHandle = rclcpp_action::ClientGoalHandle<dddmr_sys_core::action::GetPlan>;
-        if constexpr (std::is_same_v<std::decay_t<decltype(response)>, GoalHandle::SharedPtr>) {
-          global_planner_client_goal_response_callback(response);
-        } else {
-          global_planner_client_goal_response_callback(response.get());
-        }
+        global_planner_client_goal_response_callback(
+          dddmr_sys_core::action_client_compat::unwrap_goal_response<GoalHandle>(response));
       };
     send_goal_options.result_callback =
       std::bind(&P2PGlobalPlanManager::global_planner_client_result_callback, this, std::placeholders::_1);
@@ -137,11 +134,8 @@ void P2PGlobalPlanManager::queryThread(){
   send_goal_options.goal_response_callback =
     [this](auto response) {
       using GoalHandle = rclcpp_action::ClientGoalHandle<dddmr_sys_core::action::GetPlan>;
-      if constexpr (std::is_same_v<std::decay_t<decltype(response)>, GoalHandle::SharedPtr>) {
-        global_planner_client_goal_response_callback(response);
-      } else {
-        global_planner_client_goal_response_callback(response.get());
-      }
+      global_planner_client_goal_response_callback(
+        dddmr_sys_core::action_client_compat::unwrap_goal_response<GoalHandle>(response));
     };
   send_goal_options.result_callback =
     std::bind(&P2PGlobalPlanManager::global_planner_client_result_callback, this, std::placeholders::_1);
