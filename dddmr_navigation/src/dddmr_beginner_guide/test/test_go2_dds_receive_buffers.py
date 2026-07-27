@@ -5,6 +5,7 @@ import pathlib
 import subprocess
 import tempfile
 import unittest
+import xml.etree.ElementTree as element_tree
 
 
 WORKSPACE = pathlib.Path(__file__).resolve().parents[3]
@@ -13,6 +14,25 @@ DDS_SETUP = WORKSPACE / "scripts" / "setup_go2_dds_env.sh"
 DOCKER_WRAPPER = WORKSPACE / "scripts" / "dddmr_docker_go2_xt16.sh"
 MOUTH_MAPPING_WRAPPER = (
     WORKSPACE / "scripts" / "run_go2_xt16_mouth_mapping_save_to_nav.sh"
+)
+GO2_LAUNCH_FILES = (
+    WORKSPACE
+    / "src"
+    / "dddmr_beginner_guide"
+    / "launch"
+    / "go2_xt16_navigation.launch",
+    WORKSPACE
+    / "src"
+    / "dddmr_lego_loam"
+    / "lego_loam_bor"
+    / "launch"
+    / "lego_loam_go2_xt16_live.launch",
+    WORKSPACE
+    / "src"
+    / "dddmr_lego_loam"
+    / "lego_loam_bor"
+    / "launch"
+    / "lego_loam_go2_xt16_mouth.launch",
 )
 
 
@@ -171,6 +191,19 @@ class Go2DdsReceiveBuffersTest(unittest.TestCase):
             "source /root/dddmr_navigation/scripts/setup_go2_dds_env.sh"
         )
         self.assertEqual(script.count(overlay_then_config), 5)
+
+    def test_go2_static_transforms_use_foxy_compatible_arguments(self):
+        publisher_count = 0
+        for launch_file in GO2_LAUNCH_FILES:
+            root = element_tree.parse(launch_file).getroot()
+            publishers = root.findall(
+                ".//node[@exec='static_transform_publisher']"
+            )
+            publisher_count += len(publishers)
+            for publisher in publishers:
+                arguments = publisher.attrib["args"]
+                self.assertNotIn("--", arguments, launch_file)
+        self.assertEqual(publisher_count, 8)
 
 
 if __name__ == "__main__":

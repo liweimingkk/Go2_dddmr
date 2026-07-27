@@ -79,15 +79,16 @@
   </node>
 
   <!-- Set publish_static_tf:=true only for standalone Docker smoke tests without a trusted robot TF source. -->
+  <!-- Positional order is x y z yaw pitch roll parent child for Foxy/Humble compatibility. -->
   <node pkg="tf2_ros" exec="static_transform_publisher" name="base_link_to_go2_imu"
         if="$(var publish_static_tf)"
-        args="--x -0.02557 --y 0.0 --z 0.04232 --roll 0.0 --pitch 0.0 --yaw 0.0 --frame-id base_link --child-frame-id go2_imu" />
+        args="-0.02557 0.0 0.04232 0.0 0.0 0.0 base_link go2_imu" />
   <node pkg="tf2_ros" exec="static_transform_publisher" name="go2_imu_to_hesai_lidar"
         if="$(var publish_static_tf)"
-        args="--x $(var lidar_x) --y $(var lidar_y) --z $(var lidar_z) --roll $(var lidar_roll) --pitch $(var lidar_pitch) --yaw $(var lidar_yaw) --frame-id go2_imu --child-frame-id hesai_lidar" />
+        args="$(var lidar_x) $(var lidar_y) $(var lidar_z) $(var lidar_yaw) $(var lidar_pitch) $(var lidar_roll) go2_imu hesai_lidar" />
   <node pkg="tf2_ros" exec="static_transform_publisher" name="base_link_to_radar"
         if="$(var publish_static_tf)"
-        args="--x $(var mouth_x) --y $(var mouth_y) --z $(var mouth_z) --roll $(var mouth_roll) --pitch $(var mouth_pitch) --yaw $(var mouth_yaw) --frame-id base_link --child-frame-id radar" />
+        args="$(var mouth_x) $(var mouth_y) $(var mouth_z) $(var mouth_yaw) $(var mouth_pitch) $(var mouth_roll) base_link radar" />
 
   <node pkg="rviz2" exec="rviz2" output="screen" respawn="false"
         if="$(var rviz)"
