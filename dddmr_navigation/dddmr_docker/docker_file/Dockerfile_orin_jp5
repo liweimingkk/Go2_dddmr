@@ -130,6 +130,12 @@ RUN unzip -q /tmp/serial-foxy.zip -d /tmp \
   && cmake --install /tmp/serial-foxy/build \
   && rm -rf /tmp/serial-foxy /tmp/serial-foxy.zip
 
+# On Foxy/aarch64, ignition_math6_vendor alone does not install the upstream
+# CMake package consumed directly by dddmr_rviz_default_plugins.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends libignition-math6-dev \
+  && rm -rf /var/lib/apt/lists/*
+
 RUN printf '%s\n' \
     'source "/opt/ros/${ROS_DISTRO:-foxy}/setup.bash"' \
     'if [[ -f /opt/unitree_ros2/setup.bash ]]; then' \
