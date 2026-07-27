@@ -353,8 +353,8 @@ class TestP2PMissionExecutor(unittest.TestCase):
             self.assertIn("SETTLING", states)
             self.assertIn("DWELLING", states)
         finally:
-            action_server.destroy()
             executor.shutdown(timeout_sec=2.0)
             spin_thread.join(timeout=2.0)
+            action_server.destroy()
             node.destroy_node()
             rclpy.try_shutdown()

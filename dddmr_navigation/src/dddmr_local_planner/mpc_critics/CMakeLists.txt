@@ -156,6 +156,8 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(test_collision_model
     test/test_collision_model.cpp
+    test/rclcpp_gtest_main.cpp
+    SKIP_LINKING_MAIN_LIBRARIES
   )
   target_link_libraries(test_collision_model
     critics
@@ -166,6 +168,8 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_route_corridor_model
     test/test_route_corridor_model.cpp
+    test/rclcpp_gtest_main.cpp
+    SKIP_LINKING_MAIN_LIBRARIES
   )
   target_link_libraries(test_route_corridor_model
     critics

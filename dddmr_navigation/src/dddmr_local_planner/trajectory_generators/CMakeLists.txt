@@ -154,6 +154,8 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(test_dd_simple_trajectory_generator
     test/test_dd_simple_trajectory_generator.cpp
+    test/rclcpp_gtest_main.cpp
+    SKIP_LINKING_MAIN_LIBRARIES
   )
   target_link_libraries(test_dd_simple_trajectory_generator
     theories
@@ -174,6 +176,8 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_omni_simple_trajectory_generator
     test/test_omni_simple_trajectory_generator.cpp
+    test/rclcpp_gtest_main.cpp
+    SKIP_LINKING_MAIN_LIBRARIES
   )
   target_link_libraries(test_omni_simple_trajectory_generator
     theories
