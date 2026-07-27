@@ -135,10 +135,16 @@ bool MCL3dlNode::configure(const std::shared_ptr<mcl_3dl::SubMaps>& sub_maps)
   
   //@Initialize transform listener and broadcaster
   tfbuf_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
+#if __has_include(<tf2_ros/create_timer_ros.hpp>)
   auto timer_interface = std::make_shared<tf2_ros::CreateTimerROS>(
     this->get_node_base_interface(),
     this->get_node_timers_interface(),
     tf_listener_group_);
+#else
+  auto timer_interface = std::make_shared<tf2_ros::CreateTimerROS>(
+    this->get_node_base_interface(),
+    this->get_node_timers_interface());
+#endif
   tfbuf_->setCreateTimerInterface(timer_interface);
   tfl_ = std::make_shared<tf2_ros::TransformListener>(*tfbuf_);
   tfb_ = std::make_shared<tf2_ros::TransformBroadcaster>(this->shared_from_this());
@@ -1343,7 +1349,9 @@ bool MCL3dlNode::measure(
   }
   map_rot.setRPY(filtered_rpy);
   map_pos = f_pos_->in(map_pos);
-  map2odom_trans_.transform.translation = tf2::toMsg(tf2::Vector3(map_pos.x_, map_pos.y_, map_pos.z_));
+  map2odom_trans_.transform.translation.x = map_pos.x_;
+  map2odom_trans_.transform.translation.y = map_pos.y_;
+  map2odom_trans_.transform.translation.z = map_pos.z_;
   map2odom_trans_.transform.rotation = tf2::toMsg(tf2::Quaternion(map_rot.x_, map_rot.y_, map_rot.z_, map_rot.w_));
 
   // Calculate covariance from sampled particles to reduce calculation cost on global localization.

@@ -56,10 +56,16 @@ void P2PGlobalPlanManager::initial(){
   tf_listener_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   //@Initialize transform listener and broadcaster
   tf2Buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
+#if __has_include(<tf2_ros/create_timer_ros.hpp>)
   auto timer_interface = std::make_shared<tf2_ros::CreateTimerROS>(
     this->get_node_base_interface(),
     this->get_node_timers_interface(),
     tf_listener_group_);
+#else
+  auto timer_interface = std::make_shared<tf2_ros::CreateTimerROS>(
+    this->get_node_base_interface(),
+    this->get_node_timers_interface());
+#endif
   tf2Buffer_->setCreateTimerInterface(timer_interface);
   tfl_ = std::make_shared<tf2_ros::TransformListener>(*tf2Buffer_);
   
