@@ -12,7 +12,11 @@
 #include <scan_planner_msgs/msg/bspline.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
+#if __has_include(<tf2/utils.hpp>)
 #include <tf2/utils.hpp>
+#else
+#include <tf2/utils.h>
+#endif
 
 #include "bspline_opt/uniform_bspline.h"
 #include "plan_manage/final_goal_control.hpp"
