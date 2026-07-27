@@ -258,7 +258,7 @@ void Local_Planner::parseCuboid(){
   for(auto it=cuboid_vertex_queue.begin(); it!=cuboid_vertex_queue.end();it++){
     std::vector<double> p;
     geometry_msgs::msg::Point pt;
-    this->declare_parameter(*it, rclcpp::PARAMETER_DOUBLE_ARRAY);
+    this->declare_parameter(*it, std::vector<double>{});
     rclcpp::Parameter cuboid_param= this->get_parameter(*it);
     p = cuboid_param.as_double_array();
     pt.x = p[0];pt.y = p[1];pt.z = p[2];

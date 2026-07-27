@@ -23,7 +23,7 @@ SemanticSegmentation2PointCloud::SemanticSegmentation2PointCloud(std::string nam
   downSizeFilter_intensity_.setLeafSize(leaf_size_, leaf_size_, leaf_size_);
   downSizeFilter_rgb_.setLeafSize(leaf_size_, leaf_size_, leaf_size_);
   
-  this->declare_parameter("exclude_class", rclcpp::PARAMETER_INTEGER_ARRAY);
+  this->declare_parameter("exclude_class", std::vector<int64_t>{});
   rclcpp::Parameter exclude_class= this->get_parameter("exclude_class");
   exclude_class_vector_ = exclude_class.as_integer_array();
 

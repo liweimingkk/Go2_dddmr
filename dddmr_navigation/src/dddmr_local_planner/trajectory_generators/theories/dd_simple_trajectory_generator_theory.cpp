@@ -219,7 +219,7 @@ void DDSimpleTrajectoryGeneratorTheory::onInitialize(){
   for(int i=1;i<9;i++){
     std::string s = ".cuboid.p" + std::to_string(i);
 
-    node_->declare_parameter(name_ + s, rclcpp::PARAMETER_DOUBLE_ARRAY);
+    node_->declare_parameter(name_ + s, std::vector<double>{});
     rclcpp::Parameter cuboid_param = node_->get_parameter(name_ + s);
     auto p = cuboid_param.as_double_array();
     pcl::PointXYZ pt;
@@ -233,56 +233,56 @@ void DDSimpleTrajectoryGeneratorTheory::onInitialize(){
   RCLCPP_INFO(node_->get_logger().get_child(name_), "Start to parse cuboid.");
   std::vector<double> p;
 
-  node_->declare_parameter(name_ + ".cuboid.flb", rclcpp::PARAMETER_DOUBLE_ARRAY);
+  node_->declare_parameter(name_ + ".cuboid.flb", std::vector<double>{});
   rclcpp::Parameter cuboid_flb= node_->get_parameter(name_ + ".cuboid.flb");
   p = cuboid_flb.as_double_array();
   pcl::PointXYZ pt_flb;
   pt_flb.x = p[0];pt_flb.y = p[1];pt_flb.z = p[2];
   RCLCPP_INFO(node_->get_logger().get_child(name_), "Cuboid flb: %.2f, %.2f, %.2f", pt_flb.x, pt_flb.y, pt_flb.z);
 
-  node_->declare_parameter(name_ + ".cuboid.frb", rclcpp::PARAMETER_DOUBLE_ARRAY);
+  node_->declare_parameter(name_ + ".cuboid.frb", std::vector<double>{});
   rclcpp::Parameter cuboid_frb= node_->get_parameter(name_ + ".cuboid.frb");
   p = cuboid_frb.as_double_array();
   pcl::PointXYZ pt_frb;
   pt_frb.x = p[0];pt_frb.y = p[1];pt_frb.z = p[2];
   RCLCPP_INFO(node_->get_logger().get_child(name_), "Cuboid frb: %.2f, %.2f, %.2f", pt_frb.x, pt_frb.y, pt_frb.z);
 
-  node_->declare_parameter(name_ + ".cuboid.flt", rclcpp::PARAMETER_DOUBLE_ARRAY);
+  node_->declare_parameter(name_ + ".cuboid.flt", std::vector<double>{});
   rclcpp::Parameter cuboid_flt= node_->get_parameter(name_ + ".cuboid.flt");
   p = cuboid_flt.as_double_array();
   pcl::PointXYZ pt_flt;
   pt_flt.x = p[0];pt_flt.y = p[1];pt_flt.z = p[2];
   RCLCPP_INFO(node_->get_logger().get_child(name_), "Cuboid flt: %.2f, %.2f, %.2f", pt_flt.x, pt_flt.y, pt_flt.z);
 
-  node_->declare_parameter(name_ + ".cuboid.frt", rclcpp::PARAMETER_DOUBLE_ARRAY);
+  node_->declare_parameter(name_ + ".cuboid.frt", std::vector<double>{});
   rclcpp::Parameter cuboid_frt= node_->get_parameter(name_ + ".cuboid.frt");
   p = cuboid_frt.as_double_array();
   pcl::PointXYZ pt_frt;
   pt_frt.x = p[0];pt_frt.y = p[1];pt_frt.z = p[2];
   RCLCPP_INFO(node_->get_logger().get_child(name_), "Cuboid frt: %.2f, %.2f, %.2f", pt_frt.x, pt_frt.y, pt_frt.z);
 
-  node_->declare_parameter(name_ + ".cuboid.blb", rclcpp::PARAMETER_DOUBLE_ARRAY);
+  node_->declare_parameter(name_ + ".cuboid.blb", std::vector<double>{});
   rclcpp::Parameter cuboid_blb= node_->get_parameter(name_ + ".cuboid.blb");
   p = cuboid_blb.as_double_array();
   pcl::PointXYZ pt_blb;
   pt_blb.x = p[0];pt_blb.y = p[1];pt_blb.z = p[2];
   RCLCPP_INFO(node_->get_logger().get_child(name_), "Cuboid blb: %.2f, %.2f, %.2f", pt_blb.x, pt_blb.y, pt_blb.z);
 
-  node_->declare_parameter(name_ + ".cuboid.brb", rclcpp::PARAMETER_DOUBLE_ARRAY);
+  node_->declare_parameter(name_ + ".cuboid.brb", std::vector<double>{});
   rclcpp::Parameter cuboid_brb= node_->get_parameter(name_ + ".cuboid.brb");
   p = cuboid_brb.as_double_array();
   pcl::PointXYZ pt_brb;
   pt_brb.x = p[0];pt_brb.y = p[1];pt_brb.z = p[2];
   RCLCPP_INFO(node_->get_logger().get_child(name_), "Cuboid brb: %.2f, %.2f, %.2f", pt_brb.x, pt_brb.y, pt_brb.z);
 
-  node_->declare_parameter(name_ + ".cuboid.blt", rclcpp::PARAMETER_DOUBLE_ARRAY);
+  node_->declare_parameter(name_ + ".cuboid.blt", std::vector<double>{});
   rclcpp::Parameter cuboid_blt= node_->get_parameter(name_ + ".cuboid.blt");
   p = cuboid_blt.as_double_array();
   pcl::PointXYZ pt_blt;
   pt_blt.x = p[0];pt_blt.y = p[1];pt_blt.z = p[2];
   RCLCPP_INFO(node_->get_logger().get_child(name_), "Cuboid blt: %.2f, %.2f, %.2f", pt_blt.x, pt_blt.y, pt_blt.z);
 
-  node_->declare_parameter(name_ + ".cuboid.brt", rclcpp::PARAMETER_DOUBLE_ARRAY);
+  node_->declare_parameter(name_ + ".cuboid.brt", std::vector<double>{});
   rclcpp::Parameter cuboid_brt= node_->get_parameter(name_ + ".cuboid.brt");
   p = cuboid_brt.as_double_array();
   pcl::PointXYZ pt_brt;

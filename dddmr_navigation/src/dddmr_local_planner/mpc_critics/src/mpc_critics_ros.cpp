@@ -57,7 +57,7 @@ void MPC_Critics_ROS::initial(){
   stacked_scoring_model_ = new StackedScoringModel(this->get_node_logging_interface(), tf2Buffer_);
 
   //@Start to load plugins
-  this->declare_parameter("plugins", rclcpp::PARAMETER_STRING_ARRAY);
+  this->declare_parameter("plugins", std::vector<std::string>{});
   rclcpp::Parameter plugins = this->get_parameter("plugins");
   plugins_ = plugins.as_string_array();
   for(auto i=plugins_.begin(); i!=plugins_.end(); i++){
