@@ -69,12 +69,20 @@ install(DIRECTORY
 
 install(DIRECTORY
   launch
-  model
   data
   scripts
   rviz
   DESTINATION share/${PROJECT_NAME}/
 )
+
+# Model artifacts are optional. The mapping/navigation deployment does not use
+# TensorRT, and model files are intentionally kept out of the source archive.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/model")
+  install(DIRECTORY
+    model
+    DESTINATION share/${PROJECT_NAME}/
+  )
+endif()
 
 # Install Python executables
 install(PROGRAMS
