@@ -30,6 +30,9 @@
 */
 #include <perception_3d/no_entry_layer.h>
 
+#include <rcl_yaml_param_parser/parser.h>
+#include <rclcpp/parameter_map.hpp>
+
 PLUGINLIB_EXPORT_CLASS(perception_3d::NoEntryLayer, perception_3d::Sensor)
 
 namespace perception_3d

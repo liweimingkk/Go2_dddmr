@@ -10,6 +10,7 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 find_package(rclcpp_components REQUIRED)
+find_package(rcl_yaml_param_parser REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -37,6 +38,7 @@ set(dependencies
   rclcpp_action
   rclcpp_lifecycle
   rclcpp_components
+  rcl_yaml_param_parser
   std_msgs
   std_srvs
   sensor_msgs

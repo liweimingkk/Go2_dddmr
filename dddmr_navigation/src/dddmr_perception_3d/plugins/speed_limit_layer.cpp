@@ -30,6 +30,9 @@
 */
 #include <perception_3d/speed_limit_layer.h>
 
+#include <rcl_yaml_param_parser/parser.h>
+#include <rclcpp/parameter_map.hpp>
+
 PLUGINLIB_EXPORT_CLASS(perception_3d::SpeedLimitLayer, perception_3d::Sensor)
 
 namespace perception_3d
