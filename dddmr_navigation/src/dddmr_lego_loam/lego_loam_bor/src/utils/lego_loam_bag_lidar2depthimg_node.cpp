@@ -10,7 +10,13 @@
 // ROS bag
 #include <rosbag2_cpp/readers/sequential_reader.hpp>
 #include <rosbag2_cpp/converter_interfaces/serialization_format_converter.hpp>
+#if __has_include(<rosbag2_storage/storage_options.hpp>)
 #include <rosbag2_storage/storage_options.hpp>
+using RosbagStorageOptions = rosbag2_storage::StorageOptions;
+#else
+#include <rosbag2_cpp/storage_options.hpp>
+using RosbagStorageOptions = rosbag2_cpp::StorageOptions;
+#endif
 #include "rclcpp/serialization.hpp"
 
 //interactive
@@ -126,7 +132,7 @@ int main(int argc, char** argv) {
   BR->icp_score_ = MO->_history_keyframe_fitness_score;
   BR->history_keyframe_search_radius_ = MO->_history_keyframe_search_radius;
 
-  rosbag2_storage::StorageOptions storage_options{};
+  RosbagStorageOptions storage_options{};
   storage_options.uri = BR->getBagFilePath();
   storage_options.storage_id = "sqlite3";
 
@@ -234,5 +240,4 @@ int main(int argc, char** argv) {
 
   return 0;
 }
-
 
