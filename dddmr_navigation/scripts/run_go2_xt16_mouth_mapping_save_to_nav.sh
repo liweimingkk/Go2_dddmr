@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${DDDMR_DOCKER_USE_SUDO:-0}" == "1" && "${EUID}" -ne 0 ]]; then
+  exec sudo -E -- "$0" "$@"
+fi
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -68,14 +72,57 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 REPO_ROOT="$(cd "${WS_ROOT}/.." && pwd)"
 
-IMAGE="${DDDMR_IMAGE:-dddmr_go2_xt16:x64}"
+PLATFORM_VALUE="${DDDMR_PLATFORM:-x64}"
+case "${PLATFORM_VALUE}" in
+  x64)
+    DEFAULT_IMAGE="dddmr_go2_xt16:x64"
+    DEFAULT_ROS_DISTRO="humble"
+    DEFAULT_GO2_NET_IFACE="enp46s0"
+    DEFAULT_BUILD_BASE=".docker_go2_xt16_build"
+    DEFAULT_INSTALL_BASE=".docker_go2_xt16_install"
+    DEFAULT_LOG_BASE=".docker_go2_xt16_log"
+    ;;
+  orin-jp5)
+    DEFAULT_IMAGE="dddmr_go2_xt16:orin-jp5.1.1"
+    DEFAULT_ROS_DISTRO="foxy"
+    DEFAULT_GO2_NET_IFACE="eth0"
+    DEFAULT_BUILD_BASE=".docker_go2_xt16_orin_build"
+    DEFAULT_INSTALL_BASE=".docker_go2_xt16_orin_install"
+    DEFAULT_LOG_BASE=".docker_go2_xt16_orin_log"
+    ;;
+  *)
+    echo "DDDMR_PLATFORM must be x64 or orin-jp5, got: ${PLATFORM_VALUE}" >&2
+    exit 2
+    ;;
+esac
+
+IMAGE="${DDDMR_IMAGE:-${DEFAULT_IMAGE}}"
+ROS_DISTRO_VALUE="${DDDMR_ROS_DISTRO:-${DEFAULT_ROS_DISTRO}}"
+[[ "${ROS_DISTRO_VALUE}" =~ ^[a-z0-9_]+$ ]] || {
+  echo "DDDMR_ROS_DISTRO contains unsupported characters." >&2
+  exit 2
+}
+ROS_SETUP_FILE_VALUE="/opt/ros/${ROS_DISTRO_VALUE}/setup.bash"
 BAGS_DIR="${DDDMR_BAGS_DIR:-${REPO_ROOT}/bags}"
 ROS_DOMAIN_ID_VALUE="${ROS_DOMAIN_ID:-0}"
 GO2_DDS_IP_VALUE="${GO2_DDS_IP:-192.168.123.18}"
-GO2_NET_IFACE_VALUE="${GO2_NET_IFACE:-enp46s0}"
-BUILD_BASE_VALUE="${DDDMR_BUILD_BASE:-.docker_go2_xt16_build}"
-INSTALL_BASE_VALUE="${DDDMR_INSTALL_BASE:-.docker_go2_xt16_install}"
-LOG_BASE_VALUE="${DDDMR_LOG_BASE:-.docker_go2_xt16_log}"
+GO2_NET_IFACE_VALUE="${GO2_NET_IFACE:-${DEFAULT_GO2_NET_IFACE}}"
+BUILD_BASE_VALUE="${DDDMR_BUILD_BASE:-${DEFAULT_BUILD_BASE}}"
+INSTALL_BASE_VALUE="${DDDMR_INSTALL_BASE:-${DEFAULT_INSTALL_BASE}}"
+LOG_BASE_VALUE="${DDDMR_LOG_BASE:-${DEFAULT_LOG_BASE}}"
+DOCKER_RUN_ARGS=()
+if [[ "${PLATFORM_VALUE}" == "orin-jp5" ]]; then
+  DOCKER_RUNTIME_VALUE="${DDDMR_DOCKER_RUNTIME:-nvidia}"
+else
+  DOCKER_RUNTIME_VALUE="${DDDMR_DOCKER_RUNTIME:-none}"
+fi
+[[ "${DOCKER_RUNTIME_VALUE}" == "nvidia" || "${DOCKER_RUNTIME_VALUE}" == "none" ]] || {
+  echo "DDDMR_DOCKER_RUNTIME must be nvidia or none." >&2
+  exit 2
+}
+if [[ "${DOCKER_RUNTIME_VALUE}" == "nvidia" ]]; then
+  DOCKER_RUN_ARGS+=(--runtime nvidia)
+fi
 
 RVIZ_VALUE="${RVIZ:-true}"
 MAP_RVIZ_VALUE="${MAP_RVIZ:-true}"
@@ -329,7 +376,7 @@ cleanup_stale_mapping_runtime() {
 docker_ros() {
   docker exec "${CONTAINER_NAME}" bash -lc "set -eo pipefail
 set +u
-source /opt/ros/humble/setup.bash
+source ${ROS_SETUP_FILE_VALUE}
 source /root/dddmr_navigation/scripts/setup_go2_dds_env.sh
 source /root/dddmr_navigation/${INSTALL_BASE_VALUE}/setup.bash
 set -u
@@ -374,7 +421,7 @@ start_map_result_rviz() {
   log "Starting map-result RViz: ${MAP_RVIZ_CONFIG}"
   docker exec "${CONTAINER_NAME}" bash -lc "set -e
 set +u
-source /opt/ros/humble/setup.bash
+source ${ROS_SETUP_FILE_VALUE}
 source /root/dddmr_navigation/scripts/setup_go2_dds_env.sh
 source /root/dddmr_navigation/${INSTALL_BASE_VALUE}/setup.bash
 set -u
@@ -508,8 +555,9 @@ measure_mouth_time_offset() {
   for ((attempt = 1; attempt <= MOUTH_OFFSET_MEASURE_ATTEMPTS_VALUE; ++attempt)); do
     log "Measuring mouth/XT16 time offset (${attempt}/${MOUTH_OFFSET_MEASURE_ATTEMPTS_VALUE}, ${MOUTH_OFFSET_MEASURE_SECONDS_VALUE}s)..."
     set +e
-    report="$(docker run --rm \
+    report="$(docker run "${DOCKER_RUN_ARGS[@]}" --rm \
       --network=host \
+      -e "ROS_DISTRO=${ROS_DISTRO_VALUE}" \
       -e "ROS_DOMAIN_ID=${ROS_DOMAIN_ID_VALUE}" \
       -e "GO2_DDS_IP=${GO2_DDS_IP_VALUE}" \
       -e "GO2_NET_IFACE=${GO2_NET_IFACE_VALUE}" \
@@ -526,7 +574,7 @@ measure_mouth_time_offset() {
       "${IMAGE}" \
       bash -lc 'set -eo pipefail
 set +u
-source /opt/ros/humble/setup.bash
+source "/opt/ros/${ROS_DISTRO}/setup.bash"
 source /root/dddmr_navigation/scripts/setup_go2_dds_env.sh
 set -u
 exec python3 /root/dddmr_navigation/scripts/measure_go2_mouth_xt16_time_offset.py \
@@ -647,8 +695,9 @@ measure_odom_time_offset() {
   for ((attempt = 1; attempt <= ODOM_OFFSET_MEASURE_ATTEMPTS_VALUE; ++attempt)); do
     log "Measuring odom/XT16 time offset (${attempt}/${ODOM_OFFSET_MEASURE_ATTEMPTS_VALUE}, ${ODOM_OFFSET_MEASURE_SECONDS_VALUE}s)..."
     set +e
-    report="$(docker run --rm \
+    report="$(docker run "${DOCKER_RUN_ARGS[@]}" --rm \
       --network=host \
+      -e "ROS_DISTRO=${ROS_DISTRO_VALUE}" \
       -e "ROS_DOMAIN_ID=${ROS_DOMAIN_ID_VALUE}" \
       -e "GO2_DDS_IP=${GO2_DDS_IP_VALUE}" \
       -e "GO2_NET_IFACE=${GO2_NET_IFACE_VALUE}" \
@@ -665,7 +714,7 @@ measure_odom_time_offset() {
       "${IMAGE}" \
       bash -lc 'set -eo pipefail
 set +u
-source /opt/ros/humble/setup.bash
+source "/opt/ros/${ROS_DISTRO}/setup.bash"
 source /root/dddmr_navigation/scripts/setup_go2_dds_env.sh
 set -u
 exec python3 /root/dddmr_navigation/scripts/measure_go2_odom_xt16_time_offset.py \
@@ -718,12 +767,13 @@ start_mapping_container() {
   fi
 
   log "Starting mapping container: ${CONTAINER_NAME}"
-  docker run -d \
+  docker run "${DOCKER_RUN_ARGS[@]}" -d \
     --name "${CONTAINER_NAME}" \
     --privileged \
     --network=host \
     -e "DISPLAY=${DISPLAY:-:0}" \
     -e "QT_X11_NO_MITSHM=1" \
+    -e "ROS_DISTRO=${ROS_DISTRO_VALUE}" \
     -e "ROS_DOMAIN_ID=${ROS_DOMAIN_ID_VALUE}" \
     -e "GO2_DDS_IP=${GO2_DDS_IP_VALUE}" \
     -e "GO2_NET_IFACE=${GO2_NET_IFACE_VALUE}" \
@@ -740,7 +790,7 @@ start_mapping_container() {
     bash -lc "set -eo pipefail
 cd /root/dddmr_navigation
 set +u
-source /opt/ros/humble/setup.bash
+source ${ROS_SETUP_FILE_VALUE}
 source /root/dddmr_navigation/scripts/setup_go2_dds_env.sh
 source /root/dddmr_navigation/${INSTALL_BASE_VALUE}/setup.bash
 set -u

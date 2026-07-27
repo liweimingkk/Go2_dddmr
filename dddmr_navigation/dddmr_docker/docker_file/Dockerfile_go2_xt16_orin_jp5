@@ -1,0 +1,65 @@
+ARG DDDMR_BASE_IMAGE=dddmr:orin-jp5.1.1
+FROM ${DDDMR_BASE_IMAGE}
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+ARG ROS_DISTRO=foxy
+ARG DDDMR_BUILD_JOBS=2
+ARG CYCLONEDDS_COMMIT=9995905bce6c4cf9f740d6438bbf7fcfd1c83dfd
+ARG RMW_CYCLONEDDS_COMMIT=c12abc56983204f1d91f2d839d394528c7b29b42
+ARG UNITREE_ROS2_COMMIT=66ae09858245ac3d2231c0cc209e36a88f8d7d03
+
+ENV ROS_DISTRO=${ROS_DISTRO} \
+    RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+
+# Unitree Go2 uses CycloneDDS 0.10.2. Build that exact middleware and the
+# matching Foxy RMW overlay, then install only the Unitree message packages.
+# No Unitree motion examples or control binaries are copied into this image.
+RUN mkdir -p /opt/unitree_ws/src \
+  && git clone https://github.com/eclipse-cyclonedds/cyclonedds.git \
+    /opt/unitree_ws/src/cyclonedds \
+  && git -C /opt/unitree_ws/src/cyclonedds checkout "${CYCLONEDDS_COMMIT}" \
+  && git clone https://github.com/ros2/rmw_cyclonedds.git \
+    /opt/unitree_ws/src/rmw_cyclonedds \
+  && git -C /opt/unitree_ws/src/rmw_cyclonedds checkout "${RMW_CYCLONEDDS_COMMIT}" \
+  && git clone https://github.com/unitreerobotics/unitree_ros2.git \
+    /tmp/unitree_ros2 \
+  && git -C /tmp/unitree_ros2 checkout "${UNITREE_ROS2_COMMIT}" \
+  && cp -a /tmp/unitree_ros2/cyclonedds_ws/src/unitree/unitree_api \
+    /opt/unitree_ws/src/ \
+  && cp -a /tmp/unitree_ros2/cyclonedds_ws/src/unitree/unitree_go \
+    /opt/unitree_ws/src/ \
+  && rm -rf /tmp/unitree_ros2 \
+  && export LD_LIBRARY_PATH="/opt/ros/${ROS_DISTRO}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+  && cd /opt/unitree_ws \
+  && colcon --log-base log-cyclonedds build \
+    --build-base build-cyclonedds \
+    --install-base /opt/unitree_ros2 \
+    --merge-install \
+    --packages-select cyclonedds \
+    --cmake-args -DCMAKE_BUILD_TYPE=Release \
+  && source "/opt/ros/${ROS_DISTRO}/setup.bash" \
+  && source /opt/unitree_ros2/setup.bash \
+  && colcon --log-base log-unitree build \
+    --build-base build-unitree \
+    --install-base /opt/unitree_ros2 \
+    --merge-install \
+    --executor sequential \
+    --packages-select rmw_cyclonedds_cpp unitree_api unitree_go \
+    --cmake-args -DCMAKE_BUILD_TYPE=Release \
+  && rm -rf /opt/unitree_ws
+
+ENV HTTP_PROXY= \
+    HTTPS_PROXY= \
+    http_proxy= \
+    https_proxy= \
+    ALL_PROXY= \
+    all_proxy=
+
+LABEL org.opencontainers.image.title="DDDMR Go2 XT16 JetPack 5" \
+      org.opencontainers.image.description="ROS 2 Foxy DDDMR runtime for Unitree Go2 on L4T R35.3.1" \
+      dddmr.platform="orin-jp5" \
+      dddmr.tensorrt-enabled="false"
+
+WORKDIR /root
+CMD ["bash"]

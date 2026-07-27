@@ -175,6 +175,9 @@ cython_debug/
 /.docker_go2_xt16_build
 /.docker_go2_xt16_install
 /.docker_go2_xt16_log
+/.docker_go2_xt16_orin_build
+/.docker_go2_xt16_orin_install
+/.docker_go2_xt16_orin_log
 
 *.trt
 *.pt

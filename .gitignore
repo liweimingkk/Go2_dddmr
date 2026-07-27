@@ -26,6 +26,9 @@ dddmr_navigation/log/
 dddmr_navigation/.docker_go2_xt16_build/
 dddmr_navigation/.docker_go2_xt16_install/
 dddmr_navigation/.docker_go2_xt16_log/
+dddmr_navigation/.docker_go2_xt16_orin_build/
+dddmr_navigation/.docker_go2_xt16_orin_install/
+dddmr_navigation/.docker_go2_xt16_orin_log/
 dddmr_navigation/.unitree_msg_ws/
 dddmr_navigation/build_codex_mapping/
 dddmr_navigation/install_codex_mapping/

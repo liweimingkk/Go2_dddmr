@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Fail closed until LeGO-LOAM reports valid live odometry synchronization."""
 
+from __future__ import annotations
+
 import argparse
 import math
 import sys

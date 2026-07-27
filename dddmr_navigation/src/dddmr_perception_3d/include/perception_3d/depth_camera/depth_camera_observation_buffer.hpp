@@ -47,7 +47,7 @@
 
 // Observation
 #include <perception_3d/depth_camera/depth_camera_observation.h>
-#include <tf2_eigen/tf2_eigen.hpp>
+#include <tf2_eigen/tf2_eigen.h>
 #include <pcl/filters/voxel_grid.h>
 
 // This is for euclidean distance segmentation

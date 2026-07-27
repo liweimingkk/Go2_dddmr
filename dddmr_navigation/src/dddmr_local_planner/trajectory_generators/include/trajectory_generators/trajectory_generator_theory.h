@@ -36,7 +36,7 @@
 /*path for trajectory*/
 #include <base_trajectory/trajectory.h>
 /*For tf2::matrix3x3 as quaternion to euler*/
-#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 
 #include <pcl/common/transforms.h>
 

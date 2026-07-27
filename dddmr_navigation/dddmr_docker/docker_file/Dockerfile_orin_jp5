@@ -1,0 +1,141 @@
+ARG DDDMR_PARENT_IMAGE=ubuntu:20.04
+FROM ${DDDMR_PARENT_IMAGE}
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+ARG ROS_DISTRO=foxy
+ARG DDDMR_BUILD_JOBS=2
+ARG GTSAM_VERSION=4.2a9
+ARG PCL_VERSION=pcl-1.15.0
+ARG UBUNTU_APT_MIRROR=
+ARG ROS2_APT_MIRROR=http://packages.ros.org/ros2/ubuntu
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=en_US.UTF-8 \
+    LC_ALL=en_US.UTF-8 \
+    ROS_DISTRO=${ROS_DISTRO}
+
+RUN if [[ -n "${UBUNTU_APT_MIRROR}" ]]; then \
+      sed -ri \
+        "s#https?://(ports|[a-z]{2}[.]ports)[.]ubuntu[.]com/ubuntu-ports#${UBUNTU_APT_MIRROR}#g; s#https?://([a-z]{2}[.]archive|archive)[.]ubuntu[.]com/ubuntu#${UBUNTU_APT_MIRROR}#g" \
+        /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null || true; \
+    fi \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends \
+    apt-utils \
+    ca-certificates \
+    curl \
+    gnupg2 \
+    locales \
+    lsb-release \
+    software-properties-common \
+  && locale-gen en_US en_US.UTF-8 \
+  && update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 \
+  && add-apt-repository universe \
+  && curl -fsSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+    -o /usr/share/keyrings/ros-archive-keyring.gpg \
+  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] ${ROS2_APT_MIRROR} $(lsb_release -cs) main" \
+    > /etc/apt/sources.list.d/ros2.list \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends \
+    bash-completion \
+    build-essential \
+    can-utils \
+    cmake \
+    gdb \
+    git \
+    htop \
+    iproute2 \
+    iputils-ping \
+    libasio-dev \
+    libboost-all-dev \
+    libeigen3-dev \
+    libflann-dev \
+    libfreeimage-dev \
+    libmetis-dev \
+    libopencv-dev \
+    libpcap-dev \
+    libqt5opengl5-dev \
+    libusb-1.0-0-dev \
+    libvtk7-dev \
+    nano \
+    net-tools \
+    openssh-client \
+    python3-colcon-common-extensions \
+    python3-opencv \
+    python3-pip \
+    python3-pytest \
+    python3-rosdep \
+    python3-yaml \
+    qtbase5-dev \
+    ros-${ROS_DISTRO}-ackermann-msgs \
+    ros-${ROS_DISTRO}-angles \
+    ros-${ROS_DISTRO}-cv-bridge \
+    ros-${ROS_DISTRO}-desktop \
+    ros-${ROS_DISTRO}-diagnostic-updater \
+    ros-${ROS_DISTRO}-image-geometry \
+    ros-${ROS_DISTRO}-interactive-markers \
+    ros-${ROS_DISTRO}-laser-geometry \
+    ros-${ROS_DISTRO}-map-msgs \
+    ros-${ROS_DISTRO}-pcl-conversions \
+    ros-${ROS_DISTRO}-resource-retriever \
+    ros-${ROS_DISTRO}-rmw-cyclonedds-cpp \
+    ros-${ROS_DISTRO}-rosidl-generator-dds-idl \
+    ros-${ROS_DISTRO}-tf2-eigen \
+    ros-${ROS_DISTRO}-tf2-geometry-msgs \
+    ros-${ROS_DISTRO}-tf2-sensor-msgs \
+    ros-${ROS_DISTRO}-xacro \
+    sudo \
+    unzip \
+    usbutils \
+  && rm -rf /var/lib/apt/lists/*
+
+# Keep GTSAM and PCL identical to the existing authoritative DDDMR image.
+# Native SIMD is disabled so the binaries are portable across the Orin power
+# modes and do not inherit build-host-specific instruction flags.
+RUN git clone --depth 1 --branch "${GTSAM_VERSION}" https://github.com/borglab/gtsam.git /tmp/gtsam \
+  && cmake -S /tmp/gtsam -B /tmp/gtsam/build \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DGTSAM_BUILD_EXAMPLES_ALWAYS=OFF \
+    -DGTSAM_BUILD_TESTS=OFF \
+    -DGTSAM_BUILD_UNSTABLE=OFF \
+    -DGTSAM_USE_SYSTEM_EIGEN=ON \
+    -DGTSAM_USE_SYSTEM_METIS=ON \
+  && cmake --build /tmp/gtsam/build --parallel "${DDDMR_BUILD_JOBS}" \
+  && cmake --install /tmp/gtsam/build \
+  && rm -rf /tmp/gtsam
+
+RUN git clone --depth 1 --branch "${PCL_VERSION}" https://github.com/PointCloudLibrary/pcl.git /tmp/pcl \
+  && cmake -S /tmp/pcl -B /tmp/pcl/build \
+    -DBUILD_apps=OFF \
+    -DBUILD_examples=OFF \
+    -DBUILD_global_tests=OFF \
+    -DBUILD_tools=OFF \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DPCL_ENABLE_AVX=OFF \
+    -DPCL_ENABLE_MARCHNATIVE=OFF \
+    -DPCL_ENABLE_SSE=OFF \
+  && cmake --build /tmp/pcl/build --parallel "${DDDMR_BUILD_JOBS}" \
+  && cmake --install /tmp/pcl/build \
+  && ldconfig \
+  && rm -rf /tmp/pcl
+
+COPY pkgs/serial-foxy.zip /tmp/serial-foxy.zip
+RUN unzip -q /tmp/serial-foxy.zip -d /tmp \
+  && source "/opt/ros/${ROS_DISTRO}/setup.bash" \
+  && cmake -S /tmp/serial-foxy -B /tmp/serial-foxy/build \
+    -DCMAKE_BUILD_TYPE=Release \
+  && cmake --build /tmp/serial-foxy/build --parallel "${DDDMR_BUILD_JOBS}" \
+  && cmake --install /tmp/serial-foxy/build \
+  && rm -rf /tmp/serial-foxy /tmp/serial-foxy.zip
+
+RUN printf '%s\n' \
+    'source "/opt/ros/${ROS_DISTRO:-foxy}/setup.bash"' \
+    'if [[ -f /opt/unitree_ros2/setup.bash ]]; then' \
+    '  source /opt/unitree_ros2/setup.bash' \
+    'fi' \
+    > /etc/dddmr_ros_setup.bash
+
+WORKDIR /root
+CMD ["bash"]

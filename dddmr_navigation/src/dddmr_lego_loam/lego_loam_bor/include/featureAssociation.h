@@ -9,7 +9,7 @@
 #include <pcl/kdtree/kdtree_flann.h>
 #include <Eigen/Eigenvalues>
 #include <Eigen/QR>
-#include <tf2_eigen/tf2_eigen.hpp>
+#include <tf2_eigen/tf2_eigen.h>
 
 // odom sanity check
 #include "tf2_ros/buffer.h"

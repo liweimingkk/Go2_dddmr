@@ -16,7 +16,7 @@
 
 //@allows us to use pcl::transformPointCloud function
 #include <pcl/io/pcd_io.h>
-#include <tf2_eigen/tf2_eigen.hpp>
+#include <tf2_eigen/tf2_eigen.h>
 #include <pcl/common/transforms.h>
 
 #include <geometry_msgs/msg/pose_array.hpp>

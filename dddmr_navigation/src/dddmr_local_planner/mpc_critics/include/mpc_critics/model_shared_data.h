@@ -49,7 +49,7 @@
 /*path for trajectory*/
 #include <base_trajectory/trajectory.h>
 /*For tf2::matrix3x3 as quaternion to euler*/
-#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 
 /*For robot state*/
 #include "nav_msgs/msg/odometry.hpp"
@@ -61,7 +61,7 @@
 #include <pcl/kdtree/kdtree_flann.h>
 
 //@tf2::eigenToTransform
-#include <tf2_eigen/tf2_eigen.hpp>
+#include <tf2_eigen/tf2_eigen.h>
 #include <Eigen/Core>
 
 namespace mpc_critics

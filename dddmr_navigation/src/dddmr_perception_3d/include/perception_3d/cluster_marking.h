@@ -38,7 +38,7 @@
 #include <pcl/point_types.h>
 
 /*allows us to use pcl::transformPointCloud function*/
-#include <tf2_eigen/tf2_eigen.hpp>
+#include <tf2_eigen/tf2_eigen.h>
 #include <pcl/common/transforms.h>
 
 /*voxel*/
@@ -70,7 +70,7 @@
 #include <pcl/sample_consensus/model_types.h>
 
 /*tf2 to ros msg/vice versa*/
-#include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
+#include "tf2_geometry_msgs/tf2_geometry_msgs.h"
 /*For shortest angle*/
 #include <angles/angles.h>
 

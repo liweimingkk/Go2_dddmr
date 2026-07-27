@@ -1,6 +1,6 @@
 #include <cmath>
 #include "lego_loam_map_visualization.hpp"
-#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #include <tf2/LinearMath/Transform.h>
 #include <pcl/filters/voxel_grid.h>
 

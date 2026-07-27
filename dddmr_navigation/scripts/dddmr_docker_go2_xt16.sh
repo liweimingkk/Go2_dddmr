@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${DDDMR_DOCKER_USE_SUDO:-0}" == "1" && "${EUID}" -ne 0 ]]; then
+  exec sudo -E -- "$0" "$@"
+fi
+
 usage() {
   cat <<'EOF'
 Usage: scripts/dddmr_docker_go2_xt16.sh <command> [args...]
 
 Commands:
-  shell        Start an interactive official DDDMR x64 Docker shell.
+  shell        Start an interactive DDDMR Docker shell.
   preflight    Read-only check of live Go2 XT16 /lidar_points contract.
   build-lego   Build lego_loam_bor and its dependencies inside Docker.
+  build-all    Build all 33 source packages with TensorRT disabled.
+  test-all     Run tests for the platform-specific build.
   mapping      Run no-motion Go2 XT16 LeGO-LOAM mapping inside Docker.
   mapping-bag  Run offline Go2 XT16 LeGO-LOAM mapping from a rosbag2 directory.
   build-navigation
@@ -36,13 +42,24 @@ Commands:
   outdoor-indoor-live-source
                Run the mission stack as an isolated velocity source. It never
                publishes /api/sport/request by itself.
-  build-image  Build the official dddmr:x64 Docker image from dddmr_docker.
+  build-image  Build the platform-specific DDDMR base image.
   build-go2-image
-               Build a thin Go2 image layer with CycloneDDS RMW.
+               Build the platform-specific Go2 CycloneDDS image.
 
 Environment:
-  DDDMR_IMAGE=dddmr_go2_xt16:x64
-  DDDMR_BASE_IMAGE=dddmr:x64
+  DDDMR_PLATFORM=x64|orin-jp5
+               Select x64/Humble (default) or Orin/JetPack 5/Foxy.
+  DDDMR_IMAGE=<platform default>
+  DDDMR_BASE_IMAGE=<platform default>
+  DDDMR_PARENT_IMAGE=<optional parent image override for orin-jp5>
+  DDDMR_UBUNTU_APT_MIRROR=<optional Ubuntu mirror URL>
+  DDDMR_ROS2_APT_MIRROR=<optional ROS 2 mirror URL>
+  DDDMR_DOCKER_USE_SUDO=0|1
+               Re-execute the complete command through sudo so nested Docker
+               helpers work when the current user cannot access docker.sock.
+  DDDMR_DOCKER_RUNTIME=nvidia|none
+               Defaults to nvidia for orin-jp5 and none for x64.
+  DDDMR_BUILD_JOBS=<default 2 on orin-jp5>
   DDDMR_BAGS_DIR=<repo-parent>/bags
   ROS_DOMAIN_ID=0
   GO2_DDS_IP=192.168.123.18
@@ -74,15 +91,66 @@ EOF
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-IMAGE="${DDDMR_IMAGE:-dddmr_go2_xt16:x64}"
-BASE_IMAGE="${DDDMR_BASE_IMAGE:-dddmr:x64}"
+PLATFORM_VALUE="${DDDMR_PLATFORM:-x64}"
+
+case "${PLATFORM_VALUE}" in
+  x64)
+    DEFAULT_IMAGE="dddmr_go2_xt16:x64"
+    DEFAULT_BASE_IMAGE="dddmr:x64"
+    DEFAULT_ROS_DISTRO="humble"
+    DEFAULT_BUILD_BASE=".docker_go2_xt16_build"
+    DEFAULT_INSTALL_BASE=".docker_go2_xt16_install"
+    DEFAULT_LOG_BASE=".docker_go2_xt16_log"
+    BASE_DOCKERFILE="${WS_ROOT}/dddmr_docker/docker_file/Dockerfile_x64"
+    GO2_DOCKERFILE="${WS_ROOT}/dddmr_docker/docker_file/Dockerfile_go2_xt16"
+    COLCON_EXECUTOR_ARGS_VALUE=""
+    ;;
+  orin-jp5)
+    DEFAULT_IMAGE="dddmr_go2_xt16:orin-jp5.1.1"
+    DEFAULT_BASE_IMAGE="dddmr:orin-jp5.1.1"
+    DEFAULT_ROS_DISTRO="foxy"
+    DEFAULT_BUILD_BASE=".docker_go2_xt16_orin_build"
+    DEFAULT_INSTALL_BASE=".docker_go2_xt16_orin_install"
+    DEFAULT_LOG_BASE=".docker_go2_xt16_orin_log"
+    BASE_DOCKERFILE="${WS_ROOT}/dddmr_docker/docker_file/Dockerfile_orin_jp5"
+    GO2_DOCKERFILE="${WS_ROOT}/dddmr_docker/docker_file/Dockerfile_go2_xt16_orin_jp5"
+    COLCON_EXECUTOR_ARGS_VALUE="--executor sequential"
+    ;;
+  *)
+    echo "DDDMR_PLATFORM must be x64 or orin-jp5, got: ${PLATFORM_VALUE}" >&2
+    exit 2
+    ;;
+esac
+
+ROS_DISTRO_VALUE="${DDDMR_ROS_DISTRO:-${DEFAULT_ROS_DISTRO}}"
+[[ "${ROS_DISTRO_VALUE}" =~ ^[a-z0-9_]+$ ]] || {
+  echo "DDDMR_ROS_DISTRO contains unsupported characters." >&2
+  exit 2
+}
+
+IMAGE="${DDDMR_IMAGE:-${DEFAULT_IMAGE}}"
+BASE_IMAGE="${DDDMR_BASE_IMAGE:-${DEFAULT_BASE_IMAGE}}"
 BAGS_DIR="${DDDMR_BAGS_DIR:-${WS_ROOT}/../bags}"
 ROS_DOMAIN_ID_VALUE="${ROS_DOMAIN_ID:-0}"
 GO2_DDS_IP_VALUE="${GO2_DDS_IP:-192.168.123.18}"
 GO2_NET_IFACE_VALUE="${GO2_NET_IFACE:-}"
-BUILD_BASE_VALUE="${DDDMR_BUILD_BASE:-.docker_go2_xt16_build}"
-INSTALL_BASE_VALUE="${DDDMR_INSTALL_BASE:-.docker_go2_xt16_install}"
-LOG_BASE_VALUE="${DDDMR_LOG_BASE:-.docker_go2_xt16_log}"
+BUILD_BASE_VALUE="${DDDMR_BUILD_BASE:-${DEFAULT_BUILD_BASE}}"
+INSTALL_BASE_VALUE="${DDDMR_INSTALL_BASE:-${DEFAULT_INSTALL_BASE}}"
+LOG_BASE_VALUE="${DDDMR_LOG_BASE:-${DEFAULT_LOG_BASE}}"
+BUILD_JOBS_VALUE="${DDDMR_BUILD_JOBS:-2}"
+[[ "${BUILD_JOBS_VALUE}" =~ ^[1-9][0-9]*$ ]] || {
+  echo "DDDMR_BUILD_JOBS must be a positive integer." >&2
+  exit 2
+}
+if [[ "${PLATFORM_VALUE}" == "orin-jp5" ]]; then
+  DOCKER_RUNTIME_VALUE="${DDDMR_DOCKER_RUNTIME:-nvidia}"
+else
+  DOCKER_RUNTIME_VALUE="${DDDMR_DOCKER_RUNTIME:-none}"
+fi
+[[ "${DOCKER_RUNTIME_VALUE}" == "nvidia" || "${DOCKER_RUNTIME_VALUE}" == "none" ]] || {
+  echo "DDDMR_DOCKER_RUNTIME must be nvidia or none." >&2
+  exit 2
+}
 DOCKER_NAME_VALUE="${DDDMR_DOCKER_NAME:-}"
 ODOM_OFFSET_RESOLVER="${GO2_ODOM_TIME_OFFSET_RESOLVER:-${SCRIPT_DIR}/resolve_go2_odom_time_offset.sh}"
 ODOM_SYNC_TOLERANCE_SEC_VALUE="${ODOM_SYNC_TOLERANCE_SEC:-0.05}"
@@ -156,6 +224,34 @@ validate_scan_navigation_limits() {
   }
 }
 
+append_proxy_build_args() {
+  local args_name="$1"
+  local proxy_pair
+  local upper_name
+  local lower_name
+  local upper_value
+  local lower_value
+  local proxy_value
+  local -n args_ref="${args_name}"
+
+  for proxy_pair in \
+    "HTTP_PROXY http_proxy" \
+    "HTTPS_PROXY https_proxy" \
+    "NO_PROXY no_proxy" \
+    "ALL_PROXY all_proxy"; do
+    read -r upper_name lower_name <<<"${proxy_pair}"
+    upper_value="${!upper_name:-}"
+    lower_value="${!lower_name:-}"
+    proxy_value="${upper_value:-${lower_value}}"
+    if [[ -n "${proxy_value}" ]]; then
+      args_ref+=(
+        --build-arg "${upper_name}=${proxy_value}"
+        --build-arg "${lower_name}=${proxy_value}"
+      )
+    fi
+  done
+}
+
 resolve_live_odom_time_offset() {
   local offset
   [[ -x "${ODOM_OFFSET_RESOLVER}" ]] || {
@@ -174,6 +270,9 @@ resolve_live_odom_time_offset() {
   echo "Running read-only odom/XT16 time-sync preflight..." >&2
   offset="$(
     DDDMR_IMAGE="${IMAGE}" \
+    DDDMR_PLATFORM="${PLATFORM_VALUE}" \
+    DDDMR_ROS_DISTRO="${ROS_DISTRO_VALUE}" \
+    DDDMR_DOCKER_RUNTIME="${DOCKER_RUNTIME_VALUE}" \
     ROS_DOMAIN_ID="${ROS_DOMAIN_ID_VALUE}" \
     GO2_DDS_IP="${GO2_DDS_IP_VALUE}" \
     GO2_NET_IFACE="${GO2_NET_IFACE_VALUE}" \
@@ -195,6 +294,7 @@ docker_base_args() {
     --network=host
     --env "DISPLAY=${DISPLAY:-}"
     --env "QT_X11_NO_MITSHM=1"
+    --env "ROS_DISTRO=${ROS_DISTRO_VALUE}"
     --env "ROS_DOMAIN_ID=${ROS_DOMAIN_ID_VALUE}"
     --env "GO2_DDS_IP=${GO2_DDS_IP_VALUE}"
     --env "RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
@@ -207,6 +307,13 @@ docker_base_args() {
     --volume "${BAGS_DIR}:/root/dddmr_bags"
     --volume "${BAGS_DIR}:${BAGS_DIR}"
   )
+  if [[ "${DOCKER_RUNTIME_VALUE}" == "nvidia" ]]; then
+    args+=(
+      --runtime nvidia
+      --env "NVIDIA_VISIBLE_DEVICES=all"
+      --env "NVIDIA_DRIVER_CAPABILITIES=all"
+    )
+  fi
   if [[ -n "${GO2_NET_IFACE_VALUE}" ]]; then
     args+=(--env "GO2_NET_IFACE=${GO2_NET_IFACE_VALUE}")
   fi
@@ -223,18 +330,24 @@ run_docker() {
   docker run "${base_args[@]}" "$@"
 }
 
-source_prefix='set -eo pipefail
+source_prefix="set -eo pipefail
 set +u
-source /opt/ros/humble/setup.bash
+source /opt/ros/${ROS_DISTRO_VALUE}/setup.bash
+if [[ -f /opt/unitree_ros2/setup.bash ]]; then
+  source /opt/unitree_ros2/setup.bash
+fi
 source /root/dddmr_navigation/scripts/setup_go2_dds_env.sh
 set -u
-cd /root/dddmr_navigation'
+cd /root/dddmr_navigation"
 
-offline_source_prefix='set -eo pipefail
+offline_source_prefix="set -eo pipefail
 set +u
-source /opt/ros/humble/setup.bash
+source /opt/ros/${ROS_DISTRO_VALUE}/setup.bash
+if [[ -f /opt/unitree_ros2/setup.bash ]]; then
+  source /opt/unitree_ros2/setup.bash
+fi
 set -u
-cd /root/dddmr_navigation'
+cd /root/dddmr_navigation"
 
 case "${command}" in
   shell)
@@ -251,12 +364,26 @@ python3 scripts/go2_xt16_lidar_preflight.py \"\$@\"" bash "$@"
 
   build-lego)
     run_docker "${IMAGE}" bash -lc "${source_prefix}
-colcon --log-base \"\${DDDMR_LOG_BASE}\" build --base-paths src --symlink-install --packages-up-to lego_loam_bor --build-base \"\${DDDMR_BUILD_BASE}\" --install-base \"\${DDDMR_INSTALL_BASE}\" --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPython3_EXECUTABLE=/usr/bin/python3"
+colcon --log-base \"\${DDDMR_LOG_BASE}\" build ${COLCON_EXECUTOR_ARGS_VALUE} --base-paths src --symlink-install --packages-up-to lego_loam_bor --build-base \"\${DDDMR_BUILD_BASE}\" --install-base \"\${DDDMR_INSTALL_BASE}\" --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPython3_EXECUTABLE=/usr/bin/python3 -DTRT_ENABLED=OFF"
+    ;;
+
+  build-all)
+    run_docker "${IMAGE}" bash -lc "${source_prefix}
+colcon --log-base \"\${DDDMR_LOG_BASE}\" build ${COLCON_EXECUTOR_ARGS_VALUE} --base-paths src --symlink-install --build-base \"\${DDDMR_BUILD_BASE}\" --install-base \"\${DDDMR_INSTALL_BASE}\" --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPython3_EXECUTABLE=/usr/bin/python3 -DTRT_ENABLED=OFF"
+    ;;
+
+  test-all)
+    run_docker "${IMAGE}" bash -lc "${offline_source_prefix}
+set +u
+source \"\${DDDMR_INSTALL_BASE}/setup.bash\"
+set -u
+colcon --log-base \"\${DDDMR_LOG_BASE}\" test ${COLCON_EXECUTOR_ARGS_VALUE} --base-paths src --build-base \"\${DDDMR_BUILD_BASE}\" --install-base \"\${DDDMR_INSTALL_BASE}\"
+colcon test-result --test-result-base \"\${DDDMR_BUILD_BASE}\" --verbose"
     ;;
 
   build-navigation)
     run_docker "${IMAGE}" bash -lc "${source_prefix}
-colcon --log-base \"\${DDDMR_LOG_BASE}\" build --base-paths src --symlink-install --packages-up-to lego_loam_bor dddmr_pg_map_server mcl_3dl global_planner p2p_move_base perception_3d dddmr_beginner_guide dddmr_rviz_default_plugins map_delete_panel scan_planner dddmr_scan_planner --build-base \"\${DDDMR_BUILD_BASE}\" --install-base \"\${DDDMR_INSTALL_BASE}\" --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPython3_EXECUTABLE=/usr/bin/python3"
+colcon --log-base \"\${DDDMR_LOG_BASE}\" build ${COLCON_EXECUTOR_ARGS_VALUE} --base-paths src --symlink-install --packages-up-to lego_loam_bor dddmr_pg_map_server mcl_3dl global_planner p2p_move_base perception_3d dddmr_beginner_guide dddmr_rviz_default_plugins map_delete_panel scan_planner dddmr_scan_planner --build-base \"\${DDDMR_BUILD_BASE}\" --install-base \"\${DDDMR_INSTALL_BASE}\" --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPython3_EXECUTABLE=/usr/bin/python3 -DTRT_ENABLED=OFF"
     ;;
 
   pose-graph-editor)
@@ -583,15 +710,50 @@ ${launch_cmd}" bash "$@"
     ;;
 
   build-image)
-    docker build --network host -t "${BASE_IMAGE}" -f "${WS_ROOT}/dddmr_docker/docker_file/Dockerfile_x64" "${WS_ROOT}/dddmr_docker/docker_file"
+    build_args=(
+      --network host
+      --build-arg "DDDMR_BUILD_JOBS=${BUILD_JOBS_VALUE}"
+    )
+    if [[ -n "${DDDMR_PARENT_IMAGE:-}" ]]; then
+      build_args+=(--build-arg "DDDMR_PARENT_IMAGE=${DDDMR_PARENT_IMAGE}")
+    fi
+    if [[ -n "${DDDMR_UBUNTU_APT_MIRROR:-}" ]]; then
+      build_args+=(--build-arg "UBUNTU_APT_MIRROR=${DDDMR_UBUNTU_APT_MIRROR}")
+    fi
+    if [[ -n "${DDDMR_ROS2_APT_MIRROR:-}" ]]; then
+      build_args+=(--build-arg "ROS2_APT_MIRROR=${DDDMR_ROS2_APT_MIRROR}")
+    fi
+    append_proxy_build_args build_args
+    docker build "${build_args[@]}" -t "${BASE_IMAGE}" -f "${BASE_DOCKERFILE}" "${WS_ROOT}/dddmr_docker/docker_file"
     ;;
 
   build-go2-image)
     if ! docker image inspect "${BASE_IMAGE}" >/dev/null 2>&1; then
       echo "Base image ${BASE_IMAGE} not found. Building it first." >&2
-      docker build --network host -t "${BASE_IMAGE}" -f "${WS_ROOT}/dddmr_docker/docker_file/Dockerfile_x64" "${WS_ROOT}/dddmr_docker/docker_file"
+      build_args=(
+        --network host
+        --build-arg "DDDMR_BUILD_JOBS=${BUILD_JOBS_VALUE}"
+      )
+      if [[ -n "${DDDMR_PARENT_IMAGE:-}" ]]; then
+        build_args+=(--build-arg "DDDMR_PARENT_IMAGE=${DDDMR_PARENT_IMAGE}")
+      fi
+      if [[ -n "${DDDMR_UBUNTU_APT_MIRROR:-}" ]]; then
+        build_args+=(--build-arg "UBUNTU_APT_MIRROR=${DDDMR_UBUNTU_APT_MIRROR}")
+      fi
+      if [[ -n "${DDDMR_ROS2_APT_MIRROR:-}" ]]; then
+        build_args+=(--build-arg "ROS2_APT_MIRROR=${DDDMR_ROS2_APT_MIRROR}")
+      fi
+      append_proxy_build_args build_args
+      docker build "${build_args[@]}" -t "${BASE_IMAGE}" -f "${BASE_DOCKERFILE}" "${WS_ROOT}/dddmr_docker/docker_file"
     fi
-    docker build --network host -t "${IMAGE}" -f "${WS_ROOT}/dddmr_docker/docker_file/Dockerfile_go2_xt16" "${WS_ROOT}/dddmr_docker/docker_file"
+    build_args=(
+      --network host
+      --build-arg "DDDMR_BASE_IMAGE=${BASE_IMAGE}"
+      --build-arg "DDDMR_BUILD_JOBS=${BUILD_JOBS_VALUE}"
+    )
+    append_proxy_build_args build_args
+    docker build "${build_args[@]}" \
+      -t "${IMAGE}" -f "${GO2_DOCKERFILE}" "${WS_ROOT}/dddmr_docker/docker_file"
     ;;
 
   -h|--help|help)

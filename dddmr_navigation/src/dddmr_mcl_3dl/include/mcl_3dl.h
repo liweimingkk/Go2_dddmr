@@ -102,7 +102,7 @@
 
 
 /*allows us to use pcl::transformPointCloud function*/
-#include <tf2_eigen/tf2_eigen.hpp>
+#include <tf2_eigen/tf2_eigen.h>
 
 /*For pcl::transformPointCloud, dont use #include <pcl/common/transforms.h> ???*/
 #include <pcl/common/transforms.h>
