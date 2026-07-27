@@ -5,6 +5,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 
 #include <dddmr_sys_core/action/get_plan.hpp>
 #include <geometry_msgs/msg/point_stamped.hpp>
@@ -224,8 +225,16 @@ private:
 
     auto options = rclcpp_action::Client<GetPlan>::SendGoalOptions();
     options.goal_response_callback =
-      [this, generation](const GoalHandle::SharedPtr & handle)
+      [this, generation](auto response)
       {
+        GoalHandle::SharedPtr handle;
+        if constexpr (
+          std::is_same_v<std::decay_t<decltype(response)>, GoalHandle::SharedPtr>)
+        {
+          handle = response;
+        } else {
+          handle = response.get();
+        }
         if (!handle) {
           request_in_flight_ = false;
         }

@@ -29,6 +29,7 @@
 * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 #include <p2p_move_base/p2p_move_base.h>
+#include <type_traits>
 
 namespace p2p_move_base
 {
@@ -870,7 +871,15 @@ void P2PMoveBase::startRecoveryBehaviors(std::string behavior_name){
   auto send_goal_options = rclcpp_action::Client<dddmr_sys_core::action::RecoveryBehaviors>::SendGoalOptions();
   
   send_goal_options.goal_response_callback =
-    std::bind(&P2PMoveBase::recovery_behaviors_client_goal_response_callback, this, std::placeholders::_1);
+    [this](auto response) {
+      using GoalHandle =
+        rclcpp_action::ClientGoalHandle<dddmr_sys_core::action::RecoveryBehaviors>;
+      if constexpr (std::is_same_v<std::decay_t<decltype(response)>, GoalHandle::SharedPtr>) {
+        recovery_behaviors_client_goal_response_callback(response);
+      } else {
+        recovery_behaviors_client_goal_response_callback(response.get());
+      }
+    };
   send_goal_options.result_callback =
     std::bind(&P2PMoveBase::recovery_behaviors_client_result_callback, this, std::placeholders::_1);
   

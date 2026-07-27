@@ -29,6 +29,7 @@
 * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 #include <p2p_move_base/p2p_global_plan_manager.h>
+#include <type_traits>
 namespace p2p_move_base
 {
 P2PGlobalPlanManager::P2PGlobalPlanManager(std::string name)
@@ -100,7 +101,14 @@ void P2PGlobalPlanManager::stop(){
     goal_msg.activate_threading = false;
     auto send_goal_options = rclcpp_action::Client<dddmr_sys_core::action::GetPlan>::SendGoalOptions();
     send_goal_options.goal_response_callback =
-      std::bind(&P2PGlobalPlanManager::global_planner_client_goal_response_callback, this, std::placeholders::_1);
+      [this](auto response) {
+        using GoalHandle = rclcpp_action::ClientGoalHandle<dddmr_sys_core::action::GetPlan>;
+        if constexpr (std::is_same_v<std::decay_t<decltype(response)>, GoalHandle::SharedPtr>) {
+          global_planner_client_goal_response_callback(response);
+        } else {
+          global_planner_client_goal_response_callback(response.get());
+        }
+      };
     send_goal_options.result_callback =
       std::bind(&P2PGlobalPlanManager::global_planner_client_result_callback, this, std::placeholders::_1);
     global_planner_client_ptr_->async_send_goal(goal_msg, send_goal_options);
@@ -127,7 +135,14 @@ void P2PGlobalPlanManager::queryThread(){
   auto send_goal_options = rclcpp_action::Client<dddmr_sys_core::action::GetPlan>::SendGoalOptions();
   
   send_goal_options.goal_response_callback =
-    std::bind(&P2PGlobalPlanManager::global_planner_client_goal_response_callback, this, std::placeholders::_1);
+    [this](auto response) {
+      using GoalHandle = rclcpp_action::ClientGoalHandle<dddmr_sys_core::action::GetPlan>;
+      if constexpr (std::is_same_v<std::decay_t<decltype(response)>, GoalHandle::SharedPtr>) {
+        global_planner_client_goal_response_callback(response);
+      } else {
+        global_planner_client_goal_response_callback(response.get());
+      }
+    };
   send_goal_options.result_callback =
     std::bind(&P2PGlobalPlanManager::global_planner_client_result_callback, this, std::placeholders::_1);
   

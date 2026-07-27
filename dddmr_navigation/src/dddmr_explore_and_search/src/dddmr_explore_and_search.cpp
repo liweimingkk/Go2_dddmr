@@ -1,4 +1,5 @@
 #include <cmath>
+#include <type_traits>
 #include "dddmr_explore_and_search/dddmr_explore_and_search.hpp"
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #include <tf2/LinearMath/Transform.h>
@@ -234,7 +235,14 @@ void DddmrExploreAndSearch::sendP2P(geometry_msgs::msg::PoseStamped m_target_pos
   auto send_goal_options = rclcpp_action::Client<dddmr_sys_core::action::PToPMoveBase>::SendGoalOptions();
   
   send_goal_options.goal_response_callback =
-    std::bind(&DddmrExploreAndSearch::p2p_move_base_client_goal_response_callback, this, std::placeholders::_1);
+    [this](auto response) {
+      using GoalHandle = rclcpp_action::ClientGoalHandle<dddmr_sys_core::action::PToPMoveBase>;
+      if constexpr (std::is_same_v<std::decay_t<decltype(response)>, GoalHandle::SharedPtr>) {
+        p2p_move_base_client_goal_response_callback(response);
+      } else {
+        p2p_move_base_client_goal_response_callback(response.get());
+      }
+    };
   send_goal_options.result_callback =
     std::bind(&DddmrExploreAndSearch::p2p_move_base_client_result_callback, this, std::placeholders::_1);
   
