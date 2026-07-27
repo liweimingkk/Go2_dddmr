@@ -219,6 +219,6 @@ install(FILES perception_3d_plugins.xml
 
 ament_export_include_directories(include)
 ament_export_libraries(shared_data_sensor perception_sensor stacked_perception stacked_perception_ros cluster_marking depth_camera_buffer layers)
-ament_export_dependencies(${dependencies})
+ament_export_dependencies(${dependencies} PCL)
 pluginlib_export_plugin_description_file(perception_3d perception_3d_plugins.xml)
 ament_package()
