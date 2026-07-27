@@ -77,6 +77,13 @@ trees are isolated in:
 .docker_go2_xt16_orin_log/
 ```
 
+The stock JetPack 5 host caps UDP receive buffers below the workspace's strict
+16 MiB x64 minimum. The Orin wrapper therefore sets
+`GO2_DDS_RCVBUF_MIN=default` inside its containers while still asking
+CycloneDDS for a 16 MiB maximum. This does not change host sysctls or robot
+network settings. The x64 default remains a fail-closed 16 MiB minimum, and
+the live point-cloud preflight below remains mandatory on Orin.
+
 ## Read-only acceptance
 
 First prove that actual XT16 samples cross the container boundary:

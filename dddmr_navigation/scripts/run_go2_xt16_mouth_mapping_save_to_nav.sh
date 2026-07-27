@@ -81,6 +81,7 @@ case "${PLATFORM_VALUE}" in
     DEFAULT_BUILD_BASE=".docker_go2_xt16_build"
     DEFAULT_INSTALL_BASE=".docker_go2_xt16_install"
     DEFAULT_LOG_BASE=".docker_go2_xt16_log"
+    DEFAULT_GO2_DDS_RCVBUF_MIN="16MiB"
     ;;
   orin-jp5)
     DEFAULT_IMAGE="dddmr_go2_xt16:orin-jp5.1.1"
@@ -89,6 +90,7 @@ case "${PLATFORM_VALUE}" in
     DEFAULT_BUILD_BASE=".docker_go2_xt16_orin_build"
     DEFAULT_INSTALL_BASE=".docker_go2_xt16_orin_install"
     DEFAULT_LOG_BASE=".docker_go2_xt16_orin_log"
+    DEFAULT_GO2_DDS_RCVBUF_MIN="default"
     ;;
   *)
     echo "DDDMR_PLATFORM must be x64 or orin-jp5, got: ${PLATFORM_VALUE}" >&2
@@ -107,6 +109,12 @@ BAGS_DIR="${DDDMR_BAGS_DIR:-${REPO_ROOT}/bags}"
 ROS_DOMAIN_ID_VALUE="${ROS_DOMAIN_ID:-0}"
 GO2_DDS_IP_VALUE="${GO2_DDS_IP:-192.168.123.18}"
 GO2_NET_IFACE_VALUE="${GO2_NET_IFACE:-${DEFAULT_GO2_NET_IFACE}}"
+GO2_DDS_RCVBUF_MIN_VALUE="${GO2_DDS_RCVBUF_MIN:-${DEFAULT_GO2_DDS_RCVBUF_MIN}}"
+[[ "${GO2_DDS_RCVBUF_MIN_VALUE}" == "default" || \
+   "${GO2_DDS_RCVBUF_MIN_VALUE}" =~ ^[1-9][0-9]*(B|KiB|MiB|GiB)$ ]] || {
+  echo "GO2_DDS_RCVBUF_MIN must be default or a positive byte size." >&2
+  exit 2
+}
 BUILD_BASE_VALUE="${DDDMR_BUILD_BASE:-${DEFAULT_BUILD_BASE}}"
 INSTALL_BASE_VALUE="${DDDMR_INSTALL_BASE:-${DEFAULT_INSTALL_BASE}}"
 LOG_BASE_VALUE="${DDDMR_LOG_BASE:-${DEFAULT_LOG_BASE}}"
@@ -561,6 +569,7 @@ measure_mouth_time_offset() {
       -e "ROS_DOMAIN_ID=${ROS_DOMAIN_ID_VALUE}" \
       -e "GO2_DDS_IP=${GO2_DDS_IP_VALUE}" \
       -e "GO2_NET_IFACE=${GO2_NET_IFACE_VALUE}" \
+      -e "GO2_DDS_RCVBUF_MIN=${GO2_DDS_RCVBUF_MIN_VALUE}" \
       -e "RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}" \
       -e "MOUTH_TOPIC=${MOUTH_CLOUD_TOPIC_VALUE}" \
       -e "XT16_TOPIC=${XT16_TOPIC_VALUE}" \
@@ -701,6 +710,7 @@ measure_odom_time_offset() {
       -e "ROS_DOMAIN_ID=${ROS_DOMAIN_ID_VALUE}" \
       -e "GO2_DDS_IP=${GO2_DDS_IP_VALUE}" \
       -e "GO2_NET_IFACE=${GO2_NET_IFACE_VALUE}" \
+      -e "GO2_DDS_RCVBUF_MIN=${GO2_DDS_RCVBUF_MIN_VALUE}" \
       -e "RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}" \
       -e "ODOM_TOPIC=${ODOM_TOPIC_VALUE}" \
       -e "XT16_TOPIC=${XT16_TOPIC_VALUE}" \
@@ -777,6 +787,7 @@ start_mapping_container() {
     -e "ROS_DOMAIN_ID=${ROS_DOMAIN_ID_VALUE}" \
     -e "GO2_DDS_IP=${GO2_DDS_IP_VALUE}" \
     -e "GO2_NET_IFACE=${GO2_NET_IFACE_VALUE}" \
+    -e "GO2_DDS_RCVBUF_MIN=${GO2_DDS_RCVBUF_MIN_VALUE}" \
     -e "RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}" \
     -e "DDDMR_BUILD_BASE=${BUILD_BASE_VALUE}" \
     -e "DDDMR_INSTALL_BASE=${INSTALL_BASE_VALUE}" \

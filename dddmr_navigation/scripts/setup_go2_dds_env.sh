@@ -40,9 +40,11 @@ export GO2_NET_IFACE
 export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
 
 GO2_DDS_RCVBUF_MAX="${GO2_DDS_RCVBUF_MAX:-16MiB}"
-# Keep the receive minimum fail-closed. If GO2_DDS_RCVBUF_MAX is overridden
-# below this value, CycloneDDS must reject the invalid/unsatisfied request.
-GO2_DDS_RCVBUF_MIN="16MiB"
+# Keep the standalone default fail-closed. The Orin wrapper explicitly selects
+# "default" because stock JetPack 5 caps the host receive buffer below 16 MiB;
+# CycloneDDS still requests GO2_DDS_RCVBUF_MAX and the live sample preflight
+# remains the acceptance gate.
+GO2_DDS_RCVBUF_MIN="${GO2_DDS_RCVBUF_MIN:-16MiB}"
 GO2_DDS_SNDBUF_MAX="${GO2_DDS_SNDBUF_MAX:-16MiB}"
 GO2_DDS_FRAGMENT_SIZE="${GO2_DDS_FRAGMENT_SIZE:-65000B}"
 GO2_DDS_ALLOW_MULTICAST="${GO2_DDS_ALLOW_MULTICAST:-true}"

@@ -64,6 +64,7 @@ Environment:
   ROS_DOMAIN_ID=0
   GO2_DDS_IP=192.168.123.18
   GO2_NET_IFACE=<auto>
+  GO2_DDS_RCVBUF_MIN=<default 16MiB on x64; kernel default on orin-jp5>
   ODOM_TIME_OFFSET_SEC=<explicit override; skips automatic measurement>
   AUTO_MEASURE_ODOM_TIME_OFFSET=true
   ODOM_SYNC_TOLERANCE_SEC=0.05
@@ -101,6 +102,7 @@ case "${PLATFORM_VALUE}" in
     DEFAULT_BUILD_BASE=".docker_go2_xt16_build"
     DEFAULT_INSTALL_BASE=".docker_go2_xt16_install"
     DEFAULT_LOG_BASE=".docker_go2_xt16_log"
+    DEFAULT_GO2_DDS_RCVBUF_MIN="16MiB"
     BASE_DOCKERFILE="${WS_ROOT}/dddmr_docker/docker_file/Dockerfile_x64"
     GO2_DOCKERFILE="${WS_ROOT}/dddmr_docker/docker_file/Dockerfile_go2_xt16"
     COLCON_EXECUTOR_ARGS_VALUE=""
@@ -112,6 +114,7 @@ case "${PLATFORM_VALUE}" in
     DEFAULT_BUILD_BASE=".docker_go2_xt16_orin_build"
     DEFAULT_INSTALL_BASE=".docker_go2_xt16_orin_install"
     DEFAULT_LOG_BASE=".docker_go2_xt16_orin_log"
+    DEFAULT_GO2_DDS_RCVBUF_MIN="default"
     BASE_DOCKERFILE="${WS_ROOT}/dddmr_docker/docker_file/Dockerfile_orin_jp5"
     GO2_DOCKERFILE="${WS_ROOT}/dddmr_docker/docker_file/Dockerfile_go2_xt16_orin_jp5"
     COLCON_EXECUTOR_ARGS_VALUE="--executor sequential"
@@ -134,6 +137,12 @@ BAGS_DIR="${DDDMR_BAGS_DIR:-${WS_ROOT}/../bags}"
 ROS_DOMAIN_ID_VALUE="${ROS_DOMAIN_ID:-0}"
 GO2_DDS_IP_VALUE="${GO2_DDS_IP:-192.168.123.18}"
 GO2_NET_IFACE_VALUE="${GO2_NET_IFACE:-}"
+GO2_DDS_RCVBUF_MIN_VALUE="${GO2_DDS_RCVBUF_MIN:-${DEFAULT_GO2_DDS_RCVBUF_MIN}}"
+[[ "${GO2_DDS_RCVBUF_MIN_VALUE}" == "default" || \
+   "${GO2_DDS_RCVBUF_MIN_VALUE}" =~ ^[1-9][0-9]*(B|KiB|MiB|GiB)$ ]] || {
+  echo "GO2_DDS_RCVBUF_MIN must be default or a positive byte size." >&2
+  exit 2
+}
 BUILD_BASE_VALUE="${DDDMR_BUILD_BASE:-${DEFAULT_BUILD_BASE}}"
 INSTALL_BASE_VALUE="${DDDMR_INSTALL_BASE:-${DEFAULT_INSTALL_BASE}}"
 LOG_BASE_VALUE="${DDDMR_LOG_BASE:-${DEFAULT_LOG_BASE}}"
@@ -276,6 +285,7 @@ resolve_live_odom_time_offset() {
     ROS_DOMAIN_ID="${ROS_DOMAIN_ID_VALUE}" \
     GO2_DDS_IP="${GO2_DDS_IP_VALUE}" \
     GO2_NET_IFACE="${GO2_NET_IFACE_VALUE}" \
+    GO2_DDS_RCVBUF_MIN="${GO2_DDS_RCVBUF_MIN_VALUE}" \
       "${ODOM_OFFSET_RESOLVER}"
   )"
   is_number "${offset}" || {
@@ -297,6 +307,7 @@ docker_base_args() {
     --env "ROS_DISTRO=${ROS_DISTRO_VALUE}"
     --env "ROS_DOMAIN_ID=${ROS_DOMAIN_ID_VALUE}"
     --env "GO2_DDS_IP=${GO2_DDS_IP_VALUE}"
+    --env "GO2_DDS_RCVBUF_MIN=${GO2_DDS_RCVBUF_MIN_VALUE}"
     --env "RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
     --env "DDDMR_BUILD_BASE=${BUILD_BASE_VALUE}"
     --env "DDDMR_INSTALL_BASE=${INSTALL_BASE_VALUE}"

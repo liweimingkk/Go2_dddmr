@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import os
 import pathlib
 import subprocess
 import tempfile
@@ -9,6 +10,7 @@ import unittest
 WORKSPACE = pathlib.Path(__file__).resolve().parents[3]
 CHECK_SCRIPT = WORKSPACE / "scripts" / "check_go2_dds_receive_buffers.sh"
 DDS_SETUP = WORKSPACE / "scripts" / "setup_go2_dds_env.sh"
+DOCKER_WRAPPER = WORKSPACE / "scripts" / "dddmr_docker_go2_xt16.sh"
 
 
 class Go2DdsReceiveBuffersTest(unittest.TestCase):
@@ -93,6 +95,69 @@ class Go2DdsReceiveBuffersTest(unittest.TestCase):
             result.stdout,
         )
         self.assertNotIn('<SocketReceiveBufferSize min="default"', result.stdout)
+
+    def test_cyclone_receive_minimum_accepts_explicit_kernel_default(self):
+        command = (
+            "set -u; "
+            "GO2_NET_IFACE=lo; "
+            "GO2_DDS_RCVBUF_MIN=default; "
+            f"source {DDS_SETUP}; "
+            "printf '%s' \"${CYCLONEDDS_URI}\""
+        )
+        result = subprocess.run(
+            ["bash", "-c", command],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            '<SocketReceiveBufferSize min="default" max="16MiB" />',
+            result.stdout,
+        )
+
+    def run_wrapper_with_fake_docker(self, platform: str):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = pathlib.Path(temporary_directory)
+            fake_bin = directory / "bin"
+            fake_bin.mkdir()
+            fake_docker = fake_bin / "docker"
+            fake_docker.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [[ \"$1\" == image && \"$2\" == inspect ]]; then\n"
+                "  exit 0\n"
+                "fi\n"
+                "printf '%s\\n' \"$@\"\n",
+                encoding="utf-8",
+            )
+            fake_docker.chmod(0o755)
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "PATH": f"{fake_bin}:{environment['PATH']}",
+                    "DDDMR_PLATFORM": platform,
+                    "DDDMR_DOCKER_RUNTIME": "none",
+                    "DDDMR_BAGS_DIR": str(directory / "bags"),
+                    "GO2_NET_IFACE": "lo",
+                }
+            )
+            return subprocess.run(
+                [str(DOCKER_WRAPPER), "preflight", "--samples", "1"],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+
+    def test_orin_wrapper_uses_kernel_receive_default(self):
+        result = self.run_wrapper_with_fake_docker("orin-jp5")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("GO2_DDS_RCVBUF_MIN=default", result.stdout)
+
+    def test_x64_wrapper_keeps_strict_receive_minimum(self):
+        result = self.run_wrapper_with_fake_docker("x64")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("GO2_DDS_RCVBUF_MIN=16MiB", result.stdout)
 
 
 if __name__ == "__main__":
