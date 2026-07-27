@@ -48,10 +48,15 @@ add_library(dddmr_sys_core_enum SHARED
   src/dddmr_enum_states.cpp
 )
 
-rosidl_get_typesupport_target(cpp_typesupport_target
-dddmr_sys_core rosidl_typesupport_cpp)
-
-target_link_libraries(dddmr_sys_core_enum "${cpp_typesupport_target}")
+if(COMMAND rosidl_get_typesupport_target)
+  rosidl_get_typesupport_target(cpp_typesupport_target
+    ${PROJECT_NAME} rosidl_typesupport_cpp)
+  target_link_libraries(dddmr_sys_core_enum "${cpp_typesupport_target}")
+else()
+  # Foxy predates rosidl_get_typesupport_target().
+  rosidl_target_interfaces(dddmr_sys_core_enum
+    ${PROJECT_NAME} "rosidl_typesupport_cpp")
+endif()
 
 ament_target_dependencies(dddmr_sys_core_enum
   ${dependencies}
