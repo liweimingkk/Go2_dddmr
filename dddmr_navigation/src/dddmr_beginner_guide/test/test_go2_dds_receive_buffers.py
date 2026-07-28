@@ -18,6 +18,16 @@ MOUTH_MAPPING_WRAPPER = (
 NAVIGATION_TEST_WRAPPER = (
     WORKSPACE / "scripts" / "run_go2_xt16_navigation_test.sh"
 )
+LAPTOP_NAVIGATION_RVIZ_LAUNCHER = (
+    WORKSPACE / "scripts" / "run_go2_xt16_laptop_navigation_rviz.sh"
+)
+LAPTOP_NAVIGATION_RVIZ_CONFIG = (
+    WORKSPACE
+    / "src"
+    / "dddmr_beginner_guide"
+    / "rviz"
+    / "go2_xt16_navigation_laptop.rviz"
+)
 MOUTH_MAPPING_CONFIG = (
     WORKSPACE
     / "src"
@@ -526,6 +536,29 @@ class Go2DdsReceiveBuffersTest(unittest.TestCase):
         self.assertIn("non-empty /map1/mapground consumption", script)
         self.assertIn("non-empty /map1/planning_ground consumption", script)
         self.assertIn("weighted planning-ground publication", script)
+
+    def test_laptop_navigation_rviz_uses_standard_goal_tools(self):
+        config = LAPTOP_NAVIGATION_RVIZ_CONFIG.read_text(encoding="utf-8")
+        self.assertNotIn("dddmr_rviz_default_plugins", config)
+        self.assertIn("Class: rviz_default_plugins/SetInitialPose", config)
+        self.assertIn("Class: rviz_default_plugins/SetGoal", config)
+        self.assertIn("Value: initial_3d_pose", config)
+        self.assertIn("Value: goal_pose_3d", config)
+
+    def test_laptop_navigation_rviz_launcher_is_wifi_scoped(self):
+        launcher = LAPTOP_NAVIGATION_RVIZ_LAUNCHER.read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            'ORIN_OPERATOR_IP="${GO2_ORIN_OPERATOR_IP:-192.168.50.1}"',
+            launcher,
+        )
+        self.assertIn(
+            'export GO2_DDS_EXTRA_IFACES="${GO2_LAPTOP_DDS_EXTRA_IFACES:-}"',
+            launcher,
+        )
+        self.assertIn("go2_xt16_navigation_laptop.rviz", launcher)
+        self.assertIn("2D Goal Pose -> /goal_pose_3d", launcher)
 
     def test_live_mouth_mapping_uses_receipt_time_sync(self):
         config = MOUTH_MAPPING_CONFIG.read_text(encoding="utf-8")

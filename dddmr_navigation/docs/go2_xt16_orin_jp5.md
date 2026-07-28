@@ -111,6 +111,21 @@ while all other mapping topics remain available on both `eth0` and `wlan0`.
 Set `GO2_DDS_PRIMARY_ADDRESS` explicitly only when the primary interface address
 cannot be detected.
 
+On the laptop, start the dedicated navigation RViz configuration with:
+
+```bash
+cd /home/kkkkkkq/new2_success/new22/new2/dddmr_navigation
+./scripts/run_go2_xt16_laptop_navigation_rviz.sh
+```
+
+The launcher detects the interface routed to `192.168.50.1`, binds CycloneDDS
+only to that laptop interface, and uses
+`rviz/go2_xt16_navigation_laptop.rviz`. The laptop configuration replaces the
+optional DDDMR 3D pose tools with standard RViz 2D tools while preserving
+`initial_3d_pose` and `goal_pose_3d`. Do not click `2D Goal Pose` until the
+robot-side navigation readiness checks have passed; a goal can move the Go2
+when the supervised live adapter is active.
+
 Then run tests:
 
 ```bash
