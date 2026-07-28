@@ -1024,18 +1024,22 @@ monitor_multi_mission() {
 start_live_adapter() {
   log "Starting live Sport adapter: max_x=${MAX_X_VALUE}, max_y=${MAX_Y_VALUE}, max_yaw=${MAX_YAW_VALUE}"
   docker exec "${CONTAINER_NAME}" bash -lc "set -e
-test -f /root/dddmr_navigation/.unitree_msg_ws/install/setup.bash || {
-  echo 'Missing /root/dddmr_navigation/.unitree_msg_ws/install/setup.bash; build/copy unitree_api first.' >&2
-  exit 1
-}
 mkdir -p /root/dddmr_navigation/run_logs
 source ${ROS_SETUP_FILE_VALUE}
 if [[ -f /opt/unitree_ros2/setup.bash ]]; then
   source /opt/unitree_ros2/setup.bash
+elif [[ -f /root/dddmr_navigation/.unitree_msg_ws/install/setup.bash ]]; then
+  source /root/dddmr_navigation/.unitree_msg_ws/install/setup.bash
+else
+  echo 'Missing Unitree ROS 2 message overlay: expected /opt/unitree_ros2/setup.bash or /root/dddmr_navigation/.unitree_msg_ws/install/setup.bash.' >&2
+  exit 1
 fi
 source /root/dddmr_navigation/scripts/setup_go2_dds_env.sh
 source /root/dddmr_navigation/${INSTALL_BASE_VALUE}/setup.bash
-source /root/dddmr_navigation/.unitree_msg_ws/install/setup.bash
+python3 -c 'from unitree_api.msg import Request' || {
+  echo 'The selected Unitree ROS 2 overlay does not provide unitree_api.msg.Request.' >&2
+  exit 1
+}
 nohup python3 /root/dddmr_navigation/src/dddmr_beginner_guide/scripts/go2_sport_cmd_vel_adapter.py \
   --ros-args \
   -r __node:=go2_sport_cmd_vel_adapter_live \

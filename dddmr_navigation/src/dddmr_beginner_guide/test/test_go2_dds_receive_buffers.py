@@ -530,12 +530,37 @@ class Go2DdsReceiveBuffersTest(unittest.TestCase):
             "fi\n"
             "source /root/dddmr_navigation/scripts/setup_go2_dds_env.sh"
         )
-        self.assertEqual(script.count(overlay_then_config), 4)
+        self.assertEqual(script.count(overlay_then_config), 3)
         self.assertNotIn("ros2 topic echo --once --field", script)
         self.assertIn("--no-arr --no-str", script)
         self.assertIn("non-empty /map1/mapground consumption", script)
         self.assertIn("non-empty /map1/planning_ground consumption", script)
         self.assertIn("weighted planning-ground publication", script)
+
+    def test_navigation_live_adapter_uses_available_unitree_overlay(self):
+        script = NAVIGATION_TEST_WRAPPER.read_text(encoding="utf-8")
+        adapter = script.split("start_live_adapter() {", 1)[1].split(
+            "\n}\n\nprint_status()", 1
+        )[0]
+        self.assertIn(
+            "if [[ -f /opt/unitree_ros2/setup.bash ]]; then\n"
+            "  source /opt/unitree_ros2/setup.bash\n"
+            "elif [[ -f /root/dddmr_navigation/"
+            ".unitree_msg_ws/install/setup.bash ]]; then\n"
+            "  source /root/dddmr_navigation/"
+            ".unitree_msg_ws/install/setup.bash\n"
+            "else\n",
+            adapter,
+        )
+        self.assertNotIn(
+            "test -f /root/dddmr_navigation/"
+            ".unitree_msg_ws/install/setup.bash",
+            adapter,
+        )
+        self.assertIn(
+            "python3 -c 'from unitree_api.msg import Request'",
+            adapter,
+        )
 
     def test_laptop_navigation_rviz_uses_standard_goal_tools(self):
         config = LAPTOP_NAVIGATION_RVIZ_CONFIG.read_text(encoding="utf-8")
