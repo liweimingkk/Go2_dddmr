@@ -103,6 +103,14 @@ computer. CycloneDDS otherwise selects only one interface from a multi-homed
 host. The laptop should bind CycloneDDS only to its Wi-Fi interface and use the
 same `ROS_DOMAIN_ID`.
 
+When an extra interface is present, `scripts/setup_go2_dds_env.sh`
+automatically detects the IPv4 address of `GO2_NET_IFACE` and pins the
+`rt/utlidar/*` and `rt/uslam/*` DDS readers to that address. This prevents the
+Go2's writers from selecting the operator-hotspot address as the return path,
+while all other mapping topics remain available on both `eth0` and `wlan0`.
+Set `GO2_DDS_PRIMARY_ADDRESS` explicitly only when the primary interface address
+cannot be detected.
+
 Then run tests:
 
 ```bash

@@ -161,6 +161,7 @@ class Go2DdsReceiveBuffersTest(unittest.TestCase):
             "set -u; "
             "GO2_NET_IFACE=eth0; "
             "GO2_DDS_EXTRA_IFACES='wlan0,eth0 wlan0'; "
+            "GO2_DDS_PRIMARY_ADDRESS=192.168.123.18; "
             f"source {DDS_SETUP}; "
             "printf '%s' \"${CYCLONEDDS_URI}\""
         )
@@ -177,6 +178,90 @@ class Go2DdsReceiveBuffersTest(unittest.TestCase):
         self.assertEqual(
             result.stdout.count('<NetworkInterface name="wlan0"'), 1
         )
+
+    def test_cyclone_pins_robot_topics_to_primary_address_with_extra_iface(self):
+        command = (
+            "set -u; "
+            "GO2_NET_IFACE=eth0; "
+            "GO2_DDS_EXTRA_IFACES='wlan0'; "
+            "GO2_DDS_PRIMARY_ADDRESS=192.168.123.18; "
+            f"source {DDS_SETUP}; "
+            "printf '%s' \"${CYCLONEDDS_URI}\""
+        )
+        result = subprocess.run(
+            ["bash", "-c", command],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            '<NetworkPartition Name="go2_primary" '
+            'Address="192.168.123.18" />',
+            result.stdout,
+        )
+        self.assertIn(
+            'DCPSPartitionTopic="*.rt/utlidar/*" '
+            'NetworkPartition="go2_primary"',
+            result.stdout,
+        )
+        self.assertIn(
+            'DCPSPartitionTopic="*.rt/uslam/*" '
+            'NetworkPartition="go2_primary"',
+            result.stdout,
+        )
+        element_tree.fromstring(result.stdout)
+
+    def test_cyclone_does_not_add_network_partition_for_single_iface(self):
+        command = (
+            "set -u; "
+            "GO2_NET_IFACE=lo; "
+            f"source {DDS_SETUP}; "
+            "printf '%s' \"${CYCLONEDDS_URI}\""
+        )
+        result = subprocess.run(
+            ["bash", "-c", command],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("<Partitioning>", result.stdout)
+
+    def test_cyclone_rejects_invalid_primary_address(self):
+        command = (
+            "set -u; "
+            "GO2_NET_IFACE=eth0; "
+            "GO2_DDS_EXTRA_IFACES='wlan0'; "
+            "GO2_DDS_PRIMARY_ADDRESS='192.168.123.999'; "
+            f"source {DDS_SETUP}"
+        )
+        result = subprocess.run(
+            ["bash", "-c", command],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must be an IPv4 address", result.stderr)
+
+    def test_cyclone_rejects_unsafe_robot_topic_pattern(self):
+        command = (
+            "set -u; "
+            "GO2_NET_IFACE=eth0; "
+            "GO2_DDS_EXTRA_IFACES='wlan0'; "
+            "GO2_DDS_PRIMARY_ADDRESS=192.168.123.18; "
+            "GO2_DDS_ROBOT_TOPIC_PATTERNS='rt/utlidar/*<invalid'; "
+            f"source {DDS_SETUP}"
+        )
+        result = subprocess.run(
+            ["bash", "-c", command],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unsupported characters", result.stderr)
 
     def test_cyclone_rejects_unsafe_interface_names(self):
         command = (
@@ -273,6 +358,8 @@ class Go2DdsReceiveBuffersTest(unittest.TestCase):
                 "DDDMR_ROS_DISTRO",
                 "GO2_DDS_RCVBUF_MIN",
                 "GO2_DDS_EXTRA_IFACES",
+                "GO2_DDS_PRIMARY_ADDRESS",
+                "GO2_DDS_ROBOT_TOPIC_PATTERNS",
             ):
                 environment.pop(inherited_name, None)
             environment.update(
@@ -324,6 +411,20 @@ class Go2DdsReceiveBuffersTest(unittest.TestCase):
             '-e "GO2_DDS_EXTRA_IFACES=${GO2_DDS_EXTRA_IFACES_VALUE}"'
         )
         self.assertEqual(script.count(forwarded_environment), 3)
+        self.assertEqual(
+            script.count(
+                '-e "GO2_DDS_PRIMARY_ADDRESS='
+                '${GO2_DDS_PRIMARY_ADDRESS_VALUE}"'
+            ),
+            3,
+        )
+        self.assertEqual(
+            script.count(
+                '-e "GO2_DDS_ROBOT_TOPIC_PATTERNS='
+                '${GO2_DDS_ROBOT_TOPIC_PATTERNS_VALUE}"'
+            ),
+            3,
+        )
 
     def test_live_mouth_mapping_uses_receipt_time_sync(self):
         config = MOUTH_MAPPING_CONFIG.read_text(encoding="utf-8")

@@ -27,6 +27,9 @@ Common environment overrides:
   DDDMR_BAGS_DIR=...         Host bags directory. Default: ../bags.
   GO2_NET_IFACE=enp46s0      Network interface used for Go2 DDS.
   GO2_DDS_EXTRA_IFACES=wlan0 Additional DDS interface(s), for example Orin Wi-Fi.
+  GO2_DDS_PRIMARY_ADDRESS=... Optional primary-interface IPv4 override.
+  GO2_DDS_ROBOT_TOPIC_PATTERNS=...
+                             DDS topics pinned to the primary interface.
   MOUTH_MAX_TIME_DIFF=0.03
   MOUTH_SYNC_MODE=receipt_time
                              Live default; use header_offset for bag replay.
@@ -111,6 +114,8 @@ ROS_DOMAIN_ID_VALUE="${ROS_DOMAIN_ID:-0}"
 GO2_DDS_IP_VALUE="${GO2_DDS_IP:-192.168.123.18}"
 GO2_NET_IFACE_VALUE="${GO2_NET_IFACE:-${DEFAULT_GO2_NET_IFACE}}"
 GO2_DDS_EXTRA_IFACES_VALUE="${GO2_DDS_EXTRA_IFACES:-}"
+GO2_DDS_PRIMARY_ADDRESS_VALUE="${GO2_DDS_PRIMARY_ADDRESS:-}"
+GO2_DDS_ROBOT_TOPIC_PATTERNS_VALUE="${GO2_DDS_ROBOT_TOPIC_PATTERNS:-}"
 GO2_DDS_RCVBUF_MIN_VALUE="${GO2_DDS_RCVBUF_MIN:-${DEFAULT_GO2_DDS_RCVBUF_MIN}}"
 [[ "${GO2_DDS_RCVBUF_MIN_VALUE}" == "default" || \
    "${GO2_DDS_RCVBUF_MIN_VALUE}" =~ ^[1-9][0-9]*(B|KiB|MiB|GiB)$ ]] || {
@@ -578,6 +583,8 @@ measure_mouth_time_offset() {
       -e "GO2_DDS_IP=${GO2_DDS_IP_VALUE}" \
       -e "GO2_NET_IFACE=${GO2_NET_IFACE_VALUE}" \
       -e "GO2_DDS_EXTRA_IFACES=${GO2_DDS_EXTRA_IFACES_VALUE}" \
+      -e "GO2_DDS_PRIMARY_ADDRESS=${GO2_DDS_PRIMARY_ADDRESS_VALUE}" \
+      -e "GO2_DDS_ROBOT_TOPIC_PATTERNS=${GO2_DDS_ROBOT_TOPIC_PATTERNS_VALUE}" \
       -e "GO2_DDS_RCVBUF_MIN=${GO2_DDS_RCVBUF_MIN_VALUE}" \
       -e "RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}" \
       -e "MOUTH_TOPIC=${MOUTH_CLOUD_TOPIC_VALUE}" \
@@ -727,6 +734,8 @@ measure_odom_time_offset() {
       -e "GO2_DDS_IP=${GO2_DDS_IP_VALUE}" \
       -e "GO2_NET_IFACE=${GO2_NET_IFACE_VALUE}" \
       -e "GO2_DDS_EXTRA_IFACES=${GO2_DDS_EXTRA_IFACES_VALUE}" \
+      -e "GO2_DDS_PRIMARY_ADDRESS=${GO2_DDS_PRIMARY_ADDRESS_VALUE}" \
+      -e "GO2_DDS_ROBOT_TOPIC_PATTERNS=${GO2_DDS_ROBOT_TOPIC_PATTERNS_VALUE}" \
       -e "GO2_DDS_RCVBUF_MIN=${GO2_DDS_RCVBUF_MIN_VALUE}" \
       -e "RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}" \
       -e "ODOM_TOPIC=${ODOM_TOPIC_VALUE}" \
@@ -808,6 +817,8 @@ start_mapping_container() {
     -e "GO2_DDS_IP=${GO2_DDS_IP_VALUE}" \
     -e "GO2_NET_IFACE=${GO2_NET_IFACE_VALUE}" \
     -e "GO2_DDS_EXTRA_IFACES=${GO2_DDS_EXTRA_IFACES_VALUE}" \
+    -e "GO2_DDS_PRIMARY_ADDRESS=${GO2_DDS_PRIMARY_ADDRESS_VALUE}" \
+    -e "GO2_DDS_ROBOT_TOPIC_PATTERNS=${GO2_DDS_ROBOT_TOPIC_PATTERNS_VALUE}" \
     -e "GO2_DDS_RCVBUF_MIN=${GO2_DDS_RCVBUF_MIN_VALUE}" \
     -e "RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}" \
     -e "DDDMR_BUILD_BASE=${BUILD_BASE_VALUE}" \

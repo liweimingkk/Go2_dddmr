@@ -38,11 +38,15 @@ GO2_NET_IFACE="$(detect_go2_net_iface)"
 GO2_DDS_EXTRA_IFACES="${GO2_DDS_EXTRA_IFACES:-}"
 GO2_DDS_PEERS="${GO2_DDS_PEERS:-}"
 GO2_DDS_PARTICIPANT_INDEX="${GO2_DDS_PARTICIPANT_INDEX:-auto}"
+GO2_DDS_PRIMARY_ADDRESS="${GO2_DDS_PRIMARY_ADDRESS:-}"
+GO2_DDS_ROBOT_TOPIC_PATTERNS="${GO2_DDS_ROBOT_TOPIC_PATTERNS:-rt/utlidar/* rt/uslam/*}"
 export GO2_DDS_IP
 export GO2_NET_IFACE
 export GO2_DDS_EXTRA_IFACES
 export GO2_DDS_PEERS
 export GO2_DDS_PARTICIPANT_INDEX
+export GO2_DDS_PRIMARY_ADDRESS
+export GO2_DDS_ROBOT_TOPIC_PATTERNS
 export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
 
 GO2_DDS_RCVBUF_MAX="${GO2_DDS_RCVBUF_MAX:-16MiB}"
@@ -92,6 +96,107 @@ build_dds_interfaces_xml() {
 
 GO2_DDS_INTERFACES_XML="$(build_dds_interfaces_xml)" || return
 
+has_distinct_extra_iface() {
+  local -a extra_ifaces=()
+  local iface
+  local normalized_extra_ifaces="${GO2_DDS_EXTRA_IFACES//,/ }"
+
+  read -r -a extra_ifaces <<<"${normalized_extra_ifaces}"
+  for iface in "${extra_ifaces[@]}"; do
+    if [[ -n "${iface}" && "${iface}" != "${GO2_NET_IFACE}" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+validate_dds_ipv4_address() {
+  local address="$1"
+  local -a octets=()
+  local octet
+
+  IFS='.' read -r -a octets <<<"${address}"
+  if [[ "${#octets[@]}" -ne 4 ]]; then
+    echo "CycloneDDS primary address must be an IPv4 address: ${address}" >&2
+    return 2
+  fi
+  for octet in "${octets[@]}"; do
+    if [[ ! "${octet}" =~ ^[0-9]+$ ]] || (( 10#${octet} > 255 )); then
+      echo "CycloneDDS primary address must be an IPv4 address: ${address}" >&2
+      return 2
+    fi
+  done
+}
+
+detect_go2_primary_address() {
+  if [[ -n "${GO2_DDS_PRIMARY_ADDRESS}" ]]; then
+    printf '%s\n' "${GO2_DDS_PRIMARY_ADDRESS}"
+    return
+  fi
+
+  local address
+  address="$(ip -o -4 address show dev "${GO2_NET_IFACE}" 2>/dev/null | awk '
+    {
+      split($4, parts, "/")
+      print parts[1]
+      exit
+    }
+  ')"
+  if [[ -n "${address}" ]]; then
+    printf '%s\n' "${address}"
+    return
+  fi
+
+  echo "Could not detect an IPv4 address for GO2_NET_IFACE=${GO2_NET_IFACE}; set GO2_DDS_PRIMARY_ADDRESS explicitly." >&2
+  return 2
+}
+
+validate_dds_topic_pattern() {
+  local pattern="$1"
+  if [[ ! "${pattern}" =~ ^[[:alnum:]_./?*:-]+$ ]]; then
+    echo "CycloneDDS robot topic pattern contains unsupported characters: ${pattern}" >&2
+    return 2
+  fi
+}
+
+build_dds_robot_partitioning_xml() {
+  local primary_address="$1"
+  local -a topic_patterns=()
+  local pattern
+  local normalized_patterns="${GO2_DDS_ROBOT_TOPIC_PATTERNS//,/ }"
+  local seen_patterns=" "
+
+  [[ -n "${primary_address}" ]] || return 0
+
+  printf '<Partitioning><NetworkPartitions>\n'
+  printf '  <NetworkPartition Name="go2_primary" Address="%s" />\n' \
+    "${primary_address}"
+  printf '</NetworkPartitions><PartitionMappings>\n'
+
+  read -r -a topic_patterns <<<"${normalized_patterns}"
+  for pattern in "${topic_patterns[@]}"; do
+    [[ -n "${pattern}" ]] || continue
+    validate_dds_topic_pattern "${pattern}" || return
+    if [[ "${seen_patterns}" == *" ${pattern} "* ]]; then
+      continue
+    fi
+    printf '  <PartitionMapping DCPSPartitionTopic="*.%s" NetworkPartition="go2_primary" />\n' \
+      "${pattern}"
+    seen_patterns+="${pattern} "
+  done
+  printf '</PartitionMappings></Partitioning>\n'
+}
+
+GO2_DDS_PARTITIONING_XML=""
+if has_distinct_extra_iface; then
+  GO2_DDS_PRIMARY_ADDRESS="$(detect_go2_primary_address)" || return
+  validate_dds_ipv4_address "${GO2_DDS_PRIMARY_ADDRESS}" || return
+  export GO2_DDS_PRIMARY_ADDRESS
+  GO2_DDS_PARTITIONING_XML="$(
+    build_dds_robot_partitioning_xml "${GO2_DDS_PRIMARY_ADDRESS}"
+  )" || return
+fi
+
 build_dds_peers_xml() {
   local -a peers=()
   local peer
@@ -129,4 +234,5 @@ ${GO2_DDS_INTERFACES_XML}
 ${GO2_DDS_PEERS_XML}
 </Peers></Discovery>
 <Internal><SocketReceiveBufferSize min=\"${GO2_DDS_RCVBUF_MIN}\" max=\"${GO2_DDS_RCVBUF_MAX}\" /><SocketSendBufferSize min=\"default\" max=\"${GO2_DDS_SNDBUF_MAX}\" /></Internal>
+${GO2_DDS_PARTITIONING_XML}
 </Domain></CycloneDDS>"
