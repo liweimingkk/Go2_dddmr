@@ -36,9 +36,13 @@ detect_go2_net_iface() {
 
 GO2_NET_IFACE="$(detect_go2_net_iface)"
 GO2_DDS_EXTRA_IFACES="${GO2_DDS_EXTRA_IFACES:-}"
+GO2_DDS_PEERS="${GO2_DDS_PEERS:-}"
+GO2_DDS_PARTICIPANT_INDEX="${GO2_DDS_PARTICIPANT_INDEX:-auto}"
 export GO2_DDS_IP
 export GO2_NET_IFACE
 export GO2_DDS_EXTRA_IFACES
+export GO2_DDS_PEERS
+export GO2_DDS_PARTICIPANT_INDEX
 export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
 
 GO2_DDS_RCVBUF_MAX="${GO2_DDS_RCVBUF_MAX:-16MiB}"
@@ -88,8 +92,41 @@ build_dds_interfaces_xml() {
 
 GO2_DDS_INTERFACES_XML="$(build_dds_interfaces_xml)" || return
 
+build_dds_peers_xml() {
+  local -a peers=()
+  local peer
+  local normalized_peers="${GO2_DDS_PEERS//,/ }"
+  local seen_peers=" "
+
+  read -r -a peers <<<"${normalized_peers}"
+  for peer in "${peers[@]}"; do
+    validate_dds_iface "${peer}" || return
+    if [[ "${seen_peers}" == *" ${peer} "* ]]; then
+      continue
+    fi
+    printf '  <Peer Address="%s" />\n' "${peer}"
+    seen_peers+="${peer} "
+  done
+}
+
+case "${GO2_DDS_PARTICIPANT_INDEX}" in
+  auto|default|none)
+    ;;
+  *)
+    if [[ ! "${GO2_DDS_PARTICIPANT_INDEX}" =~ ^[0-9]+$ ]]; then
+      echo "GO2_DDS_PARTICIPANT_INDEX must be auto, default, none, or a nonnegative integer." >&2
+      return 2
+    fi
+    ;;
+esac
+
+GO2_DDS_PEERS_XML="$(build_dds_peers_xml)" || return
+
 export CYCLONEDDS_URI="<CycloneDDS><Domain><General><Interfaces>
 ${GO2_DDS_INTERFACES_XML}
 </Interfaces><AllowMulticast>${GO2_DDS_ALLOW_MULTICAST}</AllowMulticast><MaxMessageSize>65500B</MaxMessageSize><FragmentSize>${GO2_DDS_FRAGMENT_SIZE}</FragmentSize></General>
+<Discovery><ParticipantIndex>${GO2_DDS_PARTICIPANT_INDEX}</ParticipantIndex><Peers>
+${GO2_DDS_PEERS_XML}
+</Peers></Discovery>
 <Internal><SocketReceiveBufferSize min=\"${GO2_DDS_RCVBUF_MIN}\" max=\"${GO2_DDS_RCVBUF_MAX}\" /><SocketSendBufferSize min=\"default\" max=\"${GO2_DDS_SNDBUF_MAX}\" /></Internal>
 </Domain></CycloneDDS>"

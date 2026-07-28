@@ -178,6 +178,58 @@ class Go2DdsReceiveBuffersTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("unsupported characters", result.stderr)
 
+    def test_cyclone_supports_static_discovery_peers(self):
+        command = (
+            "set -u; "
+            "GO2_NET_IFACE=lo; "
+            "GO2_DDS_PEERS='192.168.123.18,192.168.123.18'; "
+            f"source {DDS_SETUP}; "
+            "printf '%s' \"${CYCLONEDDS_URI}\""
+        )
+        result = subprocess.run(
+            ["bash", "-c", command],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout.count('<Peer Address="192.168.123.18"'), 1
+        )
+        self.assertIn("<ParticipantIndex>auto</ParticipantIndex>", result.stdout)
+
+    def test_cyclone_rejects_unsafe_discovery_peers(self):
+        command = (
+            "set -u; "
+            "GO2_NET_IFACE=lo; "
+            "GO2_DDS_PEERS='192.168.123.18<invalid'; "
+            f"source {DDS_SETUP}"
+        )
+        result = subprocess.run(
+            ["bash", "-c", command],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unsupported characters", result.stderr)
+
+    def test_cyclone_rejects_invalid_participant_index(self):
+        command = (
+            "set -u; "
+            "GO2_NET_IFACE=lo; "
+            "GO2_DDS_PARTICIPANT_INDEX='-1'; "
+            f"source {DDS_SETUP}"
+        )
+        result = subprocess.run(
+            ["bash", "-c", command],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("GO2_DDS_PARTICIPANT_INDEX", result.stderr)
+
     def run_wrapper_with_fake_docker(
         self, platform: str, extra_interfaces: str = ""
     ):
