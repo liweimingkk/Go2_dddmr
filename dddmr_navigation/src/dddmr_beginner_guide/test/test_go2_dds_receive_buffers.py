@@ -523,6 +523,9 @@ class Go2DdsReceiveBuffersTest(unittest.TestCase):
         self.assertEqual(script.count(overlay_then_config), 4)
         self.assertNotIn("ros2 topic echo --once --field", script)
         self.assertIn("--no-arr --no-str", script)
+        self.assertIn("non-empty /map1/mapground consumption", script)
+        self.assertIn("non-empty /map1/planning_ground consumption", script)
+        self.assertIn("weighted planning-ground publication", script)
 
     def test_live_mouth_mapping_uses_receipt_time_sync(self):
         config = MOUTH_MAPPING_CONFIG.read_text(encoding="utf-8")

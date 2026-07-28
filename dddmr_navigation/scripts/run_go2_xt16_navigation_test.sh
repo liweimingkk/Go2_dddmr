@@ -610,6 +610,36 @@ awk '\$1 == \"width:\" {print \$2; exit}'" 2>&1)"
   return 1
 }
 
+wait_for_container_log_pattern() {
+  local description="$1"
+  local pattern="$2"
+  local timeout_sec="${3:-90}"
+  local deadline=$((SECONDS + timeout_sec))
+  local report=""
+
+  log "Waiting for ${description} in the current navigation log (timeout ${timeout_sec}s)..."
+  while (( SECONDS < deadline )); do
+    if ! docker inspect -f '{{.State.Running}}' "${CONTAINER_NAME}" 2>/dev/null | grep -Fxq true; then
+      log "Container ${CONTAINER_NAME} exited while waiting for ${description}."
+      docker logs --tail 120 "${CONTAINER_NAME}" 2>&1 || true
+      return 1
+    fi
+    report="$(
+      docker logs --tail 2000 "${CONTAINER_NAME}" 2>&1 |
+        grep -E "${pattern}" |
+        tail -n 1 ||
+        true
+    )"
+    if [[ -n "${report}" ]]; then
+      printf '%s\n' "${report}"
+      log "Confirmed ${description}."
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
 check_odom_sync_runtime() {
   local report rc standardizer_report standardizer_offset
   standardizer_report="$(docker_ros "timeout 10 ros2 param get /go2_odom_standardizer stamp_time_offset_sec" 2>&1)" || {
@@ -1034,14 +1064,35 @@ main() {
   check_odom_sync_runtime
   wait_for_topic /map1/mapcloud 90 || die "Timed out waiting for /map1/mapcloud"
   wait_for_topic /map1/mapground 90 || die "Timed out waiting for /map1/mapground"
-  wait_for_pointcloud_sample /map1/mapground 90 transient_local || \
-    die "Timed out waiting for a non-empty /map1/mapground sample"
+  if [[ "${ROS_DISTRO_VALUE}" == "foxy" ]]; then
+    wait_for_container_log_pattern \
+      "non-empty /map1/mapground consumption" \
+      '\[perception_3d_local\.map\].*Ground.*size: [1-9][0-9]*' 90 || \
+      die "Timed out waiting for downstream consumption of non-empty /map1/mapground"
+  else
+    wait_for_pointcloud_sample /map1/mapground 90 transient_local || \
+      die "Timed out waiting for a non-empty /map1/mapground sample"
+  fi
   wait_for_topic /map1/planning_ground 90 || die "Timed out waiting for /map1/planning_ground"
-  wait_for_pointcloud_sample /map1/planning_ground 90 transient_local || \
-    die "Timed out waiting for a non-empty /map1/planning_ground sample"
+  if [[ "${ROS_DISTRO_VALUE}" == "foxy" ]]; then
+    wait_for_container_log_pattern \
+      "non-empty /map1/planning_ground consumption" \
+      '\[perception_3d_global\.map\].*Ground.*size: [1-9][0-9]*' 90 || \
+      die "Timed out waiting for downstream consumption of non-empty /map1/planning_ground"
+  else
+    wait_for_pointcloud_sample /map1/planning_ground 90 transient_local || \
+      die "Timed out waiting for a non-empty /map1/planning_ground sample"
+  fi
   wait_for_topic /weighted_ground 90 || die "Timed out waiting for /weighted_ground"
-  wait_for_pointcloud_sample /weighted_ground 90 transient_local || \
-    die "Timed out waiting for a non-empty /weighted_ground sample"
+  if [[ "${ROS_DISTRO_VALUE}" == "foxy" ]]; then
+    wait_for_container_log_pattern \
+      "weighted planning-ground publication" \
+      '\[global_planner\].*Publish weighted ground point cloud\.' 90 || \
+      die "Timed out waiting for weighted planning-ground publication"
+  else
+    wait_for_pointcloud_sample /weighted_ground 90 transient_local || \
+      die "Timed out waiting for a non-empty /weighted_ground sample"
+  fi
   wait_for_topic /dddmr_go2/safe_cmd_vel 90 || die "Timed out waiting for /dddmr_go2/safe_cmd_vel"
 
   if [[ "${live_mode}" == "true" ]]; then
