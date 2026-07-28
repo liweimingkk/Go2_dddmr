@@ -500,6 +500,20 @@ class Go2DdsReceiveBuffersTest(unittest.TestCase):
             'docker() {\n      sudo docker "$@"\n    }',
             script,
         )
+        self.assertIn(
+            '[[ "${mode}" == "stop" && -z "${DDDMR_DOCKER_USE_SUDO+x}"',
+            script,
+        )
+        self.assertIn(
+            'log "Docker socket is not writable; using sudo for --stop."',
+            script,
+        )
+        self.assertIn("require_docker_access", script)
+        self.assertIn(
+            "Cannot access the Docker daemon. Set "
+            "DDDMR_DOCKER_USE_SUDO=1 or run with Docker socket access.",
+            script,
+        )
 
     def test_navigation_uses_platform_specific_runtime_defaults(self):
         script = NAVIGATION_TEST_WRAPPER.read_text(encoding="utf-8")

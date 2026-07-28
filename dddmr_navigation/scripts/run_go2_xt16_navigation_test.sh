@@ -30,7 +30,8 @@ Modes:
              Load a mission and execute it through the supervised Sport
              adapter. Also requires `EXECUTE <mission_id>` after READY.
   --stop     Stop running go2_xt16 navigation containers. If a live adapter is
-             running, it is stopped first so it can publish StopMove.
+             running, it is stopped first so it can publish StopMove. When the
+             Docker socket is not writable, interactive stop auto-uses sudo.
 
 Common environment overrides:
   DDDMR_PLATFORM=x64|orin-jp5
@@ -191,6 +192,7 @@ GO2_DDS_RCVBUF_MIN_VALUE="${GO2_DDS_RCVBUF_MIN:-${DEFAULT_GO2_DDS_RCVBUF_MIN}}"
   exit 2
 }
 DDDMR_DOCKER_USE_SUDO_VALUE="${DDDMR_DOCKER_USE_SUDO:-0}"
+DOCKER_SOCKET_PATH_VALUE="${DOCKER_SOCKET_PATH:-/var/run/docker.sock}"
 ODOM_TIME_OFFSET_SEC_VALUE="${ODOM_TIME_OFFSET_SEC:-}"
 ODOM_SYNC_TOLERANCE_SEC_VALUE="${ODOM_SYNC_TOLERANCE_SEC:-0.05}"
 ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE="${ODOM_SYNC_WAIT_TIMEOUT_SEC:-0.1}"
@@ -249,6 +251,13 @@ mission_file_container=""
 initial_pose_file=""
 initial_pose_file_container=""
 mission_id=""
+docker_sudo_auto_enabled="false"
+
+if [[ "${mode}" == "stop" && -z "${DDDMR_DOCKER_USE_SUDO+x}" && \
+      -S "${DOCKER_SOCKET_PATH_VALUE}" && ! -w "${DOCKER_SOCKET_PATH_VALUE}" ]]; then
+  DDDMR_DOCKER_USE_SUDO_VALUE="1"
+  docker_sudo_auto_enabled="true"
+fi
 
 case "${DDDMR_DOCKER_USE_SUDO_VALUE}" in
   0|false)
@@ -275,6 +284,14 @@ log() {
 die() {
   printf 'ERROR: %s\n' "$*" >&2
   exit 1
+}
+
+require_docker_access() {
+  local output=""
+  if ! output="$(docker version --format '{{.Server.Version}}' 2>&1)"; then
+    [[ -n "${output}" ]] && printf '%s\n' "${output}" >&2
+    die "Cannot access the Docker daemon. Set DDDMR_DOCKER_USE_SUDO=1 or run with Docker socket access."
+  fi
 }
 
 resolve_bags_path() {
@@ -474,16 +491,20 @@ stop_nav_containers() {
   local names name
   names="$(nav_container_names)"
   if [[ -z "${names}" ]]; then
-    log "No go2_xt16 navigation containers are running."
+    log "No go2_xt16 navigation containers were found."
     return 0
   fi
 
   while IFS= read -r name; do
     [[ -n "${name}" ]] || continue
-    log "Stopping live adapter in ${name}, if present..."
-    stop_adapter_in_container "${name}"
-    log "Stopping navigation container: ${name}"
-    docker stop -t 5 "${name}" >/dev/null || true
+    if docker inspect -f '{{.State.Running}}' "${name}" 2>/dev/null | grep -Fxq true; then
+      log "Stopping live adapter in ${name}, if present..."
+      stop_adapter_in_container "${name}"
+      log "Stopping navigation container: ${name}"
+      docker stop -t 5 "${name}" >/dev/null
+    else
+      log "Removing stopped navigation container: ${name}"
+    fi
     mkdir -p "${RUN_LOG_DIR}"
     local docker_log="${RUN_LOG_DIR}/${name}_docker.log"
     if docker logs "${name}" >"${docker_log}" 2>&1; then
@@ -491,7 +512,7 @@ stop_nav_containers() {
     else
       log "WARNING: failed to save navigation log for ${name}"
     fi
-    docker rm "${name}" >/dev/null 2>&1 || true
+    docker rm "${name}" >/dev/null
   done <<< "${names}"
   rm -f /tmp/go2_xt16_nav_current_name.txt
 }
@@ -504,7 +525,7 @@ assert_clean_runtime() {
       stop_nav_containers
     else
       echo "${containers}" >&2
-      die "Navigation container is already running. Use --stop first or STOP_EXISTING=true."
+      die "A navigation container already exists. Use --stop first or STOP_EXISTING=true."
     fi
   fi
 
@@ -1084,6 +1105,11 @@ print_status() {
 }
 
 main() {
+  if [[ "${docker_sudo_auto_enabled}" == "true" ]]; then
+    log "Docker socket is not writable; using sudo for --stop."
+  fi
+  require_docker_access
+
   if [[ "${mode}" == "stop" ]]; then
     stop_nav_containers
     return 0
