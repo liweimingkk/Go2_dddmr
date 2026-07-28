@@ -26,6 +26,9 @@
   <depend>pluginlib</depend>
   <depend>libpcl-all</depend>
   <exec_depend>dddmr_route_navigation</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>rviz2</exec_depend>
 

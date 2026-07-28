@@ -242,6 +242,7 @@ RUN_LOG_DIR="${RUN_LOG_DIR:-${WS_ROOT}/run_logs}"
 ADAPTER_LOG_CONTAINER="/root/dddmr_navigation/run_logs/${CONTAINER_NAME}_adapter.log"
 ADAPTER_LOG_HOST="${RUN_LOG_DIR}/${CONTAINER_NAME}_adapter.log"
 PERCEPTION_GATE_LOG_HOST="${RUN_LOG_DIR}/${CONTAINER_NAME}_perception_gate.log"
+LOCAL_LIDAR_RUNTIME_FRESHNESS_SEC_VALUE=""
 runtime_started="false"
 mission_file=""
 mission_file_container=""
@@ -697,17 +698,33 @@ check_topic_contract() {
     die "Topic ${topic} requires at least ${minimum_subscriptions} subscriber(s); found ${subscription_count}."
 }
 
-read_local_lidar_freshness_limit() {
+read_runtime_double_parameter() {
+  local node="$1"
+  local parameter="$2"
+  local label="$3"
   local report value
   report="$(docker_ros \
-    "timeout 10 ros2 param get /perception_3d_local lidar.expected_sensor_time" \
+    "timeout 10 ros2 param get '${node}' '${parameter}'" \
     2>&1)" || {
     printf '%s\n' "${report}" >&2
-    die "Could not read the local LiDAR freshness limit."
+    die "Could not read ${label} from ${node}."
   }
   value="$(awk -F': ' '/Double value is:/ {print $2; exit}' <<<"${report}")"
+  is_number "${value}" || \
+    die "Invalid ${parameter} response from ${node}: ${report}"
+  printf '%s\n' "${value}"
+}
+
+read_local_lidar_freshness_limit() {
+  local value
+  value="$(
+    read_runtime_double_parameter \
+      /perception_3d_local \
+      lidar.expected_sensor_time \
+      "the local LiDAR freshness limit"
+  )"
   is_positive_number "${value}" || \
-    die "Invalid lidar.expected_sensor_time response: ${report}"
+    die "Local LiDAR freshness limit must be positive, got: ${value}"
   awk \
     -v actual="${value}" \
     -v requested="${LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC_VALUE}" \
@@ -717,11 +734,47 @@ read_local_lidar_freshness_limit() {
   log "Local LiDAR hard freshness limit: ${value}s"
 }
 
+require_planner_lateral_limits() {
+  local minimum_y maximum_y
+  minimum_y="$(
+    read_runtime_double_parameter \
+      /trajectory_generators \
+      omni_drive_simple.min_vel_y \
+      "the planner minimum lateral velocity"
+  )"
+  maximum_y="$(
+    read_runtime_double_parameter \
+      /trajectory_generators \
+      omni_drive_simple.max_vel_y \
+      "the planner maximum lateral velocity"
+  )"
+
+  awk \
+    -v actual="${minimum_y}" \
+    -v requested="${OMNI_MIN_Y_VALUE}" \
+    'BEGIN { delta=actual-requested; if(delta<0) delta=-delta; exit !(delta <= 1e-6) }' || \
+    die "Planner minimum lateral limit ${minimum_y}m/s does not match requested ${OMNI_MIN_Y_VALUE}m/s."
+  awk \
+    -v actual="${maximum_y}" \
+    -v requested="${MAX_Y_VALUE}" \
+    'BEGIN { delta=actual-requested; if(delta<0) delta=-delta; exit !(delta <= 1e-6) }' || \
+    die "Planner maximum lateral limit ${maximum_y}m/s does not match requested ${MAX_Y_VALUE}m/s."
+  log "P2P planner lateral limits: min_y=${minimum_y}m/s max_y=${maximum_y}m/s"
+}
+
+require_navigation_runtime_parameters() {
+  log "Reading back exact P2P runtime safety parameters..."
+  read_local_lidar_freshness_limit
+  require_planner_lateral_limits
+  log "Exact P2P runtime safety parameters match the requested launch limits."
+}
+
 require_current_observation_stream() {
   local output status gate_path
   gate_path="/root/dddmr_navigation/src/dddmr_beginner_guide/scripts/go2_pointcloud_stream_gate.py"
 
-  read_local_lidar_freshness_limit
+  [[ -n "${LOCAL_LIDAR_RUNTIME_FRESHNESS_SEC_VALUE}" ]] || \
+    die "Local LiDAR runtime freshness was not validated before the observation gate."
   log "Validating ${OBSERVATION_WINDOW_SEC_VALUE}s of fresh local LiDAR observations before enabling Sport output..."
   set +e
   output="$(docker_ros \
@@ -1060,6 +1113,9 @@ main() {
 
   log "Starting navigation and Go2 DDS readiness checks..."
   wait_for_node /go2_nav_cmd_gate 90 || die "Timed out waiting for /go2_nav_cmd_gate"
+  wait_for_node /perception_3d_local 90 || die "Timed out waiting for /perception_3d_local"
+  wait_for_node /trajectory_generators 90 || die "Timed out waiting for /trajectory_generators"
+  require_navigation_runtime_parameters
   wait_for_topic /odom_sync_diagnostics 90 || die "Timed out waiting for /odom_sync_diagnostics"
   check_odom_sync_runtime
   wait_for_topic /map1/mapcloud 90 || die "Timed out waiting for /map1/mapcloud"

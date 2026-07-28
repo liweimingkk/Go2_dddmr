@@ -154,20 +154,20 @@
     <param name="use_sim_time" value="false"/>
   </node>
 
-  <!-- No-motion test path: DDDMR velocity output is intentionally isolated. -->
-  <node pkg="p2p_move_base" exec="p2p_move_base_node" output="screen" respawn="false" if="$(var start_move_base)">
-    <param from="$(var config_file)" />
-    <param name="goals_enabled" value="$(var p2p_goals_enabled)" type="bool"/>
-    <param name="lidar.expected_sensor_time"
-           value="$(var local_lidar_expected_sensor_time_sec)" type="float"/>
-    <param name="omni_drive_simple.min_vel_y"
-           value="$(var omni_min_vel_y)" type="float"/>
-    <param name="omni_drive_simple.max_vel_y"
-           value="$(var omni_max_vel_y)" type="float"/>
-    <remap from="/cmd_vel" to="/dddmr_go2/dry_run_cmd_vel"/>
-    <remap from="/cmd_vel_stamped" to="/dddmr_go2/dry_run_cmd_vel_stamped"/>
-    <param name="use_sim_time" value="false"/>
-  </node>
+  <!-- P2PMoveBase hosts several named ROS nodes in one process. Foxy turns
+       anonymous-node inline params into a /** rule, which loses to the exact
+       node sections in config_file. Generate exact per-node overrides before
+       process startup so freshness and lateral limits reach their consumers. -->
+  <include
+      file="$(find-pkg-share dddmr_beginner_guide)/launch/go2_xt16_p2p_move_base.launch.py"
+      if="$(var start_move_base)">
+    <arg name="config_file" value="$(var config_file)"/>
+    <arg name="p2p_goals_enabled" value="$(var p2p_goals_enabled)"/>
+    <arg name="local_lidar_expected_sensor_time_sec"
+         value="$(var local_lidar_expected_sensor_time_sec)"/>
+    <arg name="omni_min_vel_y" value="$(var omni_min_vel_y)"/>
+    <arg name="omni_max_vel_y" value="$(var omni_max_vel_y)"/>
+  </include>
 
   <node pkg="dddmr_beginner_guide" exec="go2_nav_cmd_gate.py"
         name="go2_nav_cmd_gate" output="screen" respawn="false"

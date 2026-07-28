@@ -108,6 +108,8 @@ python_files=(
   scripts/probe_go2_xt16_dry_run_goal.py
   scripts/probe_go2_xt16_plan_candidates.py
   scripts/summarize_go2_xt16_base_cloud.py
+  src/dddmr_beginner_guide/launch/go2_xt16_p2p_move_base.launch.py
+  src/dddmr_beginner_guide/launch/go2_xt16_p2p_runtime_parameters.py
 )
 for path in "${shell_files[@]}" "${python_files[@]}"; do
   require_file "${path}"
@@ -187,9 +189,21 @@ require_text \
   '<arg name="go2_sport_allow_real_request_topic" default="false"/>' \
   "launch blocks real request topic by default"
 require_text \
-  src/dddmr_beginner_guide/launch/go2_xt16_navigation.launch \
-  '<remap from="/cmd_vel" to="/dddmr_go2/dry_run_cmd_vel"/>' \
+  src/dddmr_beginner_guide/launch/go2_xt16_p2p_move_base.launch.py \
+  '("/cmd_vel", "/dddmr_go2/dry_run_cmd_vel")' \
   "p2p cmd_vel remaps to dry-run topic"
+require_text \
+  src/dddmr_beginner_guide/launch/go2_xt16_p2p_runtime_parameters.py \
+  '"/perception_3d_local": {' \
+  "P2P runtime parameters target the exact local perception node"
+require_text \
+  src/dddmr_beginner_guide/launch/go2_xt16_p2p_runtime_parameters.py \
+  '"/trajectory_generators": {' \
+  "P2P runtime parameters target the exact trajectory generator node"
+require_text \
+  scripts/run_go2_xt16_navigation_test.sh \
+  'ros2 param get '\''${node}'\'' '\''${parameter}'\''' \
+  "navigation startup reads back exact runtime parameters"
 require_text \
   scripts/dddmr_docker_go2_xt16.sh \
   'start_sport_dry_run_adapter:=false' \
