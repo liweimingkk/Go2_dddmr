@@ -998,13 +998,18 @@ arm_multi_mission() {
   while IFS= read -r -t 0.05 -u "${tty_fd}" answer; do
     :
   done
-  answer=""
-  printf 'Type exactly `%s` to submit waypoint 1: ' "${expected}" >&"${tty_fd}"
-  if ! IFS= read -r -u "${tty_fd}" answer; then
-    printf '\n' >&"${tty_fd}"
-    exec {tty_fd}>&-
-    die "mission confirmation input closed before a response was received"
-  fi
+  while true; do
+    answer=""
+    printf 'Type exactly `%s` to submit waypoint 1: ' "${expected}" >&"${tty_fd}"
+    if ! IFS= read -r -u "${tty_fd}" answer; then
+      printf '\n' >&"${tty_fd}"
+      exec {tty_fd}>&-
+      die "mission confirmation input closed before a response was received"
+    fi
+    [[ -n "${answer//[[:space:]]/}" ]] && break
+    printf 'Empty confirmation ignored; enter the exact phrase after the prompt.\n' \
+      >&"${tty_fd}"
+  done
   exec {tty_fd}>&-
   [[ "${answer}" == "${expected}" ]] || die "mission execution cancelled"
 
