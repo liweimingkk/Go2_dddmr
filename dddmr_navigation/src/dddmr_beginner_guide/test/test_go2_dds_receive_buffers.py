@@ -250,6 +250,13 @@ class Go2DdsReceiveBuffersTest(unittest.TestCase):
         )
         self.assertEqual(script.count(overlay_then_config), 5)
 
+    def test_mouth_mapping_containers_forward_additional_interfaces(self):
+        script = MOUTH_MAPPING_WRAPPER.read_text(encoding="utf-8")
+        forwarded_environment = (
+            '-e "GO2_DDS_EXTRA_IFACES=${GO2_DDS_EXTRA_IFACES_VALUE}"'
+        )
+        self.assertEqual(script.count(forwarded_environment), 3)
+
     def test_go2_static_transforms_use_foxy_compatible_arguments(self):
         publisher_count = 0
         for launch_file in GO2_LAUNCH_FILES:
