@@ -35,8 +35,10 @@ detect_go2_net_iface() {
 }
 
 GO2_NET_IFACE="$(detect_go2_net_iface)"
+GO2_DDS_EXTRA_IFACES="${GO2_DDS_EXTRA_IFACES:-}"
 export GO2_DDS_IP
 export GO2_NET_IFACE
+export GO2_DDS_EXTRA_IFACES
 export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
 
 GO2_DDS_RCVBUF_MAX="${GO2_DDS_RCVBUF_MAX:-16MiB}"
@@ -54,8 +56,40 @@ export GO2_DDS_SNDBUF_MAX
 export GO2_DDS_FRAGMENT_SIZE
 export GO2_DDS_ALLOW_MULTICAST
 
+validate_dds_iface() {
+  local iface="$1"
+  if [[ ! "${iface}" =~ ^[[:alnum:]_.:-]+$ ]]; then
+    echo "CycloneDDS interface contains unsupported characters: ${iface}" >&2
+    return 2
+  fi
+}
+
+build_dds_interfaces_xml() {
+  local -a extra_ifaces=()
+  local iface
+  local normalized_extra_ifaces="${GO2_DDS_EXTRA_IFACES//,/ }"
+  local seen_ifaces=" ${GO2_NET_IFACE} "
+
+  validate_dds_iface "${GO2_NET_IFACE}" || return
+  printf '  <NetworkInterface name="%s" priority="default" multicast="%s" />\n' \
+    "${GO2_NET_IFACE}" "${GO2_DDS_ALLOW_MULTICAST}"
+
+  read -r -a extra_ifaces <<<"${normalized_extra_ifaces}"
+  for iface in "${extra_ifaces[@]}"; do
+    validate_dds_iface "${iface}" || return
+    if [[ "${seen_ifaces}" == *" ${iface} "* ]]; then
+      continue
+    fi
+    printf '  <NetworkInterface name="%s" priority="default" multicast="%s" />\n' \
+      "${iface}" "${GO2_DDS_ALLOW_MULTICAST}"
+    seen_ifaces+="${iface} "
+  done
+}
+
+GO2_DDS_INTERFACES_XML="$(build_dds_interfaces_xml)" || return
+
 export CYCLONEDDS_URI="<CycloneDDS><Domain><General><Interfaces>
-  <NetworkInterface name=\"${GO2_NET_IFACE}\" priority=\"default\" multicast=\"${GO2_DDS_ALLOW_MULTICAST}\" />
+${GO2_DDS_INTERFACES_XML}
 </Interfaces><AllowMulticast>${GO2_DDS_ALLOW_MULTICAST}</AllowMulticast><MaxMessageSize>65500B</MaxMessageSize><FragmentSize>${GO2_DDS_FRAGMENT_SIZE}</FragmentSize></General>
 <Internal><SocketReceiveBufferSize min=\"${GO2_DDS_RCVBUF_MIN}\" max=\"${GO2_DDS_RCVBUF_MAX}\" /><SocketSendBufferSize min=\"default\" max=\"${GO2_DDS_SNDBUF_MAX}\" /></Internal>
 </Domain></CycloneDDS>"

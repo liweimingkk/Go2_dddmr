@@ -140,7 +140,47 @@ class Go2DdsReceiveBuffersTest(unittest.TestCase):
             result.stdout,
         )
 
-    def run_wrapper_with_fake_docker(self, platform: str):
+    def test_cyclone_supports_explicit_additional_interfaces(self):
+        command = (
+            "set -u; "
+            "GO2_NET_IFACE=eth0; "
+            "GO2_DDS_EXTRA_IFACES='wlan0,eth0 wlan0'; "
+            f"source {DDS_SETUP}; "
+            "printf '%s' \"${CYCLONEDDS_URI}\""
+        )
+        result = subprocess.run(
+            ["bash", "-c", command],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout.count('<NetworkInterface name="eth0"'), 1
+        )
+        self.assertEqual(
+            result.stdout.count('<NetworkInterface name="wlan0"'), 1
+        )
+
+    def test_cyclone_rejects_unsafe_interface_names(self):
+        command = (
+            "set -u; "
+            "GO2_NET_IFACE=eth0; "
+            "GO2_DDS_EXTRA_IFACES='wlan0<invalid'; "
+            f"source {DDS_SETUP}"
+        )
+        result = subprocess.run(
+            ["bash", "-c", command],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unsupported characters", result.stderr)
+
+    def run_wrapper_with_fake_docker(
+        self, platform: str, extra_interfaces: str = ""
+    ):
         with tempfile.TemporaryDirectory() as temporary_directory:
             directory = pathlib.Path(temporary_directory)
             fake_bin = directory / "bin"
@@ -164,6 +204,7 @@ class Go2DdsReceiveBuffersTest(unittest.TestCase):
                 "DDDMR_LOG_BASE",
                 "DDDMR_ROS_DISTRO",
                 "GO2_DDS_RCVBUF_MIN",
+                "GO2_DDS_EXTRA_IFACES",
             ):
                 environment.pop(inherited_name, None)
             environment.update(
@@ -173,6 +214,7 @@ class Go2DdsReceiveBuffersTest(unittest.TestCase):
                     "DDDMR_DOCKER_RUNTIME": "none",
                     "DDDMR_BAGS_DIR": str(directory / "bags"),
                     "GO2_NET_IFACE": "lo",
+                    "GO2_DDS_EXTRA_IFACES": extra_interfaces,
                 }
             )
             return subprocess.run(
@@ -192,6 +234,11 @@ class Go2DdsReceiveBuffersTest(unittest.TestCase):
         result = self.run_wrapper_with_fake_docker("x64")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("GO2_DDS_RCVBUF_MIN=16MiB", result.stdout)
+
+    def test_wrapper_forwards_additional_interfaces(self):
+        result = self.run_wrapper_with_fake_docker("orin-jp5", "wlan0")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("GO2_DDS_EXTRA_IFACES=wlan0", result.stdout)
 
     def test_mouth_mapping_containers_source_unitree_dds_overlay(self):
         script = MOUTH_MAPPING_WRAPPER.read_text(encoding="utf-8")

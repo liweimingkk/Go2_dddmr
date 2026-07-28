@@ -65,6 +65,7 @@ HTTPS_PROXY=http://192.168.123.222:3128 \
 DDDMR_PLATFORM=orin-jp5 \
 DDDMR_DOCKER_USE_SUDO=1 \
 GO2_NET_IFACE=eth0 \
+GO2_DDS_EXTRA_IFACES=wlan0 \
 ./scripts/dddmr_docker_go2_xt16.sh build-all
 ```
 
@@ -92,8 +93,15 @@ First prove that actual XT16 samples cross the container boundary:
 DDDMR_PLATFORM=orin-jp5 \
 DDDMR_DOCKER_USE_SUDO=1 \
 GO2_NET_IFACE=eth0 \
+GO2_DDS_EXTRA_IFACES=wlan0 \
 ./scripts/dddmr_docker_go2_xt16.sh preflight --samples 3 --timeout 10
 ```
+
+When the Orin provides the `Go2-Orin` operator hotspot, keep `eth0` as the
+primary Go2/XT16 interface and explicitly add `wlan0` for the remote RViz
+computer. CycloneDDS otherwise selects only one interface from a multi-homed
+host. The laptop should bind CycloneDDS only to its Wi-Fi interface and use the
+same `ROS_DOMAIN_ID`.
 
 Then run tests:
 
@@ -109,6 +117,7 @@ A mapping smoke test remains stationary and timeout-limited:
 DDDMR_PLATFORM=orin-jp5 \
 DDDMR_DOCKER_USE_SUDO=1 \
 GO2_NET_IFACE=eth0 \
+GO2_DDS_EXTRA_IFACES=wlan0 \
 RUN_SECONDS=20 \
 RVIZ=false \
 PUBLISH_STATIC_TF=true \

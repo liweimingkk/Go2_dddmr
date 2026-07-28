@@ -64,6 +64,7 @@ Environment:
   ROS_DOMAIN_ID=0
   GO2_DDS_IP=192.168.123.18
   GO2_NET_IFACE=<auto>
+  GO2_DDS_EXTRA_IFACES=<optional comma/space-separated interfaces>
   GO2_DDS_RCVBUF_MIN=<default 16MiB on x64; kernel default on orin-jp5>
   ODOM_TIME_OFFSET_SEC=<explicit override; skips automatic measurement>
   AUTO_MEASURE_ODOM_TIME_OFFSET=true
@@ -137,6 +138,7 @@ BAGS_DIR="${DDDMR_BAGS_DIR:-${WS_ROOT}/../bags}"
 ROS_DOMAIN_ID_VALUE="${ROS_DOMAIN_ID:-0}"
 GO2_DDS_IP_VALUE="${GO2_DDS_IP:-192.168.123.18}"
 GO2_NET_IFACE_VALUE="${GO2_NET_IFACE:-}"
+GO2_DDS_EXTRA_IFACES_VALUE="${GO2_DDS_EXTRA_IFACES:-}"
 GO2_DDS_RCVBUF_MIN_VALUE="${GO2_DDS_RCVBUF_MIN:-${DEFAULT_GO2_DDS_RCVBUF_MIN}}"
 [[ "${GO2_DDS_RCVBUF_MIN_VALUE}" == "default" || \
    "${GO2_DDS_RCVBUF_MIN_VALUE}" =~ ^[1-9][0-9]*(B|KiB|MiB|GiB)$ ]] || {
@@ -285,6 +287,7 @@ resolve_live_odom_time_offset() {
     ROS_DOMAIN_ID="${ROS_DOMAIN_ID_VALUE}" \
     GO2_DDS_IP="${GO2_DDS_IP_VALUE}" \
     GO2_NET_IFACE="${GO2_NET_IFACE_VALUE}" \
+    GO2_DDS_EXTRA_IFACES="${GO2_DDS_EXTRA_IFACES_VALUE}" \
     GO2_DDS_RCVBUF_MIN="${GO2_DDS_RCVBUF_MIN_VALUE}" \
       "${ODOM_OFFSET_RESOLVER}"
   )"
@@ -327,6 +330,9 @@ docker_base_args() {
   fi
   if [[ -n "${GO2_NET_IFACE_VALUE}" ]]; then
     args+=(--env "GO2_NET_IFACE=${GO2_NET_IFACE_VALUE}")
+  fi
+  if [[ -n "${GO2_DDS_EXTRA_IFACES_VALUE}" ]]; then
+    args+=(--env "GO2_DDS_EXTRA_IFACES=${GO2_DDS_EXTRA_IFACES_VALUE}")
   fi
   if [[ -n "${DOCKER_NAME_VALUE}" ]]; then
     args+=(--name "${DOCKER_NAME_VALUE}")
