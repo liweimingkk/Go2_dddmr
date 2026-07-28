@@ -468,6 +468,32 @@ class Go2DdsReceiveBuffersTest(unittest.TestCase):
             script,
         )
 
+    def test_navigation_uses_platform_specific_runtime_defaults(self):
+        script = NAVIGATION_TEST_WRAPPER.read_text(encoding="utf-8")
+        self.assertIn(
+            'DEFAULT_IMAGE="dddmr_go2_xt16:orin-jp5.1.1"',
+            script,
+        )
+        self.assertIn('DEFAULT_ROS_DISTRO="foxy"', script)
+        self.assertIn(
+            'DEFAULT_INSTALL_BASE=".docker_go2_xt16_orin_install"',
+            script,
+        )
+        self.assertIn('DEFAULT_GO2_DDS_RCVBUF_MIN="default"', script)
+        self.assertIn('DOCKER_RUN_ARGS+=(--runtime nvidia)', script)
+        self.assertIn(
+            '-e "GO2_DDS_RCVBUF_MIN=${GO2_DDS_RCVBUF_MIN_VALUE}"',
+            script,
+        )
+        self.assertNotIn("/opt/ros/humble/setup.bash", script)
+        overlay_then_config = (
+            "if [[ -f /opt/unitree_ros2/setup.bash ]]; then\n"
+            "  source /opt/unitree_ros2/setup.bash\n"
+            "fi\n"
+            "source /root/dddmr_navigation/scripts/setup_go2_dds_env.sh"
+        )
+        self.assertEqual(script.count(overlay_then_config), 4)
+
     def test_live_mouth_mapping_uses_receipt_time_sync(self):
         config = MOUTH_MAPPING_CONFIG.read_text(encoding="utf-8")
         self.assertIn('mouth_sync_mode: "receipt_time"', config)

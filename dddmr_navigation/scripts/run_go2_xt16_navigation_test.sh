@@ -33,6 +33,7 @@ Modes:
              running, it is stopped first so it can publish StopMove.
 
 Common environment overrides:
+  DDDMR_PLATFORM=x64|orin-jp5
   MAX_X=0.50
   MAX_Y=0.20             Default for dry-run and supervised live; 0 disables lateral motion.
   MAX_YAW=0.50
@@ -140,14 +141,52 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 REPO_ROOT="$(cd "${WS_ROOT}/.." && pwd)"
 
-IMAGE="${DDDMR_IMAGE:-dddmr_go2_xt16:x64}"
+PLATFORM_VALUE="${DDDMR_PLATFORM:-x64}"
+case "${PLATFORM_VALUE}" in
+  x64)
+    DEFAULT_IMAGE="dddmr_go2_xt16:x64"
+    DEFAULT_ROS_DISTRO="humble"
+    DEFAULT_GO2_NET_IFACE="enp46s0"
+    DEFAULT_BUILD_BASE=".docker_go2_xt16_build"
+    DEFAULT_INSTALL_BASE=".docker_go2_xt16_install"
+    DEFAULT_LOG_BASE=".docker_go2_xt16_log"
+    DEFAULT_GO2_DDS_RCVBUF_MIN="16MiB"
+    ;;
+  orin-jp5)
+    DEFAULT_IMAGE="dddmr_go2_xt16:orin-jp5.1.1"
+    DEFAULT_ROS_DISTRO="foxy"
+    DEFAULT_GO2_NET_IFACE="eth0"
+    DEFAULT_BUILD_BASE=".docker_go2_xt16_orin_build"
+    DEFAULT_INSTALL_BASE=".docker_go2_xt16_orin_install"
+    DEFAULT_LOG_BASE=".docker_go2_xt16_orin_log"
+    DEFAULT_GO2_DDS_RCVBUF_MIN="default"
+    ;;
+  *)
+    echo "DDDMR_PLATFORM must be x64 or orin-jp5, got: ${PLATFORM_VALUE}" >&2
+    exit 2
+    ;;
+esac
+
+IMAGE="${DDDMR_IMAGE:-${DEFAULT_IMAGE}}"
+ROS_DISTRO_VALUE="${DDDMR_ROS_DISTRO:-${DEFAULT_ROS_DISTRO}}"
+[[ "${ROS_DISTRO_VALUE}" =~ ^[a-z0-9_]+$ ]] || {
+  echo "DDDMR_ROS_DISTRO contains unsupported characters." >&2
+  exit 2
+}
+ROS_SETUP_FILE_VALUE="/opt/ros/${ROS_DISTRO_VALUE}/setup.bash"
 BAGS_DIR="${DDDMR_BAGS_DIR:-${REPO_ROOT}/bags}"
 ROS_DOMAIN_ID_VALUE="${ROS_DOMAIN_ID:-0}"
 GO2_DDS_IP_VALUE="${GO2_DDS_IP:-192.168.123.18}"
-GO2_NET_IFACE_VALUE="${GO2_NET_IFACE:-enp46s0}"
+GO2_NET_IFACE_VALUE="${GO2_NET_IFACE:-${DEFAULT_GO2_NET_IFACE}}"
 GO2_DDS_EXTRA_IFACES_VALUE="${GO2_DDS_EXTRA_IFACES:-}"
 GO2_DDS_PRIMARY_ADDRESS_VALUE="${GO2_DDS_PRIMARY_ADDRESS:-}"
 GO2_DDS_ROBOT_TOPIC_PATTERNS_VALUE="${GO2_DDS_ROBOT_TOPIC_PATTERNS:-}"
+GO2_DDS_RCVBUF_MIN_VALUE="${GO2_DDS_RCVBUF_MIN:-${DEFAULT_GO2_DDS_RCVBUF_MIN}}"
+[[ "${GO2_DDS_RCVBUF_MIN_VALUE}" == "default" || \
+   "${GO2_DDS_RCVBUF_MIN_VALUE}" =~ ^[1-9][0-9]*(B|KiB|MiB|GiB)$ ]] || {
+  echo "GO2_DDS_RCVBUF_MIN must be default or a positive byte size." >&2
+  exit 2
+}
 DDDMR_DOCKER_USE_SUDO_VALUE="${DDDMR_DOCKER_USE_SUDO:-0}"
 ODOM_TIME_OFFSET_SEC_VALUE="${ODOM_TIME_OFFSET_SEC:-}"
 ODOM_SYNC_TOLERANCE_SEC_VALUE="${ODOM_SYNC_TOLERANCE_SEC:-0.05}"
@@ -158,9 +197,22 @@ DDS_BUFFER_CHECK="${SCRIPT_DIR}/check_go2_dds_receive_buffers.sh"
 OBSERVATION_GATE_SOURCE="${WS_ROOT}/src/dddmr_beginner_guide/scripts/go2_pointcloud_stream_gate.py"
 MISSION_IO_SOURCE="${WS_ROOT}/src/dddmr_route_navigation/scripts/waypoint_mission_io.py"
 CURRENT_OBSERVATION_TOPIC="/perception_3d_local/lidar/current_observation"
-BUILD_BASE_VALUE="${DDDMR_BUILD_BASE:-.docker_go2_xt16_build}"
-INSTALL_BASE_VALUE="${DDDMR_INSTALL_BASE:-.docker_go2_xt16_install}"
-LOG_BASE_VALUE="${DDDMR_LOG_BASE:-.docker_go2_xt16_log}"
+BUILD_BASE_VALUE="${DDDMR_BUILD_BASE:-${DEFAULT_BUILD_BASE}}"
+INSTALL_BASE_VALUE="${DDDMR_INSTALL_BASE:-${DEFAULT_INSTALL_BASE}}"
+LOG_BASE_VALUE="${DDDMR_LOG_BASE:-${DEFAULT_LOG_BASE}}"
+DOCKER_RUN_ARGS=()
+if [[ "${PLATFORM_VALUE}" == "orin-jp5" ]]; then
+  DOCKER_RUNTIME_VALUE="${DDDMR_DOCKER_RUNTIME:-nvidia}"
+else
+  DOCKER_RUNTIME_VALUE="${DDDMR_DOCKER_RUNTIME:-none}"
+fi
+[[ "${DOCKER_RUNTIME_VALUE}" == "nvidia" || "${DOCKER_RUNTIME_VALUE}" == "none" ]] || {
+  echo "DDDMR_DOCKER_RUNTIME must be nvidia or none." >&2
+  exit 2
+}
+if [[ "${DOCKER_RUNTIME_VALUE}" == "nvidia" ]]; then
+  DOCKER_RUN_ARGS+=(--runtime nvidia)
+fi
 RVIZ_VALUE="${RVIZ:-true}"
 PUBLISH_STATIC_TF_VALUE="${PUBLISH_STATIC_TF:-true}"
 MAX_X_VALUE="${MAX_X:-0.50}"
@@ -338,12 +390,15 @@ resolve_odom_time_offset() {
   log "Running read-only odom/XT16 time-sync preflight..."
   ODOM_TIME_OFFSET_SEC_VALUE="$(
     DDDMR_IMAGE="${IMAGE}" \
+    DDDMR_PLATFORM="${PLATFORM_VALUE}" \
+    DDDMR_ROS_DISTRO="${ROS_DISTRO_VALUE}" \
     ROS_DOMAIN_ID="${ROS_DOMAIN_ID_VALUE}" \
     GO2_DDS_IP="${GO2_DDS_IP_VALUE}" \
     GO2_NET_IFACE="${GO2_NET_IFACE_VALUE}" \
     GO2_DDS_EXTRA_IFACES="${GO2_DDS_EXTRA_IFACES_VALUE}" \
     GO2_DDS_PRIMARY_ADDRESS="${GO2_DDS_PRIMARY_ADDRESS_VALUE}" \
     GO2_DDS_ROBOT_TOPIC_PATTERNS="${GO2_DDS_ROBOT_TOPIC_PATTERNS_VALUE}" \
+    GO2_DDS_RCVBUF_MIN="${GO2_DDS_RCVBUF_MIN_VALUE}" \
       "${ODOM_OFFSET_RESOLVER}"
   )" || die "Odom/XT16 time-sync preflight failed."
   is_number "${ODOM_TIME_OFFSET_SEC_VALUE}" || \
@@ -458,7 +513,10 @@ assert_clean_runtime() {
 docker_ros() {
   docker exec "${CONTAINER_NAME}" bash -lc "set -eo pipefail
 set +u
-source /opt/ros/humble/setup.bash
+source ${ROS_SETUP_FILE_VALUE}
+if [[ -f /opt/unitree_ros2/setup.bash ]]; then
+  source /opt/unitree_ros2/setup.bash
+fi
 source /root/dddmr_navigation/scripts/setup_go2_dds_env.sh
 source /root/dddmr_navigation/${INSTALL_BASE_VALUE}/setup.bash
 set -u
@@ -684,6 +742,7 @@ start_container() {
     log "RViz manual goals are disabled; the P2P mission remains locked until READY."
   fi
   docker run -d \
+    "${DOCKER_RUN_ARGS[@]}" \
     --name "${CONTAINER_NAME}" \
     --label "dddmr.go2_xt16_navigation=true" \
     --network=host \
@@ -696,7 +755,10 @@ start_container() {
     -e "GO2_DDS_EXTRA_IFACES=${GO2_DDS_EXTRA_IFACES_VALUE}" \
     -e "GO2_DDS_PRIMARY_ADDRESS=${GO2_DDS_PRIMARY_ADDRESS_VALUE}" \
     -e "GO2_DDS_ROBOT_TOPIC_PATTERNS=${GO2_DDS_ROBOT_TOPIC_PATTERNS_VALUE}" \
+    -e "GO2_DDS_RCVBUF_MIN=${GO2_DDS_RCVBUF_MIN_VALUE}" \
     -e "RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}" \
+    -e "DDDMR_PLATFORM=${PLATFORM_VALUE}" \
+    -e "DDDMR_ROS_DISTRO=${ROS_DISTRO_VALUE}" \
     -e "DDDMR_BUILD_BASE=${BUILD_BASE_VALUE}" \
     -e "DDDMR_INSTALL_BASE=${INSTALL_BASE_VALUE}" \
     -e "DDDMR_LOG_BASE=${LOG_BASE_VALUE}" \
@@ -708,7 +770,10 @@ start_container() {
     "${IMAGE}" \
     bash -lc "set -eo pipefail
 set +u
-source /opt/ros/humble/setup.bash
+source ${ROS_SETUP_FILE_VALUE}
+if [[ -f /opt/unitree_ros2/setup.bash ]]; then
+  source /opt/unitree_ros2/setup.bash
+fi
 source /root/dddmr_navigation/scripts/setup_go2_dds_env.sh
 source /root/dddmr_navigation/${INSTALL_BASE_VALUE}/setup.bash
 set -u
@@ -751,7 +816,10 @@ run_waypoint_recorder() {
   log "Starting interactive P2P waypoint recorder."
   docker exec -it "${CONTAINER_NAME}" bash -lc "set -eo pipefail
 set +u
-source /opt/ros/humble/setup.bash
+source ${ROS_SETUP_FILE_VALUE}
+if [[ -f /opt/unitree_ros2/setup.bash ]]; then
+  source /opt/unitree_ros2/setup.bash
+fi
 source /root/dddmr_navigation/scripts/setup_go2_dds_env.sh
 source /root/dddmr_navigation/${INSTALL_BASE_VALUE}/setup.bash
 set -u
@@ -869,7 +937,10 @@ test -f /root/dddmr_navigation/.unitree_msg_ws/install/setup.bash || {
   exit 1
 }
 mkdir -p /root/dddmr_navigation/run_logs
-source /opt/ros/humble/setup.bash
+source ${ROS_SETUP_FILE_VALUE}
+if [[ -f /opt/unitree_ros2/setup.bash ]]; then
+  source /opt/unitree_ros2/setup.bash
+fi
 source /root/dddmr_navigation/scripts/setup_go2_dds_env.sh
 source /root/dddmr_navigation/${INSTALL_BASE_VALUE}/setup.bash
 source /root/dddmr_navigation/.unitree_msg_ws/install/setup.bash
@@ -938,8 +1009,12 @@ main() {
   require_docker_image
   assert_clean_runtime
   validate_perception_settings
-  log "Checking host DDS receive buffers before starting any ROS node..."
-  "${DDS_BUFFER_CHECK}" || die "Host DDS receive-buffer check failed."
+  if [[ "${GO2_DDS_RCVBUF_MIN_VALUE}" == "default" ]]; then
+    log "Using the platform kernel-default DDS receive-buffer minimum."
+  else
+    log "Checking host DDS receive buffers before starting any ROS node..."
+    "${DDS_BUFFER_CHECK}" || die "Host DDS receive-buffer check failed."
+  fi
   resolve_odom_time_offset
   start_container
   runtime_started="true"
