@@ -15,6 +15,9 @@ DOCKER_WRAPPER = WORKSPACE / "scripts" / "dddmr_docker_go2_xt16.sh"
 MOUTH_MAPPING_WRAPPER = (
     WORKSPACE / "scripts" / "run_go2_xt16_mouth_mapping_save_to_nav.sh"
 )
+NAVIGATION_TEST_WRAPPER = (
+    WORKSPACE / "scripts" / "run_go2_xt16_navigation_test.sh"
+)
 MOUTH_MAPPING_CONFIG = (
     WORKSPACE
     / "src"
@@ -424,6 +427,34 @@ class Go2DdsReceiveBuffersTest(unittest.TestCase):
                 '${GO2_DDS_ROBOT_TOPIC_PATTERNS_VALUE}"'
             ),
             3,
+        )
+
+    def test_navigation_container_forwards_additional_interfaces(self):
+        script = NAVIGATION_TEST_WRAPPER.read_text(encoding="utf-8")
+        self.assertEqual(
+            script.count(
+                '-e "GO2_DDS_EXTRA_IFACES='
+                '${GO2_DDS_EXTRA_IFACES_VALUE}"'
+            ),
+            1,
+        )
+        self.assertEqual(
+            script.count(
+                '-e "GO2_DDS_PRIMARY_ADDRESS='
+                '${GO2_DDS_PRIMARY_ADDRESS_VALUE}"'
+            ),
+            1,
+        )
+        self.assertEqual(
+            script.count(
+                '-e "GO2_DDS_ROBOT_TOPIC_PATTERNS='
+                '${GO2_DDS_ROBOT_TOPIC_PATTERNS_VALUE}"'
+            ),
+            1,
+        )
+        self.assertIn(
+            'GO2_DDS_EXTRA_IFACES="${GO2_DDS_EXTRA_IFACES_VALUE}"',
+            script,
         )
 
     def test_live_mouth_mapping_uses_receipt_time_sync(self):
