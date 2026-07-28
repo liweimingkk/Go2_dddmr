@@ -983,10 +983,29 @@ wait_for_mission_ready() {
 arm_multi_mission() {
   local expected="EXECUTE ${mission_id}"
   local answer=""
-  [[ -t 0 ]] || \
-    die "multi-point execution requires an interactive terminal"
-  printf 'Type exactly `%s` to submit waypoint 1: ' "${expected}"
-  read -r answer
+  local tty_fd
+  if ! exec {tty_fd}<>/dev/tty; then
+    die "multi-point execution requires an interactive controlling terminal"
+  fi
+  if [[ ! -t "${tty_fd}" ]]; then
+    exec {tty_fd}>&-
+    die "multi-point execution requires an interactive controlling terminal"
+  fi
+
+  # A newline or VEOF entered during the long readiness checks must not count
+  # as the post-READY motion confirmation. Drain queued terminal input before
+  # displaying the prompt, then require a newly entered exact phrase.
+  while IFS= read -r -t 0.05 -u "${tty_fd}" answer; do
+    :
+  done
+  answer=""
+  printf 'Type exactly `%s` to submit waypoint 1: ' "${expected}" >&"${tty_fd}"
+  if ! IFS= read -r -u "${tty_fd}" answer; then
+    printf '\n' >&"${tty_fd}"
+    exec {tty_fd}>&-
+    die "mission confirmation input closed before a response was received"
+  fi
+  exec {tty_fd}>&-
   [[ "${answer}" == "${expected}" ]] || die "mission execution cancelled"
 
   # READY is a live condition, not a promise. Recheck immediately before the
