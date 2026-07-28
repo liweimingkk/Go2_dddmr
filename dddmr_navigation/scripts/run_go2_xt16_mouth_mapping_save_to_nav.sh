@@ -654,7 +654,11 @@ require_mouth_ground_sample() {
   local report rc width
   log "Waiting for a fresh ${MOUTH_GROUND_TOPIC_VALUE} sample..."
   set +e
-  report="$(docker_ros "timeout '${MOUTH_GROUND_SAMPLE_TIMEOUT_SEC_VALUE}' ros2 topic echo --once --field width '${MOUTH_GROUND_TOPIC_VALUE}' sensor_msgs/msg/PointCloud2" 2>&1)"
+  report="$(docker_ros "set +o pipefail
+timeout '${MOUTH_GROUND_SAMPLE_TIMEOUT_SEC_VALUE}' \
+  ros2 topic echo '${MOUTH_GROUND_TOPIC_VALUE}' sensor_msgs/msg/PointCloud2 \
+    --qos-reliability reliable --no-arr --no-str 2>/dev/null |
+  awk '\$1 == \"width:\" {print \$2; exit}'" 2>&1)"
   rc=$?
   set -e
   if [[ "${rc}" -ne 0 ]]; then
@@ -833,7 +837,10 @@ exec ros2 launch lego_loam_bor lego_loam_go2_xt16_mouth.launch \
   rviz_config:=/root/dddmr_navigation/src/dddmr_lego_loam/lego_loam_bor/rviz/go2_xt16_mouth_validation.rviz \
   publish_static_tf:=${PUBLISH_STATIC_TF_VALUE} \
   xt16_topic:=${XT16_TOPIC_VALUE} \
-  odom_topic:=${ODOM_TOPIC_VALUE} \
+  standardize_odom:=true \
+  raw_odom_topic:=${ODOM_TOPIC_VALUE} \
+  standardized_odom_topic:=/dddmr_go2/robot_odom_standard \
+  odom_topic:=/dddmr_go2/robot_odom_standard \
   mouth_cloud_topic:=${MOUTH_CLOUD_TOPIC_VALUE} \
   mouth_filter_frame:=base_link \
   mouth_sync_mode:=${MOUTH_SYNC_MODE_VALUE} \

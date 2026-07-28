@@ -15,6 +15,22 @@ DOCKER_WRAPPER = WORKSPACE / "scripts" / "dddmr_docker_go2_xt16.sh"
 MOUTH_MAPPING_WRAPPER = (
     WORKSPACE / "scripts" / "run_go2_xt16_mouth_mapping_save_to_nav.sh"
 )
+MOUTH_MAPPING_CONFIG = (
+    WORKSPACE
+    / "src"
+    / "dddmr_lego_loam"
+    / "lego_loam_bor"
+    / "config"
+    / "loam_go2_xt16_mouth_config.yaml"
+)
+MOUTH_MAPPING_LAUNCH = (
+    WORKSPACE
+    / "src"
+    / "dddmr_lego_loam"
+    / "lego_loam_bor"
+    / "launch"
+    / "lego_loam_go2_xt16_mouth.launch"
+)
 GO2_LAUNCH_FILES = (
     WORKSPACE
     / "src"
@@ -308,6 +324,34 @@ class Go2DdsReceiveBuffersTest(unittest.TestCase):
             '-e "GO2_DDS_EXTRA_IFACES=${GO2_DDS_EXTRA_IFACES_VALUE}"'
         )
         self.assertEqual(script.count(forwarded_environment), 3)
+
+    def test_live_mouth_mapping_uses_receipt_time_sync(self):
+        config = MOUTH_MAPPING_CONFIG.read_text(encoding="utf-8")
+        self.assertIn('mouth_sync_mode: "receipt_time"', config)
+
+    def test_mouth_mapping_standardizes_odom_with_measured_offset(self):
+        script = MOUTH_MAPPING_WRAPPER.read_text(encoding="utf-8")
+        self.assertIn("standardize_odom:=true", script)
+        self.assertIn(
+            "odom_topic:=/dddmr_go2/robot_odom_standard", script
+        )
+
+        root = element_tree.parse(MOUTH_MAPPING_LAUNCH).getroot()
+        standardizer = root.find(
+            ".//node[@exec='go2_odom_standardizer']"
+        )
+        self.assertIsNotNone(standardizer)
+        offset = standardizer.find(
+            "./param[@name='stamp_time_offset_sec']"
+        )
+        self.assertIsNotNone(offset)
+        self.assertEqual(offset.attrib["value"], "$(var odom_time_offset_sec)")
+
+    def test_mouth_ground_sample_check_is_foxy_compatible(self):
+        script = MOUTH_MAPPING_WRAPPER.read_text(encoding="utf-8")
+        self.assertNotIn("ros2 topic echo --once --field", script)
+        self.assertIn("--qos-reliability reliable --no-arr --no-str", script)
+        self.assertIn("width:", script)
 
     def test_go2_static_transforms_use_foxy_compatible_arguments(self):
         publisher_count = 0
