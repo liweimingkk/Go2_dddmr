@@ -301,6 +301,10 @@ class Go2DdsReceiveBuffersTest(unittest.TestCase):
             result.stdout.count('<Peer Address="192.168.123.18"'), 1
         )
         self.assertIn("<ParticipantIndex>auto</ParticipantIndex>", result.stdout)
+        self.assertIn(
+            "<MaxAutoParticipantIndex>120</MaxAutoParticipantIndex>",
+            result.stdout,
+        )
 
     def test_cyclone_rejects_unsafe_discovery_peers(self):
         command = (
@@ -333,6 +337,25 @@ class Go2DdsReceiveBuffersTest(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("GO2_DDS_PARTICIPANT_INDEX", result.stderr)
+
+    def test_cyclone_rejects_unsafe_max_auto_participant_index(self):
+        command = (
+            "set -u; "
+            "GO2_NET_IFACE=lo; "
+            "GO2_DDS_MAX_AUTO_PARTICIPANT_INDEX=121; "
+            f"source {DDS_SETUP}"
+        )
+        result = subprocess.run(
+            ["bash", "-c", command],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "GO2_DDS_MAX_AUTO_PARTICIPANT_INDEX",
+            result.stderr,
+        )
 
     def run_wrapper_with_fake_docker(
         self, platform: str, extra_interfaces: str = ""
@@ -483,6 +506,11 @@ class Go2DdsReceiveBuffersTest(unittest.TestCase):
         self.assertIn('DOCKER_RUN_ARGS+=(--runtime nvidia)', script)
         self.assertIn(
             '-e "GO2_DDS_RCVBUF_MIN=${GO2_DDS_RCVBUF_MIN_VALUE}"',
+            script,
+        )
+        self.assertIn(
+            '-e "GO2_DDS_MAX_AUTO_PARTICIPANT_INDEX='
+            '${GO2_DDS_MAX_AUTO_PARTICIPANT_INDEX_VALUE}"',
             script,
         )
         self.assertNotIn("/opt/ros/humble/setup.bash", script)
