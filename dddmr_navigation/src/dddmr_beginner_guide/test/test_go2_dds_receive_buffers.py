@@ -457,6 +457,17 @@ class Go2DdsReceiveBuffersTest(unittest.TestCase):
             script,
         )
 
+    def test_navigation_supports_sudo_docker_on_orin(self):
+        script = NAVIGATION_TEST_WRAPPER.read_text(encoding="utf-8")
+        self.assertIn(
+            'DDDMR_DOCKER_USE_SUDO_VALUE="${DDDMR_DOCKER_USE_SUDO:-0}"',
+            script,
+        )
+        self.assertIn(
+            'docker() {\n      sudo docker "$@"\n    }',
+            script,
+        )
+
     def test_live_mouth_mapping_uses_receipt_time_sync(self):
         config = MOUTH_MAPPING_CONFIG.read_text(encoding="utf-8")
         self.assertIn('mouth_sync_mode: "receipt_time"', config)

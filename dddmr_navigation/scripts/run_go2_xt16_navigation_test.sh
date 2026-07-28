@@ -46,6 +46,7 @@ Common environment overrides:
   GO2_DDS_PRIMARY_ADDRESS=... Optional primary-interface IPv4 override.
   GO2_DDS_ROBOT_TOPIC_PATTERNS=...
                              DDS topics pinned to the primary interface.
+  DDDMR_DOCKER_USE_SUDO=1   Run Docker through sudo (required by the Orin user).
   ODOM_TIME_OFFSET_SEC=...  Explicit override; skips automatic measurement.
   AUTO_MEASURE_ODOM_TIME_OFFSET=true
   ODOM_SYNC_TOLERANCE_SEC=0.05
@@ -147,6 +148,7 @@ GO2_NET_IFACE_VALUE="${GO2_NET_IFACE:-enp46s0}"
 GO2_DDS_EXTRA_IFACES_VALUE="${GO2_DDS_EXTRA_IFACES:-}"
 GO2_DDS_PRIMARY_ADDRESS_VALUE="${GO2_DDS_PRIMARY_ADDRESS:-}"
 GO2_DDS_ROBOT_TOPIC_PATTERNS_VALUE="${GO2_DDS_ROBOT_TOPIC_PATTERNS:-}"
+DDDMR_DOCKER_USE_SUDO_VALUE="${DDDMR_DOCKER_USE_SUDO:-0}"
 ODOM_TIME_OFFSET_SEC_VALUE="${ODOM_TIME_OFFSET_SEC:-}"
 ODOM_SYNC_TOLERANCE_SEC_VALUE="${ODOM_SYNC_TOLERANCE_SEC:-0.05}"
 ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE="${ODOM_SYNC_WAIT_TIMEOUT_SEC:-0.1}"
@@ -191,6 +193,20 @@ mission_file_container=""
 initial_pose_file=""
 initial_pose_file_container=""
 mission_id=""
+
+case "${DDDMR_DOCKER_USE_SUDO_VALUE}" in
+  0|false)
+    ;;
+  1|true)
+    docker() {
+      sudo docker "$@"
+    }
+    ;;
+  *)
+    printf 'ERROR: DDDMR_DOCKER_USE_SUDO must be 0, 1, false, or true.\n' >&2
+    exit 2
+    ;;
+esac
 
 if [[ "${live_mode}" == "true" && -z "${RUN_SECONDS_VALUE}" ]]; then
   RUN_SECONDS_VALUE="300"
