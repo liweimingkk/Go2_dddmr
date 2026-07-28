@@ -590,7 +590,11 @@ wait_for_pointcloud_sample() {
   log "Waiting for a non-empty ${topic} point-cloud sample (timeout ${timeout_sec}s)..."
   while (( SECONDS < deadline )); do
     set +e
-    report="$(docker_ros "timeout 6 ros2 topic echo --once --field width --qos-reliability reliable --qos-durability '${durability}' '${topic}' sensor_msgs/msg/PointCloud2" 2>&1)"
+    report="$(docker_ros "set +o pipefail
+timeout 6 ros2 topic echo '${topic}' sensor_msgs/msg/PointCloud2 \
+  --qos-reliability reliable --qos-durability '${durability}' \
+  --no-arr --no-str 2>/dev/null |
+awk '\$1 == \"width:\" {print \$2; exit}'" 2>&1)"
     rc=$?
     set -e
     if (( rc == 0 )); then

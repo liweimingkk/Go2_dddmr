@@ -521,6 +521,8 @@ class Go2DdsReceiveBuffersTest(unittest.TestCase):
             "source /root/dddmr_navigation/scripts/setup_go2_dds_env.sh"
         )
         self.assertEqual(script.count(overlay_then_config), 4)
+        self.assertNotIn("ros2 topic echo --once --field", script)
+        self.assertIn("--no-arr --no-str", script)
 
     def test_live_mouth_mapping_uses_receipt_time_sync(self):
         config = MOUTH_MAPPING_CONFIG.read_text(encoding="utf-8")
