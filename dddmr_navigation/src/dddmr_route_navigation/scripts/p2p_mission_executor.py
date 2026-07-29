@@ -54,7 +54,7 @@ class P2PMissionExecutor(Node):
         self.initial_pose = load_initial_pose(self.mission.initial_pose_path)
 
         self.position_tolerance = self._positive_parameter(
-            "position_tolerance", 0.30, maximum=1.0
+            "position_tolerance", 0.40, maximum=1.0
         )
         self.yaw_tolerance = self._positive_parameter(
             "yaw_tolerance", 0.15, maximum=math.pi
