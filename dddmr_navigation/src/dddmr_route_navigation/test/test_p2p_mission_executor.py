@@ -213,22 +213,31 @@ class TestP2PMissionExecutor(unittest.TestCase):
         arm_client = node.create_client(Trigger, "/p2p_multi_point/arm")
         spin_thread.start()
 
-        def publish_localization(status, x, y, z, yaw, health="HEALTHY"):
+        def publish_localization(
+            status,
+            x,
+            y,
+            z,
+            yaw,
+            health="HEALTHY",
+            publish_pose=True,
+        ):
             status_message = String()
             status_message.data = status
             status_pub.publish(status_message)
             health_message = String()
             health_message.data = health
             health_pub.publish(health_message)
-            pose = PoseWithCovarianceStamped()
-            pose.header.frame_id = "map"
-            pose.header.stamp = node.get_clock().now().to_msg()
-            pose.pose.pose.position.x = x
-            pose.pose.pose.position.y = y
-            pose.pose.pose.position.z = z
-            pose.pose.pose.orientation.z = math.sin(yaw / 2.0)
-            pose.pose.pose.orientation.w = math.cos(yaw / 2.0)
-            pose_pub.publish(pose)
+            if publish_pose:
+                pose = PoseWithCovarianceStamped()
+                pose.header.frame_id = "map"
+                pose.header.stamp = node.get_clock().now().to_msg()
+                pose.pose.pose.position.x = x
+                pose.pose.pose.position.y = y
+                pose.pose.pose.position.z = z
+                pose.pose.pose.orientation.z = math.sin(yaw / 2.0)
+                pose.pose.pose.orientation.w = math.cos(yaw / 2.0)
+                pose_pub.publish(pose)
             safe_pub.publish(Twist())
 
         try:
@@ -269,6 +278,29 @@ class TestP2PMissionExecutor(unittest.TestCase):
                 time.sleep(0.02)
             self.assertTrue(arm_future.done())
             self.assertTrue(arm_future.result().success)
+
+            # The command gate independently stops motion as soon as
+            # /mcl_pose exceeds input_timeout_sec. Keep the mission active
+            # through a shorter-than-grace correction stall so MCL can
+            # recover without discarding the waypoint sequence.
+            pose_stall_deadline = time.monotonic() + 0.55
+            while time.monotonic() < pose_stall_deadline:
+                publish_localization(
+                    "TRACKING",
+                    0.0,
+                    0.0,
+                    0.32,
+                    0.0,
+                    publish_pose=False,
+                )
+                time.sleep(0.02)
+            self.assertNotIn("FAILED", states)
+
+            pose_recovery_deadline = time.monotonic() + 0.10
+            while time.monotonic() < pose_recovery_deadline:
+                publish_localization("TRACKING", 0.0, 0.0, 0.32, 0.0)
+                time.sleep(0.02)
+            self.assertNotIn("FAILED", states)
 
             transient_deadline = time.monotonic() + 0.20
             while time.monotonic() < transient_deadline:

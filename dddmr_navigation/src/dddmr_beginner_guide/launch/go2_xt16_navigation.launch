@@ -18,9 +18,10 @@
        above that cadence; the command gate independently requires fresh
        /mcl_pose output and healthy localization status. -->
   <arg name="p2p_mission_input_timeout_sec" default="1.25"/>
-  <!-- The command gate stops immediately on unhealthy localization. Keep the
-       mission armed long enough for a stationary MCL correction to recover,
-       then fail if degradation persists. -->
+  <!-- The command gate stops immediately on unhealthy localization or stale
+       /mcl_pose. Keep the mission armed long enough for a completed MCL
+       correction to recover either condition, then fail if degradation
+       persists. -->
   <arg name="p2p_localization_health_grace_sec" default="6.0"/>
   <arg name="p2p_dwell_exit_position_tolerance" default="0.40"/>
   <arg name="p2p_dwell_exit_yaw_tolerance" default="0.25"/>

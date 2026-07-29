@@ -138,7 +138,7 @@ class Go2Xt16P2PRuntimeParametersTest(unittest.TestCase):
         self.assertGreaterEqual(
             recovery_window,
             5.0,
-            "the observed stopped MCL recovery took about 4.8 seconds",
+            "health faults and completed-pose stalls need bounded MCL recovery",
         )
         self.assertLessEqual(
             recovery_window,

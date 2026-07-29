@@ -412,7 +412,12 @@ class P2PMissionExecutor(Node):
             self.dwell_deadline += held_sec
 
     def active_localization_allows_progress(self, now: float) -> bool:
-        if not self.localization_tracking_inputs_are_fresh(now):
+        status_is_fresh_tracking = (
+            self.localization_status == "TRACKING"
+            and self.is_fresh("localization_status", now)
+        )
+        health_input_is_fresh = self.is_fresh("localization_health", now)
+        if not status_is_fresh_tracking or not health_input_is_fresh:
             self.localization_health_grace.reset()
             self.fail(
                 "localization tracking input failed: "
@@ -420,16 +425,26 @@ class P2PMissionExecutor(Node):
             )
             return False
 
-        if self.localization_health == "HEALTHY":
+        pose_is_fresh = self.is_fresh("mcl_pose", now)
+        localization_is_healthy = self.localization_health == "HEALTHY"
+        if localization_is_healthy and pose_is_fresh:
             if self.localization_health_grace.active:
                 held_sec = self.localization_health_grace.mark_healthy(now)
                 self.extend_active_deadline(held_sec)
                 self.get_logger().info(
-                    "Localization health recovered after %.3fs; "
+                    "Localization recovered after %.3fs; "
                     "resuming P2P mission in state %s"
                     % (held_sec, self.state)
                 )
             return True
+
+        if not localization_is_healthy:
+            recovery_reason = (
+                "localization health %s"
+                % (self.localization_health or "missing")
+            )
+        else:
+            recovery_reason = "stale MCL pose"
 
         first_unhealthy_sample = not self.localization_health_grace.active
         expired = self.localization_health_grace.mark_unhealthy(now)
@@ -438,19 +453,20 @@ class P2PMissionExecutor(Node):
             self.arrival_window.reset()
             self.dwell_pose_grace.reset()
             self.get_logger().warning(
-                "Holding P2P mission for transient localization health %s "
+                "Holding P2P mission for transient %s "
                 "(grace=%.3fs; %s)"
                 % (
-                    self.localization_health or "missing",
+                    recovery_reason,
                     self.localization_health_grace_sec,
                     self.localization_snapshot(now),
                 )
             )
         if expired:
             self.fail(
-                "localization health remained unhealthy for %.3fs "
+                "localization did not recover from %s for %.3fs "
                 "(grace=%.3fs; %s)"
                 % (
+                    recovery_reason,
                     held_sec,
                     self.localization_health_grace_sec,
                     self.localization_snapshot(now),
