@@ -124,7 +124,7 @@ class Marking{
 
     double get_dGraphValue(const unsigned int index){
       if (dGraph_->graph_.find(index) == dGraph_->graph_.end()){
-        RCLCPP_INFO(rclcpp::get_logger(name_), "dGraph is queried without initialization, make sure your sensor topic is published and TF setup is correct.");
+        RCLCPP_INFO_ONCE(rclcpp::get_logger(name_), "dGraph is queried without initialization, make sure your sensor topic is published and TF setup is correct.");
         return 0.0;
       }
       return dGraph_->getValue(index);
