@@ -62,6 +62,7 @@ Common environment overrides:
   ODOM_SYNC_WAIT_TIMEOUT_SEC=0.1
   GO2_NAV_ODOM_SYNC_WINDOW_SEC=8.0
   GO2_NAV_FEATURE_WINDOW_SEC=8.0
+  GO2_NAV_FEATURE_GATE_ATTEMPTS=3
   LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC=0.35
   GO2_NAV_OBSERVATION_WINDOW_SEC=20.0
   DDDMR_BAGS_DIR=../bags
@@ -285,6 +286,7 @@ FEATURE_WINDOW_SEC_VALUE="${GO2_NAV_FEATURE_WINDOW_SEC:-${DEFAULT_FEATURE_WINDOW
 FEATURE_TIMEOUT_SEC_VALUE="${GO2_NAV_FEATURE_TIMEOUT_SEC:-${DEFAULT_FEATURE_TIMEOUT_SEC}}"
 FEATURE_MIN_SAMPLES_VALUE="${GO2_NAV_FEATURE_MIN_SAMPLES:-${DEFAULT_FEATURE_MIN_SAMPLES}}"
 FEATURE_MAX_HEADER_AGE_SEC_VALUE="${GO2_NAV_FEATURE_MAX_HEADER_AGE_SEC:-0.45}"
+FEATURE_GATE_ATTEMPTS_VALUE="${GO2_NAV_FEATURE_GATE_ATTEMPTS:-3}"
 LIVE_CONFIRM_PHRASE="I_AM_SUPERVISING_GO2_NAV"
 CONTAINER_NAME="${NAV_CONTAINER_NAME:-go2_xt16_nav_${mode//-/_}_x${MAX_X_VALUE//./}_y${MAX_Y_VALUE//./}_yaw${MAX_YAW_VALUE//./}_$(date +%Y%m%d_%H%M%S)}"
 RUN_LOG_DIR="${RUN_LOG_DIR:-${WS_ROOT}/run_logs}"
@@ -468,6 +470,8 @@ resolve_odom_time_offset() {
   [[ "${FEATURE_MIN_SAMPLES_VALUE}" =~ ^[1-9][0-9]*$ ]] && \
     (( FEATURE_MIN_SAMPLES_VALUE >= 2 )) || \
     die "GO2_NAV_FEATURE_MIN_SAMPLES must be an integer of at least 2."
+  [[ "${FEATURE_GATE_ATTEMPTS_VALUE}" =~ ^[1-5]$ ]] || \
+    die "GO2_NAV_FEATURE_GATE_ATTEMPTS must be an integer from 1 through 5."
   is_positive_number "${FEATURE_MAX_HEADER_AGE_SEC_VALUE}" || \
     die "GO2_NAV_FEATURE_MAX_HEADER_AGE_SEC must be a finite positive number."
   awk -v timeout="${FEATURE_TIMEOUT_SEC_VALUE}" -v window="${FEATURE_WINDOW_SEC_VALUE}" \
@@ -887,33 +891,46 @@ require_navigation_runtime_parameters() {
 }
 
 require_mcl_feature_stream() {
-  local output status gate_path
+  local output status gate_path attempt
   gate_path="/root/dddmr_navigation/src/dddmr_beginner_guide/scripts/go2_pointcloud_stream_gate.py"
 
-  log "Validating ${FEATURE_WINDOW_SEC_VALUE}s of continuous MCL feature input..."
-  set +e
-  output="$(docker_ros \
-    "timeout -s INT -k 1s 30s python3 '${gate_path}' \
-      --topic '${MCL_FEATURE_TOPIC}' \
-      --window-sec '${FEATURE_WINDOW_SEC_VALUE}' \
-      --timeout-sec '${FEATURE_TIMEOUT_SEC_VALUE}' \
-      --min-samples '${FEATURE_MIN_SAMPLES_VALUE}' \
-      --min-rate-hz '${OBSERVATION_MIN_RATE_HZ_VALUE}' \
-      --max-header-gap-sec '${OBSERVATION_MAX_HEADER_GAP_SEC_VALUE}' \
-      --max-receive-gap-sec '${OBSERVATION_MAX_RECEIVE_GAP_SEC_VALUE}' \
-      --max-header-age-sec '${FEATURE_MAX_HEADER_AGE_SEC_VALUE}' \
-      --max-future-skew-sec '${OBSERVATION_MAX_FUTURE_SKEW_SEC_VALUE}' \
-      --expected-publishers 1" 2>&1)"
-  status=$?
-  set -e
-  printf '%s\n' "${output}" | tee "${FEATURE_GATE_LOG_HOST}"
+  : >"${FEATURE_GATE_LOG_HOST}"
+  for (( attempt = 1; attempt <= FEATURE_GATE_ATTEMPTS_VALUE; attempt++ )); do
+    log "Validating ${FEATURE_WINDOW_SEC_VALUE}s of continuous MCL feature input (attempt ${attempt}/${FEATURE_GATE_ATTEMPTS_VALUE})..."
+    set +e
+    output="$(docker_ros \
+      "timeout -s INT -k 1s 30s python3 '${gate_path}' \
+        --topic '${MCL_FEATURE_TOPIC}' \
+        --window-sec '${FEATURE_WINDOW_SEC_VALUE}' \
+        --timeout-sec '${FEATURE_TIMEOUT_SEC_VALUE}' \
+        --min-samples '${FEATURE_MIN_SAMPLES_VALUE}' \
+        --min-rate-hz '${OBSERVATION_MIN_RATE_HZ_VALUE}' \
+        --max-header-gap-sec '${OBSERVATION_MAX_HEADER_GAP_SEC_VALUE}' \
+        --max-receive-gap-sec '${OBSERVATION_MAX_RECEIVE_GAP_SEC_VALUE}' \
+        --max-header-age-sec '${FEATURE_MAX_HEADER_AGE_SEC_VALUE}' \
+        --max-future-skew-sec '${OBSERVATION_MAX_FUTURE_SKEW_SEC_VALUE}' \
+        --expected-publishers 1" 2>&1)"
+    status=$?
+    set -e
+    {
+      printf 'FEATURE_GATE_ATTEMPT=%d/%d\n' \
+        "${attempt}" "${FEATURE_GATE_ATTEMPTS_VALUE}"
+      printf '%s\n' "${output}"
+    } | tee -a "${FEATURE_GATE_LOG_HOST}"
 
-  if (( status != 0 )) || \
-     ! grep -Fxq 'CURRENT_OBSERVATION_GATE=PASS' <<<"${output}"; then
-    docker logs --tail 120 "${CONTAINER_NAME}" 2>&1 || true
-    die "MCL feature input did not remain fresh; navigation was not armed."
-  fi
-  log "Sustained MCL feature-stream gate passed."
+    if (( status == 0 )) && \
+       grep -Fxq 'CURRENT_OBSERVATION_GATE=PASS' <<<"${output}"; then
+      log "Sustained MCL feature-stream gate passed on attempt ${attempt}."
+      return 0
+    fi
+    if (( attempt < FEATURE_GATE_ATTEMPTS_VALUE )); then
+      log "MCL feature stream was not yet stable; keeping motion blocked and retrying."
+      sleep 2
+    fi
+  done
+
+  docker logs --tail 120 "${CONTAINER_NAME}" 2>&1 || true
+  die "MCL feature input did not remain fresh after ${FEATURE_GATE_ATTEMPTS_VALUE} attempts; navigation was not armed."
 }
 
 require_current_observation_stream() {

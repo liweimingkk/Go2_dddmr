@@ -73,7 +73,11 @@ mcl_3dl:
     localization_tracking_good_frames: 5
     localization_lost_bad_frames: 3
     localization_measure_interval_sec: 0.50
-    localization_sensor_timeout_sec: 1.0
+    # Orin cold-start initialization produced a measured 1.418 s feature gap.
+    # Keep MCL out of the expensive global-relocalization feedback loop during
+    # that transient. The command gate independently stops motion when
+    # /mcl_pose is stale for 1.25 s, before this transport timeout expires.
+    localization_sensor_timeout_sec: 2.0
     localization_timeout_sec: 30.0
 
 go2_nav_cmd_gate:

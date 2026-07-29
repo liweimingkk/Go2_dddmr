@@ -110,6 +110,21 @@ class Go2Xt16P2PRuntimeParametersTest(unittest.TestCase):
             p2p_input_timeout,
             "the command gate and mission executor must share the MCL pose budget",
         )
+        sensor_timeout = float(
+            relocalization["mcl_3dl"]["ros__parameters"][
+                "localization_sensor_timeout_sec"
+            ]
+        )
+        self.assertGreater(
+            sensor_timeout,
+            p2p_input_timeout,
+            "motion must stop on stale pose before MCL enters LOST",
+        )
+        self.assertLessEqual(
+            sensor_timeout,
+            2.0,
+            "a sustained feature outage must still mark localization LOST",
+        )
 
     def test_localization_health_recovery_window_stays_bounded(self):
         root = element_tree.parse(NAVIGATION_LAUNCH).getroot()
