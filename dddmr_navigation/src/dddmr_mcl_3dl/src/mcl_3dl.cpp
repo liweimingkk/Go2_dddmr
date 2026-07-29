@@ -186,10 +186,15 @@ bool MCL3dlNode::configure(const std::shared_ptr<mcl_3dl::SubMaps>& sub_maps)
       "initial_3d_pose", 2,
       std::bind(&MCL3dlNode::cbPosition, this, std::placeholders::_1), sub_options);
 
-  lc_sharp_.subscribe(this, "laser_cloud_sharp");
-  lc_less_sharp_.subscribe(this, "laser_cloud_less_sharp");
-  lc_flat_.subscribe(this, "laser_cloud_flat");
-  lc_less_flat_.subscribe(this, "laser_cloud_less_flat");
+  // Match mcl_feature's live latest-state SensorDataQoS.  A reliable
+  // subscription would be incompatible with its best-effort writers and
+  // would also reintroduce stale feature backlog during global localization.
+  lc_sharp_.subscribe(this, "laser_cloud_sharp", rmw_qos_profile_sensor_data);
+  lc_less_sharp_.subscribe(
+      this, "laser_cloud_less_sharp", rmw_qos_profile_sensor_data);
+  lc_flat_.subscribe(this, "laser_cloud_flat", rmw_qos_profile_sensor_data);
+  lc_less_flat_.subscribe(
+      this, "laser_cloud_less_flat", rmw_qos_profile_sensor_data);
   
   syncApproximate_ = std::make_shared<message_filters::Synchronizer<LegoSyncPolicy>>(LegoSyncPolicy(5), lc_sharp_, lc_less_sharp_, lc_flat_, lc_less_flat_);
   syncApproximate_->registerCallback(&MCL3dlNode::cbLeGoFeatureCloud, this);  

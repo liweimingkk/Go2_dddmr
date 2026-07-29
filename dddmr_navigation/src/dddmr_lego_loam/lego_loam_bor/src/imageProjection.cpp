@@ -61,8 +61,15 @@ ImageProjection::ImageProjection(std::string name, Channel<ProjectionOut>& outpu
   _pub_segmented_cloud = this->create_publisher<sensor_msgs::msg::PointCloud2>
       ("segmented_cloud", 1); 
 
-  _pub_segmented_cloud_pure = this->create_publisher<sensor_msgs::msg::PointCloud2>
-      ("segmented_cloud_pure", 1);
+  // This large cloud is the local planner's fail-closed obstacle input.
+  // Keep only the newest volatile sample, but use reliable delivery: on Orin
+  // a best-effort writer intermittently lost whole fragmented clouds while
+  // the smaller feature topics remained at 10 Hz.  The downstream callback is
+  // bounded and hands work to a latest-frame worker, so a reliable depth-one
+  // writer does not create an application-level stale backlog.
+  _pub_segmented_cloud_pure = this->create_publisher<sensor_msgs::msg::PointCloud2>(
+      "segmented_cloud_pure",
+      rclcpp::QoS(rclcpp::KeepLast(1)).durability_volatile().reliable());
 
   _pub_segmented_cloud_info = this->create_publisher<cloud_msgs::msg::CloudInfo>
       ("segmented_cloud_info", 1); 

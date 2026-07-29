@@ -242,6 +242,11 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--max-header-age-sec", type=float, default=0.20)
     parser.add_argument("--max-future-skew-sec", type=float, default=0.05)
     parser.add_argument("--expected-publishers", type=int, default=1)
+    parser.add_argument(
+        "--reliability",
+        choices=("best_effort", "reliable"),
+        default="best_effort",
+    )
     args = parser.parse_args(argv)
 
     thresholds = StreamThresholds(
@@ -294,7 +299,11 @@ def run_ros_gate(args: argparse.Namespace) -> int:
             qos = QoSProfile(
                 history=HistoryPolicy.KEEP_LAST,
                 depth=10,
-                reliability=ReliabilityPolicy.BEST_EFFORT,
+                reliability=(
+                    ReliabilityPolicy.RELIABLE
+                    if args.reliability == "reliable"
+                    else ReliabilityPolicy.BEST_EFFORT
+                ),
                 durability=DurabilityPolicy.VOLATILE,
             )
             self.subscription = self.create_subscription(

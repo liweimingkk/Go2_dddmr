@@ -48,11 +48,10 @@ mcl_3dl:
     localization_tracking_max_roll_std: 0.035
     localization_tracking_max_pitch_std: 0.035
     localization_tracking_max_yaw_std: 0.35
-    # The active cleaned map produced stable TRACKING observations at
-    # residual=0.181..0.189 while match ratio, spread, tilt, and height
-    # remained healthy. Keep a margin below the 0.25 LOST threshold without
-    # treating that normal motion band as a terminal mission failure.
-    localization_tracking_max_residual: 0.20
+    # Repeated Orin dry-runs at the current static pose converged tightly with
+    # healthy match ratio, spread, tilt, and height at residual=0.202..0.207.
+    # Admit that measured band while retaining a 0.03 margin below LOST.
+    localization_tracking_max_residual: 0.22
     localization_tracking_max_map_odom_tilt: 0.035
     # XT16 ground-normal noise reached 0.118 rad with otherwise healthy
     # geometry. Preserve a fail-closed gap to the 0.175 rad LOST threshold.

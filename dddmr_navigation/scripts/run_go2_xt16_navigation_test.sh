@@ -61,10 +61,13 @@ Common environment overrides:
   ODOM_SYNC_TOLERANCE_SEC=0.05
   ODOM_SYNC_WAIT_TIMEOUT_SEC=0.1
   GO2_NAV_ODOM_SYNC_WINDOW_SEC=8.0
+  GO2_NAV_ODOM_SYNC_GATE_ATTEMPTS=3
   GO2_NAV_FEATURE_WINDOW_SEC=8.0
   GO2_NAV_FEATURE_GATE_ATTEMPTS=3
   LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC=0.35
   GO2_NAV_OBSERVATION_WINDOW_SEC=20.0
+  GO2_NAV_OBSERVATION_GATE_ATTEMPTS=3
+  GO2_NAV_OBSERVATION_STARTUP_AGE_MARGIN_SEC=0.05
   DDDMR_BAGS_DIR=../bags
   NAV_CONTAINER_NAME=...
 
@@ -227,7 +230,7 @@ DDS_BUFFER_CHECK="${SCRIPT_DIR}/check_go2_dds_receive_buffers.sh"
 OBSERVATION_GATE_SOURCE="${WS_ROOT}/src/dddmr_beginner_guide/scripts/go2_pointcloud_stream_gate.py"
 MISSION_IO_SOURCE="${WS_ROOT}/src/dddmr_route_navigation/scripts/waypoint_mission_io.py"
 CURRENT_OBSERVATION_TOPIC="/perception_3d_local/lidar/current_observation"
-MCL_FEATURE_TOPIC="/segmented_cloud_pure"
+MCL_FEATURE_TOPIC="/laser_cloud_less_sharp"
 BUILD_BASE_VALUE="${DDDMR_BUILD_BASE:-${DEFAULT_BUILD_BASE}}"
 INSTALL_BASE_VALUE="${DDDMR_INSTALL_BASE:-${DEFAULT_INSTALL_BASE}}"
 LOG_BASE_VALUE="${DDDMR_LOG_BASE:-${DEFAULT_LOG_BASE}}"
@@ -276,16 +279,21 @@ OBSERVATION_WINDOW_SEC_VALUE="${GO2_NAV_OBSERVATION_WINDOW_SEC:-${DEFAULT_OBSERV
 OBSERVATION_TIMEOUT_SEC_VALUE="${GO2_NAV_OBSERVATION_TIMEOUT_SEC:-${DEFAULT_OBSERVATION_TIMEOUT_SEC}}"
 OBSERVATION_MIN_SAMPLES_VALUE="${GO2_NAV_OBSERVATION_MIN_SAMPLES:-${DEFAULT_OBSERVATION_MIN_SAMPLES}}"
 OBSERVATION_MIN_RATE_HZ_VALUE="${GO2_NAV_OBSERVATION_MIN_RATE_HZ:-7.0}"
-OBSERVATION_MAX_HEADER_GAP_SEC_VALUE="${GO2_NAV_OBSERVATION_MAX_HEADER_GAP_SEC:-0.25}"
-OBSERVATION_MAX_RECEIVE_GAP_SEC_VALUE="${GO2_NAV_OBSERVATION_MAX_RECEIVE_GAP_SEC:-0.25}"
+OBSERVATION_MAX_HEADER_GAP_SEC_VALUE="${GO2_NAV_OBSERVATION_MAX_HEADER_GAP_SEC:-0.35}"
+OBSERVATION_MAX_RECEIVE_GAP_SEC_VALUE="${GO2_NAV_OBSERVATION_MAX_RECEIVE_GAP_SEC:-0.35}"
 OBSERVATION_MAX_FUTURE_SKEW_SEC_VALUE="${GO2_NAV_OBSERVATION_MAX_FUTURE_SKEW_SEC:-0.05}"
+OBSERVATION_GATE_ATTEMPTS_VALUE="${GO2_NAV_OBSERVATION_GATE_ATTEMPTS:-3}"
+OBSERVATION_STARTUP_AGE_MARGIN_SEC_VALUE="${GO2_NAV_OBSERVATION_STARTUP_AGE_MARGIN_SEC:-0.05}"
 ODOM_SYNC_WINDOW_SEC_VALUE="${GO2_NAV_ODOM_SYNC_WINDOW_SEC:-${DEFAULT_ODOM_SYNC_WINDOW_SEC}}"
 ODOM_SYNC_MIN_SAMPLES_VALUE="${GO2_NAV_ODOM_SYNC_MIN_SAMPLES:-${DEFAULT_ODOM_SYNC_MIN_SAMPLES}}"
 ODOM_SYNC_MAX_RECEIVE_GAP_SEC_VALUE="${GO2_NAV_ODOM_SYNC_MAX_RECEIVE_GAP_SEC:-0.30}"
+ODOM_SYNC_GATE_ATTEMPTS_VALUE="${GO2_NAV_ODOM_SYNC_GATE_ATTEMPTS:-3}"
 FEATURE_WINDOW_SEC_VALUE="${GO2_NAV_FEATURE_WINDOW_SEC:-${DEFAULT_FEATURE_WINDOW_SEC}}"
 FEATURE_TIMEOUT_SEC_VALUE="${GO2_NAV_FEATURE_TIMEOUT_SEC:-${DEFAULT_FEATURE_TIMEOUT_SEC}}"
 FEATURE_MIN_SAMPLES_VALUE="${GO2_NAV_FEATURE_MIN_SAMPLES:-${DEFAULT_FEATURE_MIN_SAMPLES}}"
-FEATURE_MAX_HEADER_AGE_SEC_VALUE="${GO2_NAV_FEATURE_MAX_HEADER_AGE_SEC:-0.45}"
+FEATURE_MAX_HEADER_GAP_SEC_VALUE="${GO2_NAV_FEATURE_MAX_HEADER_GAP_SEC:-0.75}"
+FEATURE_MAX_RECEIVE_GAP_SEC_VALUE="${GO2_NAV_FEATURE_MAX_RECEIVE_GAP_SEC:-0.75}"
+FEATURE_MAX_HEADER_AGE_SEC_VALUE="${GO2_NAV_FEATURE_MAX_HEADER_AGE_SEC:-0.85}"
 FEATURE_GATE_ATTEMPTS_VALUE="${GO2_NAV_FEATURE_GATE_ATTEMPTS:-3}"
 LIVE_CONFIRM_PHRASE="I_AM_SUPERVISING_GO2_NAV"
 CONTAINER_NAME="${NAV_CONTAINER_NAME:-go2_xt16_nav_${mode//-/_}_x${MAX_X_VALUE//./}_y${MAX_Y_VALUE//./}_yaw${MAX_YAW_VALUE//./}_$(date +%Y%m%d_%H%M%S)}"
@@ -295,6 +303,7 @@ ADAPTER_LOG_HOST="${RUN_LOG_DIR}/${CONTAINER_NAME}_adapter.log"
 PERCEPTION_GATE_LOG_HOST="${RUN_LOG_DIR}/${CONTAINER_NAME}_perception_gate.log"
 FEATURE_GATE_LOG_HOST="${RUN_LOG_DIR}/${CONTAINER_NAME}_feature_gate.log"
 LOCAL_LIDAR_RUNTIME_FRESHNESS_SEC_VALUE=""
+LOCAL_LIDAR_STARTUP_MAX_HEADER_AGE_SEC_VALUE=""
 runtime_started="false"
 mission_file=""
 mission_file_container=""
@@ -431,6 +440,13 @@ validate_perception_settings() {
   [[ "${OBSERVATION_MIN_SAMPLES_VALUE}" =~ ^[1-9][0-9]*$ ]] && \
     (( OBSERVATION_MIN_SAMPLES_VALUE >= 2 )) || \
     die "GO2_NAV_OBSERVATION_MIN_SAMPLES must be an integer of at least 2."
+  [[ "${OBSERVATION_GATE_ATTEMPTS_VALUE}" =~ ^[1-5]$ ]] || \
+    die "GO2_NAV_OBSERVATION_GATE_ATTEMPTS must be an integer from 1 through 5."
+  is_nonnegative_number "${OBSERVATION_STARTUP_AGE_MARGIN_SEC_VALUE}" || \
+    die "GO2_NAV_OBSERVATION_STARTUP_AGE_MARGIN_SEC must be finite and nonnegative."
+  awk -v value="${OBSERVATION_STARTUP_AGE_MARGIN_SEC_VALUE}" \
+    'BEGIN { exit !(value <= 0.05) }' || \
+    die "GO2_NAV_OBSERVATION_STARTUP_AGE_MARGIN_SEC must not exceed 0.05s."
   is_positive_number "${OBSERVATION_MIN_RATE_HZ_VALUE}" || \
     die "GO2_NAV_OBSERVATION_MIN_RATE_HZ must be a finite positive number."
   is_positive_number "${OBSERVATION_MAX_HEADER_GAP_SEC_VALUE}" || \
@@ -461,6 +477,8 @@ resolve_odom_time_offset() {
   [[ "${ODOM_SYNC_MIN_SAMPLES_VALUE}" =~ ^[1-9][0-9]*$ ]] && \
     (( ODOM_SYNC_MIN_SAMPLES_VALUE >= 2 )) || \
     die "GO2_NAV_ODOM_SYNC_MIN_SAMPLES must be an integer of at least 2."
+  [[ "${ODOM_SYNC_GATE_ATTEMPTS_VALUE}" =~ ^[1-5]$ ]] || \
+    die "GO2_NAV_ODOM_SYNC_GATE_ATTEMPTS must be an integer from 1 through 5."
   is_positive_number "${ODOM_SYNC_MAX_RECEIVE_GAP_SEC_VALUE}" || \
     die "GO2_NAV_ODOM_SYNC_MAX_RECEIVE_GAP_SEC must be a finite positive number."
   is_positive_number "${FEATURE_WINDOW_SEC_VALUE}" || \
@@ -472,8 +490,18 @@ resolve_odom_time_offset() {
     die "GO2_NAV_FEATURE_MIN_SAMPLES must be an integer of at least 2."
   [[ "${FEATURE_GATE_ATTEMPTS_VALUE}" =~ ^[1-5]$ ]] || \
     die "GO2_NAV_FEATURE_GATE_ATTEMPTS must be an integer from 1 through 5."
+  is_positive_number "${FEATURE_MAX_HEADER_GAP_SEC_VALUE}" || \
+    die "GO2_NAV_FEATURE_MAX_HEADER_GAP_SEC must be a finite positive number."
+  is_positive_number "${FEATURE_MAX_RECEIVE_GAP_SEC_VALUE}" || \
+    die "GO2_NAV_FEATURE_MAX_RECEIVE_GAP_SEC must be a finite positive number."
   is_positive_number "${FEATURE_MAX_HEADER_AGE_SEC_VALUE}" || \
     die "GO2_NAV_FEATURE_MAX_HEADER_AGE_SEC must be a finite positive number."
+  awk \
+    -v header_gap="${FEATURE_MAX_HEADER_GAP_SEC_VALUE}" \
+    -v receive_gap="${FEATURE_MAX_RECEIVE_GAP_SEC_VALUE}" \
+    -v header_age="${FEATURE_MAX_HEADER_AGE_SEC_VALUE}" \
+    'BEGIN { exit !(header_gap <= 0.75 && receive_gap <= 0.75 && header_age <= 0.85) }' || \
+    die "MCL feature freshness limits exceed the supervised startup safety caps."
   awk -v timeout="${FEATURE_TIMEOUT_SEC_VALUE}" -v window="${FEATURE_WINDOW_SEC_VALUE}" \
     'BEGIN { exit !(timeout > window) }' || \
     die "GO2_NAV_FEATURE_TIMEOUT_SEC must be greater than GO2_NAV_FEATURE_WINDOW_SEC."
@@ -508,11 +536,11 @@ validate_live_request() {
     die "Live RUN_SECONDS must not exceed 1800 seconds."
 }
 
-cleanup_live_runtime() {
+cleanup_runtime_on_exit() {
   local status=$?
   if [[ "${runtime_started}" == "true" ]] && \
-     [[ "${live_mode}" == "true" || "${multi_mode}" == "true" || \
-        "${record_mode}" == "true" ]]; then
+     { (( status != 0 )) || [[ "${live_mode}" == "true" ]] || \
+       [[ "${multi_mode}" == "true" ]] || [[ "${record_mode}" == "true" ]]; }; then
     log "Stopping supervised navigation runtime during exit cleanup..."
     stop_nav_containers || true
     runtime_started="false"
@@ -733,7 +761,7 @@ wait_for_container_log_pattern() {
 }
 
 check_odom_sync_runtime() {
-  local report rc standardizer_report standardizer_offset
+  local report rc standardizer_report standardizer_offset attempt
   standardizer_report="$(docker_ros "timeout 10 ros2 param get /go2_odom_standardizer stamp_time_offset_sec" 2>&1)" || {
     printf '%s\n' "${standardizer_report}" >&2
     die "Could not read the standardized odometry time offset."
@@ -746,24 +774,33 @@ check_odom_sync_runtime() {
     die "Standardized odometry offset ${standardizer_offset}s does not match measured ${ODOM_TIME_OFFSET_SEC_VALUE}s."
   log "Standardized odometry is applying ${standardizer_offset}s before all navigation consumers."
 
-  log "Requiring ${ODOM_SYNC_WINDOW_SEC_VALUE}s of continuous valid /odom_sync_diagnostics..."
-  set +e
-  report="$(docker_ros "timeout 50 python3 /root/dddmr_navigation/scripts/check_go2_odom_sync.py \
-    --timeout 40 \
-    --max-error '${ODOM_SYNC_TOLERANCE_SEC_VALUE}' \
-    --expected-offset 0.0 \
-    --window-sec '${ODOM_SYNC_WINDOW_SEC_VALUE}' \
-    --min-samples '${ODOM_SYNC_MIN_SAMPLES_VALUE}' \
-    --max-receive-gap-sec '${ODOM_SYNC_MAX_RECEIVE_GAP_SEC_VALUE}'" 2>&1)"
-  rc=$?
-  set -e
-  printf '%s\n' "${report}"
-  if (( rc != 0 )); then
-    docker logs --tail 100 "${CONTAINER_NAME}" 2>&1 || true
-    stop_nav_containers || true
-    runtime_started="false"
-    die "Live odom/XT16 synchronization did not pass runtime validation."
-  fi
+  for (( attempt = 1; attempt <= ODOM_SYNC_GATE_ATTEMPTS_VALUE; attempt++ )); do
+    log "Requiring ${ODOM_SYNC_WINDOW_SEC_VALUE}s of continuous valid /odom_sync_diagnostics (attempt ${attempt}/${ODOM_SYNC_GATE_ATTEMPTS_VALUE})..."
+    set +e
+    report="$(docker_ros "timeout 50 python3 /root/dddmr_navigation/scripts/check_go2_odom_sync.py \
+      --timeout 40 \
+      --max-error '${ODOM_SYNC_TOLERANCE_SEC_VALUE}' \
+      --expected-offset 0.0 \
+      --window-sec '${ODOM_SYNC_WINDOW_SEC_VALUE}' \
+      --min-samples '${ODOM_SYNC_MIN_SAMPLES_VALUE}' \
+      --max-receive-gap-sec '${ODOM_SYNC_MAX_RECEIVE_GAP_SEC_VALUE}'" 2>&1)"
+    rc=$?
+    set -e
+    printf 'ODOM_SYNC_GATE_ATTEMPT=%d/%d\n' \
+      "${attempt}" "${ODOM_SYNC_GATE_ATTEMPTS_VALUE}"
+    printf '%s\n' "${report}"
+    if (( rc == 0 )); then
+      log "Live odom/XT16 synchronization passed on attempt ${attempt}."
+      return 0
+    fi
+    if (( attempt < ODOM_SYNC_GATE_ATTEMPTS_VALUE )); then
+      log "Odom synchronization was not yet stable; keeping motion blocked and retrying."
+      sleep 2
+    fi
+  done
+
+  docker logs --tail 100 "${CONTAINER_NAME}" 2>&1 || true
+  die "Live odom/XT16 synchronization did not pass after ${ODOM_SYNC_GATE_ATTEMPTS_VALUE} attempts."
 }
 
 check_topic_contract() {
@@ -799,17 +836,24 @@ read_runtime_double_parameter() {
   local node="$1"
   local parameter="$2"
   local label="$3"
-  local report value
-  report="$(docker_ros \
-    "timeout 10 ros2 param get '${node}' '${parameter}'" \
-    2>&1)" || {
-    printf '%s\n' "${report}" >&2
-    die "Could not read ${label} from ${node}."
-  }
-  value="$(awk -F': ' '/Double value is:/ {print $2; exit}' <<<"${report}")"
-  is_number "${value}" || \
-    die "Invalid ${parameter} response from ${node}: ${report}"
-  printf '%s\n' "${value}"
+  local report="" value="" attempt
+  for (( attempt = 1; attempt <= 6; attempt++ )); do
+    if report="$(docker_ros \
+      "timeout 10 ros2 param get '${node}' '${parameter}'" \
+      2>&1)"; then
+      value="$(awk -F': ' '/Double value is:/ {print $2; exit}' <<<"${report}")"
+      if is_number "${value}"; then
+        printf '%s\n' "${value}"
+        return 0
+      fi
+    fi
+    if (( attempt < 6 )); then
+      log "Parameter ${node}/${parameter} is not readable yet (attempt ${attempt}/6); keeping navigation blocked and retrying." >&2
+      sleep 2
+    fi
+  done
+  printf '%s\n' "${report}" >&2
+  die "Could not read ${label} from ${node} after 6 attempts."
 }
 
 read_local_lidar_freshness_limit() {
@@ -829,6 +873,16 @@ read_local_lidar_freshness_limit() {
     die "Local LiDAR freshness limit ${value}s does not match requested ${LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC_VALUE}s."
   LOCAL_LIDAR_RUNTIME_FRESHNESS_SEC_VALUE="${value}"
   log "Local LiDAR hard freshness limit: ${value}s"
+  LOCAL_LIDAR_STARTUP_MAX_HEADER_AGE_SEC_VALUE="$(
+    awk \
+      -v runtime_limit="${value}" \
+      -v margin="${OBSERVATION_STARTUP_AGE_MARGIN_SEC_VALUE}" \
+      'BEGIN { printf "%.6f", runtime_limit + margin }'
+  )"
+  awk -v value="${LOCAL_LIDAR_STARTUP_MAX_HEADER_AGE_SEC_VALUE}" \
+    'BEGIN { exit !(value <= 0.40) }' || \
+    die "Local LiDAR startup age ceiling must not exceed 0.40s."
+  log "Startup observation age ceiling: ${LOCAL_LIDAR_STARTUP_MAX_HEADER_AGE_SEC_VALUE}s (runtime remains ${value}s)"
 }
 
 require_planner_lateral_limits() {
@@ -905,8 +959,8 @@ require_mcl_feature_stream() {
         --timeout-sec '${FEATURE_TIMEOUT_SEC_VALUE}' \
         --min-samples '${FEATURE_MIN_SAMPLES_VALUE}' \
         --min-rate-hz '${OBSERVATION_MIN_RATE_HZ_VALUE}' \
-        --max-header-gap-sec '${OBSERVATION_MAX_HEADER_GAP_SEC_VALUE}' \
-        --max-receive-gap-sec '${OBSERVATION_MAX_RECEIVE_GAP_SEC_VALUE}' \
+        --max-header-gap-sec '${FEATURE_MAX_HEADER_GAP_SEC_VALUE}' \
+        --max-receive-gap-sec '${FEATURE_MAX_RECEIVE_GAP_SEC_VALUE}' \
         --max-header-age-sec '${FEATURE_MAX_HEADER_AGE_SEC_VALUE}' \
         --max-future-skew-sec '${OBSERVATION_MAX_FUTURE_SKEW_SEC_VALUE}' \
         --expected-publishers 1" 2>&1)"
@@ -934,35 +988,52 @@ require_mcl_feature_stream() {
 }
 
 require_current_observation_stream() {
-  local output status gate_path
+  local output status gate_path attempt
   gate_path="/root/dddmr_navigation/src/dddmr_beginner_guide/scripts/go2_pointcloud_stream_gate.py"
 
   [[ -n "${LOCAL_LIDAR_RUNTIME_FRESHNESS_SEC_VALUE}" ]] || \
     die "Local LiDAR runtime freshness was not validated before the observation gate."
-  log "Validating ${OBSERVATION_WINDOW_SEC_VALUE}s of fresh local LiDAR observations before arming navigation..."
-  set +e
-  output="$(docker_ros \
-    "timeout -s INT -k 1s 50s python3 '${gate_path}' \
-      --topic '${CURRENT_OBSERVATION_TOPIC}' \
-      --window-sec '${OBSERVATION_WINDOW_SEC_VALUE}' \
-      --timeout-sec '${OBSERVATION_TIMEOUT_SEC_VALUE}' \
-      --min-samples '${OBSERVATION_MIN_SAMPLES_VALUE}' \
-      --min-rate-hz '${OBSERVATION_MIN_RATE_HZ_VALUE}' \
-      --max-header-gap-sec '${OBSERVATION_MAX_HEADER_GAP_SEC_VALUE}' \
-      --max-receive-gap-sec '${OBSERVATION_MAX_RECEIVE_GAP_SEC_VALUE}' \
-      --max-header-age-sec '${LOCAL_LIDAR_RUNTIME_FRESHNESS_SEC_VALUE}' \
-      --max-future-skew-sec '${OBSERVATION_MAX_FUTURE_SKEW_SEC_VALUE}' \
-      --expected-publishers 1" 2>&1)"
-  status=$?
-  set -e
-  printf '%s\n' "${output}" | tee "${PERCEPTION_GATE_LOG_HOST}"
+  [[ -n "${LOCAL_LIDAR_STARTUP_MAX_HEADER_AGE_SEC_VALUE}" ]] || \
+    die "Local LiDAR startup age ceiling was not derived before the observation gate."
 
-  if (( status != 0 )) || \
-     ! grep -Fxq 'CURRENT_OBSERVATION_GATE=PASS' <<<"${output}"; then
-    docker logs --tail 120 "${CONTAINER_NAME}" 2>&1 || true
-    die "Local LiDAR observations did not remain fresh; Sport output was not enabled."
-  fi
-  log "Sustained local LiDAR freshness gate passed."
+  : >"${PERCEPTION_GATE_LOG_HOST}"
+  for (( attempt = 1; attempt <= OBSERVATION_GATE_ATTEMPTS_VALUE; attempt++ )); do
+    log "Validating ${OBSERVATION_WINDOW_SEC_VALUE}s of fresh local LiDAR observations (attempt ${attempt}/${OBSERVATION_GATE_ATTEMPTS_VALUE})..."
+    set +e
+    output="$(docker_ros \
+      "timeout -s INT -k 1s 50s python3 '${gate_path}' \
+        --topic '${CURRENT_OBSERVATION_TOPIC}' \
+        --window-sec '${OBSERVATION_WINDOW_SEC_VALUE}' \
+        --timeout-sec '${OBSERVATION_TIMEOUT_SEC_VALUE}' \
+        --min-samples '${OBSERVATION_MIN_SAMPLES_VALUE}' \
+        --min-rate-hz '${OBSERVATION_MIN_RATE_HZ_VALUE}' \
+        --max-header-gap-sec '${OBSERVATION_MAX_HEADER_GAP_SEC_VALUE}' \
+        --max-receive-gap-sec '${OBSERVATION_MAX_RECEIVE_GAP_SEC_VALUE}' \
+        --max-header-age-sec '${LOCAL_LIDAR_STARTUP_MAX_HEADER_AGE_SEC_VALUE}' \
+        --max-future-skew-sec '${OBSERVATION_MAX_FUTURE_SKEW_SEC_VALUE}' \
+        --reliability reliable \
+        --expected-publishers 1" 2>&1)"
+    status=$?
+    set -e
+    {
+      printf 'CURRENT_OBSERVATION_GATE_ATTEMPT=%d/%d\n' \
+        "${attempt}" "${OBSERVATION_GATE_ATTEMPTS_VALUE}"
+      printf '%s\n' "${output}"
+    } | tee -a "${PERCEPTION_GATE_LOG_HOST}"
+
+    if (( status == 0 )) && \
+       grep -Fxq 'CURRENT_OBSERVATION_GATE=PASS' <<<"${output}"; then
+      log "Sustained local LiDAR freshness gate passed on attempt ${attempt}."
+      return 0
+    fi
+    if (( attempt < OBSERVATION_GATE_ATTEMPTS_VALUE )); then
+      log "Local LiDAR stream was not yet stable; keeping motion blocked and retrying."
+      sleep 2
+    fi
+  done
+
+  docker logs --tail 120 "${CONTAINER_NAME}" 2>&1 || true
+  die "Local LiDAR observations did not remain fresh after ${OBSERVATION_GATE_ATTEMPTS_VALUE} attempts; Sport output was not enabled."
 }
 
 start_container() {
@@ -1304,12 +1375,9 @@ main() {
   if [[ "${live_mode}" == "true" ]]; then
     validate_live_request
   fi
-  if [[ "${live_mode}" == "true" || "${multi_mode}" == "true" || \
-        "${record_mode}" == "true" ]]; then
-    trap cleanup_live_runtime EXIT
-    trap 'exit 130' INT
-    trap 'exit 143' TERM
-  fi
+  trap cleanup_runtime_on_exit EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
 
   validate_lateral_limit
   log "Startup profile: ${STARTUP_PROFILE_VALUE}"

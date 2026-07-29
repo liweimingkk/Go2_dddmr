@@ -26,7 +26,12 @@ int main(int argc, char** argv) {
   auto IP = std::make_shared<ImageProjection>("mcl_ip", projection_out_channel);
   Channel<AssociationOut> association_out_channel(false);
   auto FA = std::make_shared<FeatureAssociation>("mcl_fa", projection_out_channel, association_out_channel);
-  rclcpp::executors::MultiThreadedExecutor executor;
+  // Foxy may otherwise select too few workers for the image projection,
+  // feature timer, odometry, and TF callback groups on embedded platforms.
+  // Keep enough workers available so a time-aligned odometry wait cannot
+  // starve the latest XT16 cloud callback.
+  rclcpp::executors::MultiThreadedExecutor executor(
+      rclcpp::ExecutorOptions(), 4);
   executor.add_node(IP);
   executor.add_node(FA);
   IP->tfInitial();
@@ -37,4 +42,3 @@ int main(int argc, char** argv) {
 
   return 0;
 }
-

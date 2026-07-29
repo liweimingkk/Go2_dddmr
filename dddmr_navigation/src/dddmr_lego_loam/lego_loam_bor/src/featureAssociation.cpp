@@ -54,15 +54,21 @@ FeatureAssociation::FeatureAssociation(std::string name, Channel<ProjectionOut> 
   odom_tf_alive_ = false;
   odom_tf_detect_number_ = 0;
   baselink_frame_ = "base_link";
-  //@ this cloud is for localization, therefore, we need good QoS
+  // Localization consumes the newest synchronized feature set.  Reliable,
+  // transient-local point-cloud writers can block this extraction callback
+  // when MCL is busy scoring global candidates on Orin.  That backpressure
+  // stops all four feature heartbeats and feeds another LOST/global-search
+  // cycle.  SensorDataQoS keeps the live producer non-blocking; stale feature
+  // sets may be dropped and the command gate remains closed until MCL catches
+  // up and reports TRACKING.
   pubCornerPointsSharp = this->create_publisher<sensor_msgs::msg::PointCloud2>
-      ("laser_cloud_sharp", rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable());
+      ("laser_cloud_sharp", rclcpp::SensorDataQoS());
   pubCornerPointsLessSharp = this->create_publisher<sensor_msgs::msg::PointCloud2>
-      ("laser_cloud_less_sharp", rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable());
+      ("laser_cloud_less_sharp", rclcpp::SensorDataQoS());
   pubSurfPointsFlat = this->create_publisher<sensor_msgs::msg::PointCloud2>
-      ("laser_cloud_flat", rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable());
+      ("laser_cloud_flat", rclcpp::SensorDataQoS());
   pubSurfPointsLessFlat = this->create_publisher<sensor_msgs::msg::PointCloud2>
-      ("laser_cloud_less_flat", rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable());
+      ("laser_cloud_less_flat", rclcpp::SensorDataQoS());
 
   _pub_cloud_corner_last = this->create_publisher<sensor_msgs::msg::PointCloud2>
       ("laser_cloud_corner_last", 1);

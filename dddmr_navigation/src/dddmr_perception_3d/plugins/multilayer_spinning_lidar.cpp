@@ -31,6 +31,7 @@
 #include <perception_3d/multilayer_spinning_lidar.h>
 
 #include <chrono>
+#include <cmath>
 #include <stdexcept>
 #include <utility>
 
@@ -177,14 +178,39 @@ void MultiLayerSpinningLidar::onInitialize()
   rclcpp::SubscriptionOptions sub_options;
   sub_options.callback_group = sensor_cb_group_;
 
+  // The local planner's large, fragmented obstacle cloud is a safety-critical
+  // stream.  Request reliable delivery end to end so CycloneDDS can recover a
+  // missed fragment instead of dropping the whole frame.  The callback only
+  // replaces a latest-frame pointer and returns, so depth one remains bounded.
+  // Global marking is not in the command-loop freshness path and keeps its
+  // original best-effort latest-state behavior.
+  rclcpp::QoS sensor_qos(rclcpp::KeepLast(1));
+  sensor_qos.durability_volatile();
+  if(is_local_planner_){
+    sensor_qos.reliable();
+  }
+  else{
+    sensor_qos.best_effort();
+  }
   sensor_sub_ = node_->create_subscription<sensor_msgs::msg::PointCloud2>(
-    topic_, rclcpp::QoS(rclcpp::KeepLast(1)).durability_volatile().best_effort(), 
+    topic_, sensor_qos,
     std::bind(&MultiLayerSpinningLidar::cbSensor, this, std::placeholders::_1), sub_options);
   
   std::string pre_topic_name = node_name + "/" + name_;
+  rclcpp::QoS current_observation_qos(rclcpp::KeepLast(2));
+  current_observation_qos.durability_volatile();
+  if(is_local_planner_){
+    // This filtered cloud is also the supervised launcher's freshness
+    // heartbeat.  Reliable delivery prevents the observer itself from
+    // inventing a stale interval after missing one small output sample.
+    current_observation_qos.reliable();
+  }
+  else{
+    current_observation_qos.best_effort();
+  }
   pub_current_observation_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>(
     pre_topic_name + "/current_observation",
-    rclcpp::QoS(rclcpp::KeepLast(2)).durability_volatile().best_effort());
+    current_observation_qos);
   pub_lethal_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>(pre_topic_name + "/lethal", 2);
 
   pct_marking_ = std::make_shared<Marking>(name_, &dGraph_, 
@@ -355,32 +381,62 @@ void MultiLayerSpinningLidar::processSensor(
   //RCLCPP_INFO_STREAM(node_->get_logger().get_child(name_), "Rotation c: " << c.rotation());
   //RCLCPP_INFO_STREAM(node_->get_logger().get_child(name_), "Rotation d: " << d.rotation());
   
-  Eigen::Affine3d trans_b2s_af3 = tf2::transformToEigen(next_trans_b2s);
-  pcl::transformPointCloud(*next_pcl_msg, *next_pcl_msg, trans_b2s_af3);
-  next_pcl_msg->header.frame_id = gbl_utils_->getRobotFrame();
+  const Eigen::Affine3d trans_b2s_af3 = tf2::transformToEigen(next_trans_b2s);
+  const Eigen::Matrix4f trans_b2s = trans_b2s_af3.matrix().cast<float>();
 
-  std::vector<int> indices;
-  next_pcl_msg->is_dense = false;
-  pcl::removeNaNFromPointCloud(*next_pcl_msg, *next_pcl_msg, indices);
+  // Transform, reject invalid points, and apply all three ROI limits in one
+  // pass.  The previous pipeline traversed and copied the cloud once for the
+  // transform, once for NaN removal, and once per PassThrough axis.  On Orin
+  // that made a valid latest-frame worker intermittently exceed the 0.35 s
+  // local obstacle freshness budget.
+  pcl::PointCloud<pcl::PointXYZ>::Ptr filtered_base_cloud(
+    new pcl::PointCloud<pcl::PointXYZ>);
+  filtered_base_cloud->header = next_pcl_msg->header;
+  filtered_base_cloud->header.frame_id = gbl_utils_->getRobotFrame();
+  filtered_base_cloud->points.reserve(next_pcl_msg->points.size());
+  for(const auto& sensor_point : next_pcl_msg->points){
+    if(!std::isfinite(sensor_point.x) ||
+       !std::isfinite(sensor_point.y) ||
+       !std::isfinite(sensor_point.z)){
+      continue;
+    }
+    pcl::PointXYZ base_point;
+    base_point.x =
+      trans_b2s(0, 0) * sensor_point.x +
+      trans_b2s(0, 1) * sensor_point.y +
+      trans_b2s(0, 2) * sensor_point.z +
+      trans_b2s(0, 3);
+    base_point.y =
+      trans_b2s(1, 0) * sensor_point.x +
+      trans_b2s(1, 1) * sensor_point.y +
+      trans_b2s(1, 2) * sensor_point.z +
+      trans_b2s(1, 3);
+    base_point.z =
+      trans_b2s(2, 0) * sensor_point.x +
+      trans_b2s(2, 1) * sensor_point.y +
+      trans_b2s(2, 2) * sensor_point.z +
+      trans_b2s(2, 3);
+    if(base_point.x < -perception_window_size_ ||
+       base_point.x > perception_window_size_ ||
+       base_point.y < -perception_window_size_ ||
+       base_point.y > perception_window_size_ ||
+       base_point.z < marking_minimum_height_ ||
+       base_point.z > marking_height_){
+      continue;
+    }
+    filtered_base_cloud->points.push_back(base_point);
+  }
+  filtered_base_cloud->width =
+    static_cast<uint32_t>(filtered_base_cloud->points.size());
+  filtered_base_cloud->height = 1;
+  filtered_base_cloud->is_dense = true;
+  next_pcl_msg = std::move(filtered_base_cloud);
 
   //@Get affine tf from gbl to sensor
-  Eigen::Affine3d trans_gbl2b_af3 = tf2::transformToEigen(next_trans_gbl2b);
-  Eigen::Affine3d next_trans_gbl2s_af3 = trans_gbl2b_af3*trans_b2s_af3;
+  const Eigen::Affine3d trans_gbl2b_af3 = tf2::transformToEigen(next_trans_gbl2b);
+  const Eigen::Affine3d next_trans_gbl2s_af3 = trans_gbl2b_af3*trans_b2s_af3;
   geometry_msgs::msg::TransformStamped next_trans_gbl2s =
     tf2::eigenToTransform(next_trans_gbl2s_af3);
-
-  pcl::PassThrough<pcl::PointXYZ> pass;
-  pass.setInputCloud (next_pcl_msg);
-  pass.setFilterFieldName ("x");
-  pass.setFilterLimits (-perception_window_size_, perception_window_size_);
-  pass.filter (*next_pcl_msg);
-  pass.setInputCloud (next_pcl_msg);
-  pass.setFilterFieldName ("y");
-  pass.filter (*next_pcl_msg);
-  pass.setInputCloud (next_pcl_msg);
-  pass.setFilterFieldName ("z");
-  pass.setFilterLimits (marking_minimum_height_, marking_height_);
-  pass.filter (*next_pcl_msg);
 
   pcl::VoxelGrid<pcl::PointXYZ> sor;
   sor.setInputCloud (next_pcl_msg);
@@ -457,6 +513,18 @@ void MultiLayerSpinningLidar::processSensor(
   sensor_msgs::msg::PointCloud2 ros_pc2_msg;
   pcl::toROSMsg(*next_pcl_msg, ros_pc2_msg);
   pub_current_observation_->publish(ros_pc2_msg);
+  if(is_local_planner_){
+    const double processing_to_publish_sec =
+      std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - processing_start_steady).count();
+    RCLCPP_INFO_THROTTLE(
+      node_->get_logger().get_child(name_), *clock_, 5000,
+      "Local LiDAR worker timing: processing_to_ready=%.3fs "
+      "processing_to_publish=%.3fs input_points=%zu output_points=%zu",
+      last_processing_duration_sec_, processing_to_publish_sec,
+      static_cast<size_t>(msg->width) * static_cast<size_t>(msg->height),
+      next_pcl_msg->points.size());
+  }
 
 }
 
