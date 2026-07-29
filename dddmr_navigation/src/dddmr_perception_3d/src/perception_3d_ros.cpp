@@ -97,7 +97,12 @@ void Perception3D_ROS::initial(){
   tf2Buffer_->setCreateTimerInterface(timer_interface);
   tfl_ = std::make_shared<tf2_ros::TransformListener>(*tf2Buffer_);
 
-  
+  declare_parameter(
+      "wait_for_initial_transform", rclcpp::ParameterValue(true));
+  bool wait_for_initial_transform = true;
+  this->get_parameter(
+      "wait_for_initial_transform", wait_for_initial_transform);
+
   //@
   //Create gbl utils
   //This is convenient to pass tf2_buffer, global_frame, robot_frame to plugins.
@@ -109,22 +114,37 @@ void Perception3D_ROS::initial(){
                                             tf2Buffer_);
 
   
-  //@We need to make sure that the transform between the robot base frame and the global frame is available
-  std::string tf_error;
-  rclcpp::Rate r(2);
-  while (rclcpp::ok() &&
-    !tf2Buffer_->canTransform(
-      global_frame_, robot_base_frame_, tf2::TimePointZero, &tf_error))
+  //@ Legacy profiles may wait for the initial global transform.  The Go2
+  // localization profile must initialize its plugins and parameter services
+  // first: map->base_link is intentionally unavailable until localization
+  // reaches TRACKING. Sensor callbacks already reject observations when their
+  // required transforms cannot be resolved.
+  if (wait_for_initial_transform)
   {
-    RCLCPP_INFO(
-      get_logger(), "Timed out waiting for transform from %s to %s"
-      " to become available, tf error: %s",
-      robot_base_frame_.c_str(), global_frame_.c_str(), tf_error.c_str());
+    std::string tf_error;
+    rclcpp::Rate r(2);
+    while (rclcpp::ok() &&
+      !tf2Buffer_->canTransform(
+        global_frame_, robot_base_frame_, tf2::TimePointZero, &tf_error))
+    {
+      RCLCPP_INFO(
+        get_logger(), "Timed out waiting for transform from %s to %s"
+        " to become available, tf error: %s",
+        robot_base_frame_.c_str(), global_frame_.c_str(), tf_error.c_str());
 
-    // The error string will accumulate and errors will typically be the same, so the last
-    // will do for the warning above. Reset the string here to avoid accumulation
-    tf_error.clear();
-    r.sleep();
+      // The error string will accumulate and errors will typically be the
+      // same, so reset it between retries.
+      tf_error.clear();
+      r.sleep();
+    }
+  }
+  else
+  {
+    RCLCPP_WARN(
+      get_logger(),
+      "Initial %s -> %s transform wait disabled; perception will initialize "
+      "now and reject sensor observations until TF becomes available",
+      global_frame_.c_str(), robot_base_frame_.c_str());
   }
   
   stacked_perception_ = new StackedPerception(this->get_node_logging_interface());

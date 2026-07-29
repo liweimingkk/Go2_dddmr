@@ -69,6 +69,7 @@ def build_exact_runtime_parameters(
     return {
         "/perception_3d_local": {
             "ros__parameters": {
+                "wait_for_initial_transform": False,
                 "lidar.expected_sensor_time": freshness,
             },
         },

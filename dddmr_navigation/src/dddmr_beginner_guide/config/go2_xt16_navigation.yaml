@@ -432,6 +432,9 @@ perception_3d_local:
   ros__parameters:
     global_frame: "map"
     robot_base_frame: "base_link"
+    # MCL intentionally withholds map->base_link until TRACKING. Initialize
+    # parameter services/plugins now; LiDAR callbacks fail closed without TF.
+    wait_for_initial_transform: false
     max_obstacle_distance: 9999.0
     # Centerline hard-collision clearance. 0.26 m preserves a 0.05 m buffer
     # beyond the 0.21 m trajectory half-width while admitting the narrow-route
@@ -477,6 +480,9 @@ perception_3d_global:
   ros__parameters:
     global_frame: "map"
     robot_base_frame: "base_link"
+    # Static-layer construction must not deadlock on localization readiness.
+    # Dynamic sensor callbacks remain blocked internally until TF is available.
+    wait_for_initial_transform: false
     max_obstacle_distance: 9999.0
     # Match the local hard-collision clearance; static walls retain measured
     # horizontal distance and the local planner checks the oriented cuboid.

@@ -11,6 +11,11 @@ import yaml
 
 LAUNCH_DIRECTORY = pathlib.Path(__file__).resolve().parents[1] / "launch"
 NAVIGATION_LAUNCH = LAUNCH_DIRECTORY / "go2_xt16_navigation.launch"
+NAVIGATION_CONFIG = (
+    pathlib.Path(__file__).resolve().parents[1]
+    / "config"
+    / "go2_xt16_navigation.yaml"
+)
 RELOCALIZATION_CONFIG = (
     pathlib.Path(__file__).resolve().parents[1]
     / "config"
@@ -168,6 +173,11 @@ class Go2Xt16P2PRuntimeParametersTest(unittest.TestCase):
             ],
             0.35,
         )
+        self.assertFalse(
+            parameters["/perception_3d_local"]["ros__parameters"][
+                "wait_for_initial_transform"
+            ]
+        )
         planner = parameters["/trajectory_generators"]["ros__parameters"]
         self.assertEqual(planner["omni_drive_simple.min_vel_y"], -0.0)
         self.assertEqual(planner["omni_drive_simple.max_vel_y"], 0.0)
@@ -198,6 +208,11 @@ class Go2Xt16P2PRuntimeParametersTest(unittest.TestCase):
                 ],
                 float,
             )
+            self.assertFalse(
+                parsed["/perception_3d_local"]["ros__parameters"][
+                    "wait_for_initial_transform"
+                ]
+            )
             self.assertEqual(
                 parsed["/trajectory_generators"]["ros__parameters"][
                     "omni_drive_simple.min_vel_y"
@@ -223,6 +238,18 @@ class Go2Xt16P2PRuntimeParametersTest(unittest.TestCase):
         for values in invalid_cases:
             with self.subTest(values=values), self.assertRaises(ValueError):
                 build_exact_runtime_parameters(*values)
+
+    def test_go2_perception_initialization_does_not_wait_on_localization_tf(self):
+        parameters = yaml.safe_load(
+            NAVIGATION_CONFIG.read_text(encoding="utf-8")
+        )
+        for node_name in ("perception_3d_local", "perception_3d_global"):
+            with self.subTest(node_name=node_name):
+                self.assertFalse(
+                    parameters[node_name]["ros__parameters"][
+                        "wait_for_initial_transform"
+                    ]
+                )
 
 
 if __name__ == "__main__":
