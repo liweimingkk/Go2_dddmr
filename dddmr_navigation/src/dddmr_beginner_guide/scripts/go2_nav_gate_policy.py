@@ -136,3 +136,10 @@ def localization_pose_block_reason(
     ):
         return "localization_pose_stale"
     return None
+
+
+def static_layer_block_reason(required: bool, ready: bool) -> Optional[str]:
+    """Block motion until the global planner publishes a non-empty static layer."""
+    if required and not ready:
+        return "static_layer_not_ready"
+    return None

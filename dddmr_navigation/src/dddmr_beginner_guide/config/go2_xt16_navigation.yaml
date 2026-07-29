@@ -93,6 +93,9 @@ map1:
 sub_maps:
   ros__parameters:
     pg_map_server_name: "map1" #options from line#56
+    # This deployed pose graph is immutable and contains exactly 169 frames.
+    # Fail closed if the pose snapshot and cloud service do not agree.
+    expected_key_frame_count: 169
     sub_map_search_radius: 50.0
     sub_map_warmup_trigger_distance: 20.0
 

@@ -31,6 +31,7 @@
 #define MCL_3DL_CLASS_H
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cassert>
 #include <cmath>
@@ -158,8 +159,9 @@ class MCL3dlNode : public rclcpp::Node
 
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_odom_;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_odom_heartbeat_;
-    rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr
-      sub_feature_heartbeat_;
+    std::array<
+      rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr, 4>
+      sub_feature_heartbeats_;
     rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr sub_position_;
 
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_ground_normal_;
@@ -170,6 +172,7 @@ class MCL3dlNode : public rclcpp::Node
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr pub_localization_health_;
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr pub_localization_quality_;
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr pub_localization_residual_;
+    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr pub_feature_stream_metrics_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_global_localization_;
 
     void cbOdom(const nav_msgs::msg::Odometry::SharedPtr msg);
@@ -185,6 +188,8 @@ class MCL3dlNode : public rclcpp::Node
     struct GlobalCandidate
     {
       State6DOF state;
+      std::size_t key_frame_index{0};
+      float surface_quality{0.0f};
       float quality{0.0f};
       float likelihood{0.0f};
       float residual{std::numeric_limits<float>::infinity()};
@@ -209,10 +214,18 @@ class MCL3dlNode : public rclcpp::Node
 
     bool attemptGlobalLocalization(
       const std::map<std::string, pcl::PointCloud<pcl_t>::Ptr>& pcl_segmentations);
-    std::vector<State6DOF> buildGlobalCandidates() const;
+    std::vector<GlobalCandidate> buildGlobalCandidates() const;
     std::map<std::string, pcl::PointCloud<pcl_t>::Ptr> makeSparseObservation(
       const std::map<std::string, pcl::PointCloud<pcl_t>::Ptr>& pcl_segmentations) const;
     void initializeGlobalParticles(const std::vector<GlobalCandidate>& candidates);
+    bool startLocalRecovery();
+    State6DOF odomContinuousPose() const;
+    void resetGlobalConfirmation();
+    bool confirmGlobalCandidate(const GlobalCandidate& candidate);
+    void recordFeatureMetrics(
+      std::size_t topic_index,
+      const sensor_msgs::msg::PointCloud2::SharedPtr& msg);
+    void publishFeatureMetrics(int64_t now_ns);
     ParticleSpread particleSpread(const State6DOF& mean) const;
     bool constrainState2p5D(
       State6DOF& state,
@@ -282,6 +295,28 @@ class MCL3dlNode : public rclcpp::Node
     std::atomic<float> latest_residual_;
     std::atomic<uint64_t> feature_sequence_;
     std::atomic<uint64_t> last_measured_feature_sequence_;
+    std::array<std::atomic<uint64_t>, 4> feature_received_counts_;
+    std::array<std::atomic<int64_t>, 4> feature_last_received_ns_;
+    std::atomic<uint64_t> feature_sync_count_;
+    std::atomic<uint64_t> feature_processing_count_;
+    std::atomic<int64_t> feature_processing_total_ns_;
+    std::atomic<int64_t> feature_last_header_age_ns_;
+    std::array<uint64_t, 4> feature_metric_previous_received_;
+    uint64_t feature_metric_previous_sync_{0};
+    uint64_t feature_metric_previous_processing_{0};
+    int64_t feature_metric_previous_processing_ns_{0};
+    int64_t feature_metric_window_started_ns_{0};
+    std::atomic_bool local_recovery_pending_;
+    std::atomic_bool local_recovery_active_;
+    std::atomic_bool operator_global_confirmed_;
+    std::atomic_bool has_last_trusted_pose_{false};
+    State6DOF last_trusted_state_;
+    State6DOF last_trusted_odom_;
+    bool has_global_confirmation_{false};
+    State6DOF global_confirmation_state_;
+    std::size_t global_confirmation_count_{0};
+    uint64_t global_confirmation_feature_sequence_{0};
+    std::mutex global_confirmation_mutex_;
     ObservationGround observation_ground_;
     
     /*

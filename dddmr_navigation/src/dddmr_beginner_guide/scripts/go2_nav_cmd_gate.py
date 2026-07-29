@@ -5,13 +5,16 @@ from typing import Optional
 
 import rclpy
 from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.node import Node
+from sensor_msgs.msg import PointCloud2
 from std_msgs.msg import String
 
 from go2_nav_gate_policy import (
     localization_block_reason,
     localization_health_block_reason,
     localization_pose_block_reason,
+    static_layer_block_reason,
 )
 
 
@@ -66,6 +69,12 @@ class Go2NavCmdGate(Node):
         self.localization_pose_timeout_sec = float(
             self.declare_parameter("localization_pose_timeout_sec", 1.25).value
         )
+        self.require_static_layer_ready = bool(
+            self.declare_parameter("require_static_layer_ready", False).value
+        )
+        self.static_layer_topic = self.declare_parameter(
+            "static_layer_topic", "/weighted_ground"
+        ).get_parameter_value().string_value
 
         self.latest_cmd: Optional[Twist] = None
         self.last_cmd_time = None
@@ -75,6 +84,7 @@ class Go2NavCmdGate(Node):
         self.last_localization_health_time = None
         self.localization_pose_received = False
         self.last_localization_pose_time = None
+        self.static_layer_ready = False
         self.last_log_time = self.get_clock().now()
         self.last_output_key = None
 
@@ -98,6 +108,17 @@ class Go2NavCmdGate(Node):
             self.localization_pose_cb,
             10,
         )
+        static_layer_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self.create_subscription(
+            PointCloud2,
+            self.static_layer_topic,
+            self.static_layer_cb,
+            static_layer_qos,
+        )
         self.create_timer(self.timer_period_sec(), self.timer_cb)
 
         self.get_logger().warn(
@@ -105,7 +126,8 @@ class Go2NavCmdGate(Node):
             "max_yaw=%.3f publish_rate_hz=%.3f timeout=%.3f "
             "require_localization_tracking=%s localization_timeout=%.3f "
             "require_localization_health=%s health_timeout=%.3f "
-            "require_localization_pose=%s pose_timeout=%.3f"
+            "require_localization_pose=%s pose_timeout=%.3f "
+            "require_static_layer_ready=%s static_layer_topic=%s"
             % (
                 self.input_topic,
                 self.output_topic,
@@ -121,6 +143,8 @@ class Go2NavCmdGate(Node):
                 self.localization_health_timeout_sec,
                 self.require_localization_pose,
                 self.localization_pose_timeout_sec,
+                self.require_static_layer_ready,
+                self.static_layer_topic,
             )
         )
 
@@ -141,6 +165,14 @@ class Go2NavCmdGate(Node):
         self.localization_pose_received = True
         self.last_localization_pose_time = self.get_clock().now()
 
+    def static_layer_cb(self, msg: PointCloud2) -> None:
+        self.static_layer_ready = (
+            msg.width > 0
+            and msg.height > 0
+            and msg.point_step > 0
+            and len(msg.data) >= msg.width * msg.height * msg.point_step
+        )
+
     def timer_cb(self) -> None:
         now = self.get_clock().now()
         reason = "pass"
@@ -149,6 +181,10 @@ class Go2NavCmdGate(Node):
             localization_reason = self.localization_health_block_reason(now)
         if localization_reason is None:
             localization_reason = self.localization_pose_block_reason(now)
+        if localization_reason is None:
+            localization_reason = static_layer_block_reason(
+                self.require_static_layer_ready, self.static_layer_ready
+            )
         if not self.enabled:
             output = Twist()
             reason = "disabled"

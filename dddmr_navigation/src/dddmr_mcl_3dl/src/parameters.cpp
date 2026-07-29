@@ -132,6 +132,16 @@ Parameters::Parameters(const rclcpp::node_interfaces::NodeLoggingInterface::Shar
       logger_->get_logger(), "global_localization_max_observation_points: %d",
       global_localization_max_observation_points_);
 
+  parameter_->declare_parameter(
+      "global_localization_max_surface_points", rclcpp::ParameterValue(256));
+  global_localization_max_surface_points_ = std::max(
+      16, static_cast<int>(
+          parameter_->get_parameter(
+            "global_localization_max_surface_points").as_int()));
+  RCLCPP_INFO(
+      logger_->get_logger(), "global_localization_max_surface_points: %d",
+      global_localization_max_surface_points_);
+
   parameter_->declare_parameter("global_localization_min_match_ratio", rclcpp::ParameterValue(0.08));
   global_localization_min_match_ratio_ = std::clamp(
       parameter_->get_parameter("global_localization_min_match_ratio").as_double(), 0.0, 1.0);
@@ -146,6 +156,74 @@ Parameters::Parameters(const rclcpp::node_interfaces::NodeLoggingInterface::Shar
   RCLCPP_INFO(
       logger_->get_logger(), "global_localization_max_residual: %.3f",
       global_localization_max_residual_);
+
+  parameter_->declare_parameter(
+      "global_localization_surface_match_distance", rclcpp::ParameterValue(0.30));
+  global_localization_surface_match_distance_ = std::max(
+      0.01,
+      parameter_->get_parameter(
+        "global_localization_surface_match_distance").as_double());
+  parameter_->declare_parameter(
+      "global_localization_min_surface_match_ratio",
+      rclcpp::ParameterValue(0.35));
+  global_localization_min_surface_match_ratio_ = std::clamp(
+      parameter_->get_parameter(
+        "global_localization_min_surface_match_ratio").as_double(),
+      0.0, 1.0);
+  parameter_->declare_parameter(
+      "global_localization_min_surface_match_margin",
+      rclcpp::ParameterValue(0.08));
+  global_localization_min_surface_match_margin_ = std::clamp(
+      parameter_->get_parameter(
+        "global_localization_min_surface_match_margin").as_double(),
+      0.0, 1.0);
+  parameter_->declare_parameter(
+      "global_localization_surface_candidate_max_drop",
+      rclcpp::ParameterValue(0.08));
+  global_localization_surface_candidate_max_drop_ = std::clamp(
+      parameter_->get_parameter(
+        "global_localization_surface_candidate_max_drop").as_double(),
+      0.0, 1.0);
+  parameter_->declare_parameter(
+      "global_localization_max_odom_xy_error", rclcpp::ParameterValue(2.0));
+  global_localization_max_odom_xy_error_ = std::max(
+      0.05,
+      parameter_->get_parameter(
+        "global_localization_max_odom_xy_error").as_double());
+  parameter_->declare_parameter(
+      "global_localization_max_odom_yaw_error", rclcpp::ParameterValue(0.70));
+  global_localization_max_odom_yaw_error_ = std::clamp(
+      parameter_->get_parameter(
+        "global_localization_max_odom_yaw_error").as_double(),
+      0.05, 3.14159265358979323846);
+  parameter_->declare_parameter(
+      "global_localization_confirmation_frames", rclcpp::ParameterValue(3));
+  global_localization_confirmation_frames_ = std::max(
+      2, static_cast<int>(
+          parameter_->get_parameter(
+            "global_localization_confirmation_frames").as_int()));
+  parameter_->declare_parameter(
+      "global_localization_confirmation_max_xy", rclcpp::ParameterValue(0.75));
+  global_localization_confirmation_max_xy_ = std::max(
+      0.05,
+      parameter_->get_parameter(
+        "global_localization_confirmation_max_xy").as_double());
+  parameter_->declare_parameter(
+      "global_localization_confirmation_max_yaw", rclcpp::ParameterValue(0.35));
+  global_localization_confirmation_max_yaw_ = std::clamp(
+      parameter_->get_parameter(
+        "global_localization_confirmation_max_yaw").as_double(),
+      0.05, 3.14159265358979323846);
+  RCLCPP_INFO(
+      logger_->get_logger(),
+      "global candidate gates: surface distance=%.2f min=%.3f margin=%.3f "
+      "odom_xy=%.2f odom_yaw=%.2f confirmations=%d",
+      global_localization_surface_match_distance_,
+      global_localization_min_surface_match_ratio_,
+      global_localization_min_surface_match_margin_,
+      global_localization_max_odom_xy_error_,
+      global_localization_max_odom_yaw_error_,
+      global_localization_confirmation_frames_);
 
   parameter_->declare_parameter("global_localization_retry_sec", rclcpp::ParameterValue(2.0));
   global_localization_retry_sec_ =
@@ -205,6 +283,45 @@ Parameters::Parameters(const rclcpp::node_interfaces::NodeLoggingInterface::Shar
           std::max(0.0, parameter_->get_parameter("global_localization_seed_std_roll").as_double()),
           std::max(0.0, parameter_->get_parameter("global_localization_seed_std_pitch").as_double()),
           std::max(0.0, parameter_->get_parameter("global_localization_seed_std_yaw").as_double())));
+
+  parameter_->declare_parameter(
+      "local_recovery_std_x", rclcpp::ParameterValue(0.60));
+  parameter_->declare_parameter(
+      "local_recovery_std_y", rclcpp::ParameterValue(0.60));
+  parameter_->declare_parameter(
+      "local_recovery_std_z", rclcpp::ParameterValue(0.0));
+  parameter_->declare_parameter(
+      "local_recovery_std_roll", rclcpp::ParameterValue(0.0));
+  parameter_->declare_parameter(
+      "local_recovery_std_pitch", rclcpp::ParameterValue(0.0));
+  parameter_->declare_parameter(
+      "local_recovery_std_yaw", rclcpp::ParameterValue(0.35));
+  local_recovery_std_ = State6DOF(
+      Vec3(
+          std::max(
+              0.0,
+              parameter_->get_parameter("local_recovery_std_x").as_double()),
+          std::max(
+              0.0,
+              parameter_->get_parameter("local_recovery_std_y").as_double()),
+          std::max(
+              0.0,
+              parameter_->get_parameter("local_recovery_std_z").as_double())),
+      Vec3(
+          std::max(
+              0.0,
+              parameter_->get_parameter("local_recovery_std_roll").as_double()),
+          std::max(
+              0.0,
+              parameter_->get_parameter("local_recovery_std_pitch").as_double()),
+          std::max(
+              0.0,
+              parameter_->get_parameter("local_recovery_std_yaw").as_double())));
+  parameter_->declare_parameter(
+      "local_recovery_timeout_sec", rclcpp::ParameterValue(8.0));
+  local_recovery_timeout_sec_ = std::max(
+      1.0,
+      parameter_->get_parameter("local_recovery_timeout_sec").as_double());
 
   parameter_->declare_parameter("num_particles", rclcpp::ParameterValue(0));
   rclcpp::Parameter num_particles = parameter_->get_parameter("num_particles");

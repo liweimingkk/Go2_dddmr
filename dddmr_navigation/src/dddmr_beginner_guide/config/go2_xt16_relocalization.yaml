@@ -1,6 +1,7 @@
 mcl_3dl:
   ros__parameters:
-    # Search the complete pose-graph map at startup and whenever tracking is lost.
+    # Never search globally at startup or directly on LOST. This flag only
+    # permits escalation after a bounded local recovery has failed.
     auto_global_localization: true
     global_localization_grid: 0.25
     global_localization_div_yaw: 36
@@ -8,8 +9,22 @@ mcl_3dl:
     global_localization_top_candidates: 8
     global_localization_num_particles: 240
     global_localization_max_observation_points: 256
+    global_localization_max_surface_points: 256
     global_localization_min_match_ratio: 0.08
     global_localization_max_residual: 0.22
+    global_localization_surface_match_distance: 0.30
+    global_localization_min_surface_match_ratio: 0.35
+    global_localization_min_surface_match_margin: 0.08
+    global_localization_surface_candidate_max_drop: 0.08
+    # A global candidate must remain compatible with odometry propagated from
+    # the last trusted pose and win over the second distinct basin.
+    global_localization_max_odom_xy_error: 2.0
+    global_localization_max_odom_yaw_error: 0.70
+    # Do not seed particles until the same basin wins on three distinct
+    # synchronized feature frames.
+    global_localization_confirmation_frames: 3
+    global_localization_confirmation_max_xy: 0.75
+    global_localization_confirmation_max_yaw: 0.35
     global_localization_retry_sec: 2.0
 
     # Flat-floor Go2 localization is 2.5D: MCL estimates x/y/yaw only.
@@ -30,6 +45,16 @@ mcl_3dl:
     global_localization_seed_std_roll: 0.0
     global_localization_seed_std_pitch: 0.0
     global_localization_seed_std_yaw: 0.12
+
+    # LOST first retries around the odometry-continuous last trusted pose.
+    # The command gate remains stopped throughout LOCALIZING.
+    local_recovery_std_x: 0.60
+    local_recovery_std_y: 0.60
+    local_recovery_std_z: 0.0
+    local_recovery_std_roll: 0.0
+    local_recovery_std_pitch: 0.0
+    local_recovery_std_yaw: 0.35
+    local_recovery_timeout_sec: 8.0
 
     # Do not re-introduce the dimensions removed by the 2.5D constraint.
     resample_var_z: 0.0
@@ -72,10 +97,8 @@ mcl_3dl:
     localization_tracking_good_frames: 5
     localization_lost_bad_frames: 3
     localization_measure_interval_sec: 0.50
-    # Orin cold-start initialization produced a measured 1.418 s feature gap.
-    # Keep MCL out of the expensive global-relocalization feedback loop during
-    # that transient. The command gate independently stops motion when
-    # /mcl_pose is stale for 1.25 s, before this transport timeout expires.
+    # Timeout is a stop/LOST threshold only. It never triggers an immediate
+    # global jump; per-topic receive/sync/processing metrics expose the cause.
     localization_sensor_timeout_sec: 2.0
     localization_timeout_sec: 30.0
 
@@ -93,3 +116,7 @@ go2_nav_cmd_gate:
     require_localization_pose: true
     localization_pose_topic: "/mcl_pose"
     localization_pose_timeout_sec: 1.25
+    # weighted_ground is published only after the global static graph and
+    # weights are complete. Motion remains blocked before that latched sample.
+    require_static_layer_ready: true
+    static_layer_topic: "/weighted_ground"

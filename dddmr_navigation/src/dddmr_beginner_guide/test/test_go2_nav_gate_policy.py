@@ -13,6 +13,7 @@ from go2_nav_gate_policy import (  # noqa: E402
     localization_health_block_reason,
     localization_pose_block_reason,
     recovery_rotation_gate,
+    static_layer_block_reason,
 )
 
 
@@ -96,6 +97,18 @@ class LocalizationPoseGatePolicyTest(unittest.TestCase):
         self.assertIsNone(
             localization_pose_block_reason(True, True, 1.25, 1.25)
         )
+
+
+class StaticLayerGatePolicyTest(unittest.TestCase):
+    def test_optional_static_layer_never_blocks(self):
+        self.assertIsNone(static_layer_block_reason(False, False))
+
+    def test_required_static_layer_fails_closed_until_ready(self):
+        self.assertEqual(
+            static_layer_block_reason(True, False),
+            "static_layer_not_ready",
+        )
+        self.assertIsNone(static_layer_block_reason(True, True))
 
 
 class RecoveryRotationGatePolicyTest(unittest.TestCase):

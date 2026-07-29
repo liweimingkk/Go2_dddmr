@@ -29,6 +29,9 @@
 
 #include <mcl_3dl.h>
 
+#include <iomanip>
+#include <sstream>
+
 using std::placeholders::_1;
 using std::placeholders::_2;
 using std::placeholders::_3;
@@ -53,7 +56,23 @@ MCL3dlNode::MCL3dlNode(std::string name) : Node(name)
   , latest_residual_(std::numeric_limits<float>::infinity())
   , feature_sequence_(0)
   , last_measured_feature_sequence_(0)
+  , feature_sync_count_(0)
+  , feature_processing_count_(0)
+  , feature_processing_total_ns_(0)
+  , feature_last_header_age_ns_(0)
+  , local_recovery_pending_(false)
+  , local_recovery_active_(false)
+  , operator_global_confirmed_(false)
 {
+  for (auto& count : feature_received_counts_)
+  {
+    count.store(0);
+  }
+  for (auto& stamp : feature_last_received_ns_)
+  {
+    stamp.store(0);
+  }
+  feature_metric_previous_received_.fill(0);
   //supress the no intensity found log
   pcl::console::setVerbosityLevel(pcl::console::L_ERROR);
   
@@ -174,13 +193,19 @@ bool MCL3dlNode::configure(const std::shared_ptr<mcl_3dl::SubMaps>& sub_maps)
         last_odom_received_ns_.store(clock_->now().nanoseconds());
       },
       heartbeat_options);
-  sub_feature_heartbeat_ =
-      this->create_subscription<sensor_msgs::msg::PointCloud2>(
-      "laser_cloud_less_sharp", rclcpp::SensorDataQoS(),
-      [this](const sensor_msgs::msg::PointCloud2::SharedPtr) {
-        last_feature_received_ns_.store(clock_->now().nanoseconds());
-      },
-      heartbeat_options);
+  const std::array<std::string, 4> feature_topics = {
+      "laser_cloud_sharp", "laser_cloud_less_sharp",
+      "laser_cloud_flat", "laser_cloud_less_flat"};
+  for (std::size_t index = 0; index < feature_topics.size(); ++index)
+  {
+    sub_feature_heartbeats_[index] =
+        this->create_subscription<sensor_msgs::msg::PointCloud2>(
+        feature_topics[index], rclcpp::SensorDataQoS(),
+        [this, index](const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
+          recordFeatureMetrics(index, msg);
+        },
+        heartbeat_options);
+  }
 
   sub_position_ = this->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
       "initial_3d_pose", 2,
@@ -218,6 +243,10 @@ bool MCL3dlNode::configure(const std::shared_ptr<mcl_3dl::SubMaps>& sub_maps)
       this->create_publisher<std_msgs::msg::Float32>("localization_quality", 1);
   pub_localization_residual_ =
       this->create_publisher<std_msgs::msg::Float32>("localization_residual", 1);
+  pub_feature_stream_metrics_ =
+      this->create_publisher<std_msgs::msg::String>(
+      "feature_stream_metrics",
+      rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable());
 
   srv_global_localization_ = this->create_service<std_srvs::srv::Trigger>(
       "global_localization",
@@ -232,15 +261,12 @@ bool MCL3dlNode::configure(const std::shared_ptr<mcl_3dl::SubMaps>& sub_maps)
       new MotionPredictionModelDifferentialDrive(params_->odom_err_integ_lin_tc_,
                                                   params_->odom_err_integ_ang_tc_));
 
-  if (params_->auto_global_localization_)
-  {
-    global_localization_requested_.store(true);
-    localization_state_reason_ = "waiting for global map and live sensor data";
-  }
-  else
-  {
-    startLocalizing("configured initial pose");
-  }
+  // A fixed-pose task must never jump globally before its recorded
+  // /initial_3d_pose arrives. Always start from the configured/local seed.
+  // auto_global_localization only permits escalation after local recovery
+  // fails; the service remains the explicit operator-confirmed path.
+  local_recovery_active_.store(true);
+  startLocalizing("configured initial pose; global search is blocked");
   publishLocalizationStatus();
 
   return true;
@@ -339,25 +365,31 @@ void MCL3dlNode::cbOdom(const nav_msgs::msg::Odometry::SharedPtr msg){
     return;
   }
 
-  const int64_t last_feature_ns = last_feature_received_ns_.load();
-  if (last_feature_ns == 0 ||
-      static_cast<double>(now_ns - last_feature_ns) / 1e9 >
-        params_->localization_sensor_timeout_sec_)
+  bool feature_stream_stale = false;
+  for (const auto& received_ns : feature_last_received_ns_)
+  {
+    const int64_t stamp_ns = received_ns.load();
+    if (stamp_ns == 0 ||
+        static_cast<double>(now_ns - stamp_ns) / 1e9 >
+          params_->localization_sensor_timeout_sec_)
+    {
+      feature_stream_stale = true;
+      break;
+    }
+  }
+  if (feature_stream_stale)
   {
     if (state == LocalizationState::TRACKING || state == LocalizationState::LOCALIZING)
     {
-      markLocalizationLost("lidar feature stream timed out");
+      markLocalizationLost("one or more lidar feature topics timed out");
     }
     return;
   }
 
   bool just_seeded_globally = false;
-  const LocalizationState current_state = localizationState();
-  const bool should_global_localize =
-      global_localization_requested_.load() ||
-      (params_->auto_global_localization_ &&
-       (current_state == LocalizationState::UNINITIALIZED ||
-        current_state == LocalizationState::LOST));
+  bool just_seeded_locally = false;
+  LocalizationState current_state = localizationState();
+  const bool should_global_localize = global_localization_requested_.load();
   const uint64_t feature_sequence = feature_sequence_.load();
   if (!should_global_localize &&
       feature_sequence == last_measured_feature_sequence_.load())
@@ -388,7 +420,20 @@ void MCL3dlNode::cbOdom(const nav_msgs::msg::Odometry::SharedPtr msg){
     last_odom_received_ns_.store(global_localization_complete_ns);
     last_feature_received_ns_.store(global_localization_complete_ns);
     global_localization_requested_.store(false);
+    operator_global_confirmed_.store(false);
+    local_recovery_active_.store(false);
+    local_recovery_pending_.store(false);
     just_seeded_globally = true;
+  }
+  else if (current_state == LocalizationState::LOST &&
+           local_recovery_pending_.load())
+  {
+    if (!startLocalRecovery())
+    {
+      return;
+    }
+    current_state = localizationState();
+    just_seeded_locally = true;
   }
   else if (current_state == LocalizationState::UNINITIALIZED ||
            current_state == LocalizationState::LOST)
@@ -396,7 +441,7 @@ void MCL3dlNode::cbOdom(const nav_msgs::msg::Odometry::SharedPtr msg){
     return;
   }
 
-  if (!just_seeded_globally)
+  if (!just_seeded_globally && !just_seeded_locally)
   {
     motion_prediction_model_->setOdoms(odom_prev_, odom_, std::max(0.0, dt));
     auto prediction_func = [this](State6DOF& s)
@@ -440,7 +485,7 @@ void MCL3dlNode::cbOdom(const nav_msgs::msg::Odometry::SharedPtr msg){
   if (params_->flat_ground_enabled_)
   {
     const bool use_global_ground = sub_maps_->isGlobalReady() &&
-        (use_global_map_.load() || localizationState() != LocalizationState::TRACKING);
+        use_global_map_.load();
     if (use_global_ground)
     {
       constrainParticles2p5D(
@@ -498,17 +543,42 @@ void MCL3dlNode::cbLeGoFeatureCloud(const sensor_msgs::msg::PointCloud2::SharedP
                     const sensor_msgs::msg::PointCloud2::SharedPtr pc_less_sharpMsg,
                     const sensor_msgs::msg::PointCloud2::SharedPtr pc_flatMsg,
                     const sensor_msgs::msg::PointCloud2::SharedPtr pc_less_flatMsg){
-  
+
+  const auto processing_started = std::chrono::steady_clock::now();
+  const int64_t callback_now_ns = clock_->now().nanoseconds();
+  feature_sync_count_.fetch_add(1);
+  last_feature_received_ns_.store(callback_now_ns);
+  const rclcpp::Time feature_stamp(pc_less_sharpMsg->header.stamp);
+  if (feature_stamp.nanoseconds() > 0)
+  {
+    feature_last_header_age_ns_.store(
+        std::max<int64_t>(0, callback_now_ns - feature_stamp.nanoseconds()));
+  }
+  const auto finish_processing = [this, processing_started]()
+  {
+    const int64_t duration_ns =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - processing_started).count();
+    feature_processing_total_ns_.fetch_add(duration_ns);
+    feature_processing_count_.fetch_add(1);
+  };
+
   std::unique_lock<std::mutex> lock(protect_measure_in_odomcb_);
   
   laser_header_ = pc_less_sharpMsg->header;
 
   if (!sub_maps_->isCurrentReady() && !sub_maps_->isGlobalReady())
+  {
+    finish_processing();
     return;
+  }
 
   Eigen::Affine3d trans_b2s_af3;
   if(! getBaselink2SensorAF3(pc_less_sharpMsg->header, trans_b2s_af3))
+  {
+    finish_processing();
     return;
+  }
 
   pcl::PointCloud<mcl_3dl::pcl_t>::Ptr pc_sharp(new pcl::PointCloud<mcl_3dl::pcl_t>);
   pcl::PointCloud<mcl_3dl::pcl_t>::Ptr pc_less_sharp(new pcl::PointCloud<mcl_3dl::pcl_t>);
@@ -524,7 +594,7 @@ void MCL3dlNode::cbLeGoFeatureCloud(const sensor_msgs::msg::PointCloud2::SharedP
   //pcl::fromROSMsg(*pc_sharpMsg, *pc_sharp);
   pcl::fromROSMsg(*pc_flatMsg, *pc_flat);
   pcl::fromROSMsg(*pc_less_sharpMsg, *pc_less_sharp);
-  //pcl::fromROSMsg(*pc_less_flatMsg, *pc_less_flat);
+  pcl::fromROSMsg(*pc_less_flatMsg, *pc_less_flat);
 
   //@Transform point cloud
   //pcl::transformPointCloud(*pc_sharp, *pc_sharp, trans_b2s_af3);
@@ -700,12 +770,15 @@ void MCL3dlNode::cbLeGoFeatureCloud(const sensor_msgs::msg::PointCloud2::SharedP
   
   pcl_segmentations_[std::string("flat")] = pc_flat;
   pcl_segmentations_[std::string("less_sharp")] = pc_less_sharp_intensity;
+  // Dense surfaces are only used to disambiguate global candidates.
+  pcl_segmentations_[std::string("less_flat")] = pc_less_flat;
   if (!pc_flat->empty() || !pc_less_sharp_intensity->empty())
   {
     last_feature_received_ns_.store(clock_->now().nanoseconds());
     feature_sequence_.fetch_add(1);
   }
-  
+
+  finish_processing();
 }
 
 MCL3dlNode::ObservationGround MCL3dlNode::estimateObservationGround(
@@ -837,21 +910,30 @@ void MCL3dlNode::constrainParticles2p5D(
   pf_->predict(constrain);
 }
 
-std::vector<State6DOF> MCL3dlNode::buildGlobalCandidates() const
+std::vector<MCL3dlNode::GlobalCandidate>
+MCL3dlNode::buildGlobalCandidates() const
 {
+  struct PositionSeed
+  {
+    geometry_msgs::msg::Pose pose;
+    std::size_t key_frame_index;
+  };
+
   const auto key_poses = sub_maps_->getKeyPoses();
-  std::vector<geometry_msgs::msg::Pose> position_seeds;
+  std::vector<PositionSeed> position_seeds;
   position_seeds.reserve(key_poses.size());
 
-  for (const auto& pose : key_poses)
+  for (std::size_t key_frame_index = 0;
+       key_frame_index < key_poses.size(); ++key_frame_index)
   {
+    const auto& pose = key_poses[key_frame_index];
     if (position_seeds.empty())
     {
-      position_seeds.push_back(pose);
+      position_seeds.push_back(PositionSeed{pose, key_frame_index});
       continue;
     }
 
-    const auto& previous = position_seeds.back().position;
+    const auto& previous = position_seeds.back().pose.position;
     const double dx = pose.position.x - previous.x;
     const double dy = pose.position.y - previous.y;
     const double dz = pose.position.z - previous.z;
@@ -860,13 +942,13 @@ std::vector<State6DOF> MCL3dlNode::buildGlobalCandidates() const
     if (distance >=
         params_->global_localization_grid_)
     {
-      position_seeds.push_back(pose);
+      position_seeds.push_back(PositionSeed{pose, key_frame_index});
     }
   }
 
   if (!key_poses.empty() && !position_seeds.empty())
   {
-    const auto& last_selected = position_seeds.back().position;
+    const auto& last_selected = position_seeds.back().pose.position;
     const auto& last_key_pose = key_poses.back();
     const double dx = last_key_pose.position.x - last_selected.x;
     const double dy = last_key_pose.position.y - last_selected.y;
@@ -875,7 +957,8 @@ std::vector<State6DOF> MCL3dlNode::buildGlobalCandidates() const
         std::hypot(dx, dy) : std::sqrt(dx * dx + dy * dy + dz * dz);
     if (distance > 1e-3)
     {
-      position_seeds.push_back(last_key_pose);
+      position_seeds.push_back(
+          PositionSeed{last_key_pose, key_poses.size() - 1});
     }
   }
 
@@ -886,7 +969,7 @@ std::vector<State6DOF> MCL3dlNode::buildGlobalCandidates() const
         yaw_bins);
   if (position_seeds.size() > max_positions)
   {
-    std::vector<geometry_msgs::msg::Pose> uniformly_sampled;
+    std::vector<PositionSeed> uniformly_sampled;
     uniformly_sampled.reserve(max_positions);
     for (std::size_t i = 0; i < max_positions; ++i)
     {
@@ -898,10 +981,11 @@ std::vector<State6DOF> MCL3dlNode::buildGlobalCandidates() const
   }
 
   constexpr double kPi = 3.14159265358979323846;
-  std::vector<State6DOF> candidates;
+  std::vector<GlobalCandidate> candidates;
   candidates.reserve(position_seeds.size() * yaw_bins);
-  for (const auto& pose : position_seeds)
+  for (const auto& seed : position_seeds)
   {
+    const auto& pose = seed.pose;
     tf2::Quaternion orientation(
         pose.orientation.x, pose.orientation.y,
         pose.orientation.z, pose.orientation.w);
@@ -915,9 +999,12 @@ std::vector<State6DOF> MCL3dlNode::buildGlobalCandidates() const
       const double yaw = -kPi +
           2.0 * kPi * static_cast<double>(yaw_index) /
             static_cast<double>(yaw_bins);
-      candidates.emplace_back(
+      GlobalCandidate candidate;
+      candidate.state = State6DOF(
           Vec3(pose.position.x, pose.position.y, pose.position.z),
           Quat(Vec3(roll, pitch, yaw)));
+      candidate.key_frame_index = seed.key_frame_index;
+      candidates.push_back(candidate);
     }
   }
   return candidates;
@@ -950,6 +1037,27 @@ MCL3dlNode::makeSparseObservation(
     }
     sparse[name] = output;
   }
+
+  auto sparse_surface =
+      std::make_shared<pcl::PointCloud<mcl_3dl::pcl_t>>();
+  const auto surface = pcl_segmentations.find("less_flat");
+  if (surface != pcl_segmentations.end() && surface->second)
+  {
+    const auto& input = *surface->second;
+    const std::size_t limit = static_cast<std::size_t>(
+        params_->global_localization_max_surface_points_);
+    const std::size_t step = std::max<std::size_t>(
+        1, static_cast<std::size_t>(std::ceil(
+          static_cast<double>(input.size()) /
+          static_cast<double>(limit))));
+    sparse_surface->reserve(std::min(input.size(), limit));
+    for (std::size_t i = 0;
+         i < input.size() && sparse_surface->size() < limit; i += step)
+    {
+      sparse_surface->push_back(input.points[i]);
+    }
+  }
+  sparse["less_flat"] = sparse_surface;
   return sparse;
 }
 
@@ -978,14 +1086,154 @@ void MCL3dlNode::initializeGlobalParticles(
   }
 }
 
-bool MCL3dlNode::attemptGlobalLocalization(
-    const std::map<std::string, pcl::PointCloud<pcl_t>::Ptr>& pcl_segmentations)
+State6DOF MCL3dlNode::odomContinuousPose() const
 {
-  if (!sub_maps_->isGlobalReady())
+  if (!has_last_trusted_pose_.load())
+  {
+    return state_prev_;
+  }
+  Quat map_to_odom_rotation =
+      last_trusted_state_.rot_ * last_trusted_odom_.rot_.inv();
+  map_to_odom_rotation.normalize();
+  const Vec3 map_to_odom_translation =
+      last_trusted_state_.pos_ -
+      map_to_odom_rotation * last_trusted_odom_.pos_;
+  State6DOF expected(
+      map_to_odom_translation + map_to_odom_rotation * odom_.pos_,
+      map_to_odom_rotation * odom_.rot_);
+  expected.normalize();
+  return expected;
+}
+
+bool MCL3dlNode::startLocalRecovery()
+{
+  if (!has_last_trusted_pose_.load() || !sub_maps_->isCurrentReady())
   {
     RCLCPP_WARN_THROTTLE(
         this->get_logger(), *clock_, 3000,
-        "Global localization is waiting for complete map, ground, and key poses");
+        "Local recovery is waiting for a last trusted pose and its current "
+        "submap");
+    return false;
+  }
+
+  State6DOF expected = odomContinuousPose();
+  if (params_->flat_ground_enabled_ &&
+      !constrainState2p5D(
+        expected, sub_maps_->kdtree_ground_current_,
+        sub_maps_->normals_ground_current_))
+  {
+    RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *clock_, 3000,
+        "Local recovery rejected: no trusted ground near odometry-continuous "
+        "pose");
+    return false;
+  }
+
+  if (static_cast<int>(pf_->getParticleSize()) != params_->num_particles_)
+  {
+    pf_->resizeParticle(params_->num_particles_);
+  }
+  pf_->init(expected, params_->local_recovery_std_);
+  if (params_->flat_ground_enabled_)
+  {
+    constrainParticles2p5D(
+        sub_maps_->kdtree_ground_current_,
+        sub_maps_->normals_ground_current_);
+  }
+  state_prev_ = expected;
+  use_global_map_.store(false);
+  global_localization_requested_.store(false);
+  local_recovery_pending_.store(false);
+  local_recovery_active_.store(true);
+  startLocalizing("local recovery around last trusted pose");
+  publishParticles();
+  RCLCPP_WARN(
+      this->get_logger(),
+      "Local recovery seeded around odometry-continuous pose "
+      "(%.2f, %.2f, %.2f); global search remains blocked",
+      expected.pos_.x_, expected.pos_.y_, expected.pos_.z_);
+  return true;
+}
+
+void MCL3dlNode::resetGlobalConfirmation()
+{
+  std::lock_guard<std::mutex> lock(global_confirmation_mutex_);
+  has_global_confirmation_ = false;
+  global_confirmation_count_ = 0;
+  global_confirmation_feature_sequence_ = 0;
+}
+
+bool MCL3dlNode::confirmGlobalCandidate(
+    const GlobalCandidate& candidate)
+{
+  std::lock_guard<std::mutex> lock(global_confirmation_mutex_);
+  const uint64_t sequence = feature_sequence_.load();
+  if (sequence == 0 || sequence == global_confirmation_feature_sequence_)
+  {
+    return false;
+  }
+  global_confirmation_feature_sequence_ = sequence;
+
+  if (has_global_confirmation_)
+  {
+    const double dx =
+        candidate.state.pos_.x_ - global_confirmation_state_.pos_.x_;
+    const double dy =
+        candidate.state.pos_.y_ - global_confirmation_state_.pos_.y_;
+    const double yaw = candidate.state.rot_.getRPY().z_;
+    const double previous_yaw = global_confirmation_state_.rot_.getRPY().z_;
+    const double yaw_error = std::abs(std::atan2(
+        std::sin(yaw - previous_yaw), std::cos(yaw - previous_yaw)));
+    if (std::hypot(dx, dy) <=
+          params_->global_localization_confirmation_max_xy_ &&
+        yaw_error <= params_->global_localization_confirmation_max_yaw_)
+    {
+      ++global_confirmation_count_;
+    }
+    else
+    {
+      global_confirmation_count_ = 1;
+    }
+  }
+  else
+  {
+    has_global_confirmation_ = true;
+    global_confirmation_count_ = 1;
+  }
+  global_confirmation_state_ = candidate.state;
+
+  if (global_confirmation_count_ <
+      static_cast<std::size_t>(
+        params_->global_localization_confirmation_frames_))
+  {
+    RCLCPP_WARN(
+        this->get_logger(),
+        "Global candidate keyframe %zu held for confirmation %zu/%d; "
+        "localization remains stopped",
+        candidate.key_frame_index, global_confirmation_count_,
+        params_->global_localization_confirmation_frames_);
+    return false;
+  }
+  return true;
+}
+
+bool MCL3dlNode::attemptGlobalLocalization(
+    const std::map<std::string, pcl::PointCloud<pcl_t>::Ptr>& pcl_segmentations)
+{
+  if (!sub_maps_->isGlobalReady() || !sub_maps_->areKeyFramesReady())
+  {
+    RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *clock_, 3000,
+        "Global localization is waiting for the complete static map and all "
+        "ordered keyframes");
+    return false;
+  }
+  if (!has_last_trusted_pose_.load() && !operator_global_confirmed_.load())
+  {
+    RCLCPP_ERROR_THROTTLE(
+        this->get_logger(), *clock_, 3000,
+        "Automatic global localization rejected: no last trusted pose exists; "
+        "operator confirmation is required");
     return false;
   }
 
@@ -998,19 +1246,28 @@ bool MCL3dlNode::attemptGlobalLocalization(
         "Global localization is waiting for non-empty lidar features");
     return false;
   }
+  if (sparse_observation.at("less_flat")->empty())
+  {
+    RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *clock_, 3000,
+        "Global localization is waiting for a non-empty synchronized surface "
+        "cloud");
+    return false;
+  }
 
-  const auto candidate_states = buildGlobalCandidates();
-  if (candidate_states.empty())
+  auto scored = buildGlobalCandidates();
+  if (scored.empty())
   {
     RCLCPP_ERROR(this->get_logger(), "Global localization has no pose-graph candidates");
     return false;
   }
 
-  std::vector<GlobalCandidate> scored(candidate_states.size());
+  const State6DOF odom_expected = odomContinuousPose();
+  const bool enforce_odom_continuity = has_last_trusted_pose_.load();
   #pragma omp parallel for
-  for (std::size_t i = 0; i < candidate_states.size(); ++i)
+  for (std::size_t i = 0; i < scored.size(); ++i)
   {
-    State6DOF candidate = candidate_states[i];
+    State6DOF candidate = scored[i].state;
     if (!constrainState2p5D(
           candidate, sub_maps_->kdtree_ground_global_,
           sub_maps_->normals_ground_global_))
@@ -1019,7 +1276,7 @@ bool MCL3dlNode::attemptGlobalLocalization(
       continue;
     }
     const auto result = lidar_measurements_->measure(
-        sub_maps_->kdtree_map_global_, sub_maps_->kdtree_ground_global_,
+        sub_maps_->kdtree_feature_global_, sub_maps_->kdtree_ground_global_,
         sub_maps_->normals_ground_global_, sparse_observation, candidate);
     scored[i].state = candidate;
     scored[i].quality = std::isfinite(result.quality) ? result.quality : 0.0f;
@@ -1028,6 +1285,24 @@ bool MCL3dlNode::attemptGlobalLocalization(
         (!params_->flat_ground_enabled_ || result.ground_valid) &&
         std::isfinite(result.residual) ?
         result.residual : std::numeric_limits<float>::infinity();
+
+    pcl::PointCloud<pcl_t> surface_in_map =
+        *sparse_observation.at("less_flat");
+    candidate.transform(surface_in_map);
+    scored[i].surface_quality = sub_maps_->keyFrameSurfaceMatchRatio(
+        scored[i].key_frame_index, surface_in_map,
+        params_->global_localization_surface_match_distance_);
+  }
+
+  if (!sub_maps_->isGlobalReady() || !sub_maps_->areKeyFramesReady() ||
+      !sub_maps_->isMapSnapshotValid())
+  {
+    resetGlobalConfirmation();
+    RCLCPP_ERROR(
+        this->get_logger(),
+        "Global localization map generation changed during scoring; result "
+        "rejected");
+    return false;
   }
 
   const std::size_t evaluated_candidates = scored.size();
@@ -1048,10 +1323,35 @@ bool MCL3dlNode::attemptGlobalLocalization(
   scored.erase(
       std::remove_if(
           scored.begin(), scored.end(),
-          [this](const GlobalCandidate& candidate)
+          [this, &odom_expected, enforce_odom_continuity](
+              const GlobalCandidate& candidate)
           {
-            return candidate.quality < params_->global_localization_min_match_ratio_ ||
-                candidate.residual > params_->global_localization_max_residual_;
+            if (candidate.quality <
+                  params_->global_localization_min_match_ratio_ ||
+                candidate.surface_quality <
+                  params_->global_localization_min_surface_match_ratio_ ||
+                candidate.residual >
+                  params_->global_localization_max_residual_)
+            {
+              return true;
+            }
+            if (!enforce_odom_continuity)
+            {
+              return false;
+            }
+            const double dx =
+                candidate.state.pos_.x_ - odom_expected.pos_.x_;
+            const double dy =
+                candidate.state.pos_.y_ - odom_expected.pos_.y_;
+            const double candidate_yaw = candidate.state.rot_.getRPY().z_;
+            const double expected_yaw = odom_expected.rot_.getRPY().z_;
+            const double yaw_error = std::abs(std::atan2(
+                std::sin(candidate_yaw - expected_yaw),
+                std::cos(candidate_yaw - expected_yaw)));
+            return std::hypot(dx, dy) >
+                params_->global_localization_max_odom_xy_error_ ||
+              yaw_error >
+                params_->global_localization_max_odom_yaw_error_;
           }),
       scored.end());
 
@@ -1059,17 +1359,22 @@ bool MCL3dlNode::attemptGlobalLocalization(
   {
     RCLCPP_WARN(
         this->get_logger(),
-        "Global localization rejected %lu candidates: best observed match=%.3f "
-        "(min %.3f), best observed residual=%.3f (max %.3f)",
+        "Global localization rejected %zu candidates: no candidate passed "
+        "feature/surface/residual and odometry-continuity gates; best "
+        "feature=%.3f residual=%.3f",
         evaluated_candidates, best_observed_quality,
-        params_->global_localization_min_match_ratio_, best_observed_residual,
-        params_->global_localization_max_residual_);
+        best_observed_residual);
+    resetGlobalConfirmation();
     return false;
   }
 
   std::sort(scored.begin(), scored.end(),
       [](const GlobalCandidate& lhs, const GlobalCandidate& rhs)
       {
+        if (lhs.surface_quality != rhs.surface_quality)
+        {
+          return lhs.surface_quality > rhs.surface_quality;
+        }
         if (lhs.residual != rhs.residual)
         {
           return lhs.residual < rhs.residual;
@@ -1081,6 +1386,71 @@ bool MCL3dlNode::attemptGlobalLocalization(
         return lhs.likelihood > rhs.likelihood;
       });
 
+  const auto& best = scored.front();
+  constexpr double kPi = 3.14159265358979323846;
+  const double basin_xy = std::max(
+      0.50, 2.0 * params_->global_localization_grid_);
+  const double basin_yaw = std::max(
+      0.20, 3.0 * kPi /
+        static_cast<double>(params_->global_localization_div_yaw_));
+  const double best_yaw = best.state.rot_.getRPY().z_;
+  const auto is_same_basin =
+      [&best, best_yaw, basin_xy, basin_yaw](
+          const GlobalCandidate& candidate)
+      {
+        const double dx = candidate.state.pos_.x_ - best.state.pos_.x_;
+        const double dy = candidate.state.pos_.y_ - best.state.pos_.y_;
+        const double yaw = candidate.state.rot_.getRPY().z_;
+        const double yaw_error = std::abs(std::atan2(
+            std::sin(yaw - best_yaw), std::cos(yaw - best_yaw)));
+        return std::hypot(dx, dy) <= basin_xy && yaw_error <= basin_yaw;
+      };
+  float competitor_surface_quality = 0.0f;
+  std::size_t competitor_key_frame = best.key_frame_index;
+  for (std::size_t index = 1; index < scored.size(); ++index)
+  {
+    if (!is_same_basin(scored[index]))
+    {
+      competitor_surface_quality = scored[index].surface_quality;
+      competitor_key_frame = scored[index].key_frame_index;
+      break;
+    }
+  }
+  const float candidate_margin =
+      best.surface_quality - competitor_surface_quality;
+  if (candidate_margin <
+      params_->global_localization_min_surface_match_margin_)
+  {
+    resetGlobalConfirmation();
+    RCLCPP_WARN(
+        this->get_logger(),
+        "Global localization rejected ambiguous first/second basins: "
+        "keyframe %zu surface=%.3f, keyframe %zu surface=%.3f, "
+        "margin=%.3f < %.3f",
+        best.key_frame_index, best.surface_quality, competitor_key_frame,
+        competitor_surface_quality, candidate_margin,
+        params_->global_localization_min_surface_match_margin_);
+    return false;
+  }
+
+  if (!confirmGlobalCandidate(best))
+  {
+    return false;
+  }
+
+  const float retained_surface_floor =
+      best.surface_quality -
+      params_->global_localization_surface_candidate_max_drop_;
+  scored.erase(
+      std::remove_if(
+          scored.begin(), scored.end(),
+          [retained_surface_floor, &is_same_basin](
+              const GlobalCandidate& candidate)
+          {
+            return candidate.surface_quality < retained_surface_floor ||
+              !is_same_basin(candidate);
+          }),
+      scored.end());
   scored.resize(std::min<std::size_t>(
       scored.size(), static_cast<std::size_t>(params_->global_localization_top_candidates_)));
   initializeGlobalParticles(scored);
@@ -1112,11 +1482,17 @@ bool MCL3dlNode::attemptGlobalLocalization(
   publishParticles();
   RCLCPP_WARN(
       this->get_logger(),
-      "Global localization seeded %d particles from %lu/%lu candidates; best pose "
-      "(%.2f, %.2f, %.2f) quality=%.3f residual=%.3f",
-      params_->global_localization_num_particles_, scored.size(), candidate_states.size(),
+      "Global localization seeded %d particles after %d confirmed frames "
+      "from %zu/%zu candidates; keyframe=%zu pose=(%.2f, %.2f, %.2f) "
+      "feature=%.3f surface=%.3f residual=%.3f margin=%.3f",
+      params_->global_localization_num_particles_,
+      params_->global_localization_confirmation_frames_,
+      scored.size(), evaluated_candidates, scored.front().key_frame_index,
       scored.front().state.pos_.x_, scored.front().state.pos_.y_,
-      scored.front().state.pos_.z_, scored.front().quality, scored.front().residual);
+      scored.front().state.pos_.z_, scored.front().quality,
+      scored.front().surface_quality, scored.front().residual,
+      candidate_margin);
+  resetGlobalConfirmation();
   return true;
 }
 
@@ -1244,15 +1620,14 @@ bool MCL3dlNode::measure(
   if (sub_maps_->isWarmUpReady())
   {
     sub_maps_->swapKdTree();
-    if (isTracking())
+    if (isTracking() || local_recovery_active_.load())
     {
       use_global_map_.store(false);
     }
   }
 
   const bool use_global =
-      sub_maps_->isGlobalReady() &&
-      (use_global_map_.load() || localizationState() != LocalizationState::TRACKING);
+      sub_maps_->isGlobalReady() && use_global_map_.load();
   if (!use_global && !sub_maps_->isCurrentReady())
   {
     return false;
@@ -1541,10 +1916,22 @@ bool MCL3dlNode::measure(
     publishLocalizationStatus();
     if (new_state == LocalizationState::LOST)
     {
-      use_global_map_.store(true);
-      if (params_->auto_global_localization_)
+      use_global_map_.store(false);
+      resetGlobalConfirmation();
+      if (local_recovery_active_.exchange(false))
       {
-        global_localization_requested_.store(true);
+        if (params_->auto_global_localization_)
+        {
+          global_localization_requested_.store(true);
+          RCLCPP_ERROR(
+              this->get_logger(),
+              "Local recovery failed; automatic global recovery is now "
+              "permitted but remains candidate-gated");
+        }
+      }
+      else
+      {
+        local_recovery_pending_.store(has_last_trusted_pose_.load());
       }
     }
   }
@@ -1566,10 +1953,21 @@ bool MCL3dlNode::measure(
   pose.pose.covariance[21] = cov[3][3];
   pose.pose.covariance[28] = cov[4][4];
   pose.pose.covariance[35] = spread.yaw * spread.yaw;
-  pub_pose_->publish(pose);
+  if (new_state != LocalizationState::LOST)
+  {
+    pub_pose_->publish(pose);
+  }
 
   if (new_state == LocalizationState::TRACKING)
   {
+    has_last_trusted_pose_.store(true);
+    last_trusted_state_ = e;
+    last_trusted_odom_ = odom_;
+    local_recovery_active_.store(false);
+    local_recovery_pending_.store(false);
+    global_localization_requested_.store(false);
+    operator_global_confirmed_.store(false);
+    resetGlobalConfirmation();
     std::unique_lock<mcl_3dl::SubMaps::sub_maps_mutex_t> lock(*(sub_maps_->getMutex()));
     if (state_changed)
     {
@@ -1686,12 +2084,16 @@ void MCL3dlNode::markLocalizationLost(const std::string& reason)
     localization_health_ = "NOT_TRACKING";
   }
   tf_ready_.store(false);
-  first_tf_.store(false);
-  use_global_map_.store(true);
-  if (params_->auto_global_localization_)
+  use_global_map_.store(false);
+  resetGlobalConfirmation();
+  if (!operator_global_confirmed_.load())
   {
-    global_localization_requested_.store(true);
+    global_localization_requested_.store(false);
   }
+  local_recovery_active_.store(false);
+  local_recovery_pending_.store(
+      has_last_trusted_pose_.load() &&
+      !operator_global_confirmed_.load());
   if (changed)
   {
     RCLCPP_ERROR(this->get_logger(), "Localization state changed to LOST: %s", reason.c_str());
@@ -1701,9 +2103,117 @@ void MCL3dlNode::markLocalizationLost(const std::string& reason)
 
 void MCL3dlNode::requestGlobalLocalization(const std::string& reason)
 {
+  operator_global_confirmed_.store(true);
   global_localization_requested_.store(true);
+  local_recovery_pending_.store(false);
+  local_recovery_active_.store(false);
+  resetGlobalConfirmation();
   last_global_attempt_ns_.store(0);
   markLocalizationLost(reason);
+}
+
+void MCL3dlNode::recordFeatureMetrics(
+    const std::size_t topic_index,
+    const sensor_msgs::msg::PointCloud2::SharedPtr& msg)
+{
+  (void)msg;
+  if (topic_index >= feature_received_counts_.size())
+  {
+    return;
+  }
+  const int64_t now_ns = clock_->now().nanoseconds();
+  feature_received_counts_[topic_index].fetch_add(1);
+  feature_last_received_ns_[topic_index].store(now_ns);
+  if (topic_index == 1)
+  {
+    last_feature_received_ns_.store(now_ns);
+  }
+}
+
+void MCL3dlNode::publishFeatureMetrics(const int64_t now_ns)
+{
+  constexpr int64_t kWindowNs = 5'000'000'000LL;
+  if (feature_metric_window_started_ns_ == 0)
+  {
+    feature_metric_window_started_ns_ = now_ns;
+    for (std::size_t index = 0;
+         index < feature_received_counts_.size(); ++index)
+    {
+      feature_metric_previous_received_[index] =
+          feature_received_counts_[index].load();
+    }
+    feature_metric_previous_sync_ = feature_sync_count_.load();
+    feature_metric_previous_processing_ = feature_processing_count_.load();
+    feature_metric_previous_processing_ns_ =
+        feature_processing_total_ns_.load();
+    return;
+  }
+  const int64_t elapsed_ns = now_ns - feature_metric_window_started_ns_;
+  if (elapsed_ns < kWindowNs)
+  {
+    return;
+  }
+  const double elapsed_sec = static_cast<double>(elapsed_ns) / 1e9;
+  std::array<double, 4> rates{};
+  uint64_t minimum_received_delta = std::numeric_limits<uint64_t>::max();
+  for (std::size_t index = 0;
+       index < feature_received_counts_.size(); ++index)
+  {
+    const uint64_t current = feature_received_counts_[index].load();
+    const uint64_t delta =
+        current - feature_metric_previous_received_[index];
+    rates[index] = static_cast<double>(delta) / elapsed_sec;
+    minimum_received_delta = std::min(minimum_received_delta, delta);
+    feature_metric_previous_received_[index] = current;
+  }
+  const uint64_t sync_current = feature_sync_count_.load();
+  const uint64_t sync_delta =
+      sync_current - feature_metric_previous_sync_;
+  const double sync_rate = static_cast<double>(sync_delta) / elapsed_sec;
+  const double sync_ratio = minimum_received_delta == 0 ?
+      0.0 :
+      static_cast<double>(sync_delta) /
+      static_cast<double>(minimum_received_delta);
+
+  const uint64_t processing_current = feature_processing_count_.load();
+  const uint64_t processing_delta =
+      processing_current - feature_metric_previous_processing_;
+  const int64_t processing_ns_current =
+      feature_processing_total_ns_.load();
+  const int64_t processing_ns_delta =
+      processing_ns_current - feature_metric_previous_processing_ns_;
+  const double mean_processing_ms = processing_delta == 0 ?
+      0.0 :
+      static_cast<double>(processing_ns_delta) /
+      static_cast<double>(processing_delta) / 1e6;
+  const double header_age_ms =
+      static_cast<double>(feature_last_header_age_ns_.load()) / 1e6;
+
+  std::ostringstream stream;
+  stream << std::fixed << std::setprecision(3)
+         << "{\"receive_hz\":{"
+         << "\"sharp\":" << rates[0] << ","
+         << "\"less_sharp\":" << rates[1] << ","
+         << "\"flat\":" << rates[2] << ","
+         << "\"less_flat\":" << rates[3] << "},"
+         << "\"sync_hz\":" << sync_rate << ","
+         << "\"sync_ratio\":" << sync_ratio << ","
+         << "\"processing_ms\":" << mean_processing_ms << ","
+         << "\"header_age_ms\":" << header_age_ms << "}";
+  std_msgs::msg::String message;
+  message.data = stream.str();
+  if (pub_feature_stream_metrics_)
+  {
+    pub_feature_stream_metrics_->publish(message);
+  }
+  RCLCPP_INFO(
+      this->get_logger(), "Feature stream metrics: %s",
+      message.data.c_str());
+
+  feature_metric_previous_sync_ = sync_current;
+  feature_metric_previous_processing_ = processing_current;
+  feature_metric_previous_processing_ns_ = processing_ns_current;
+  feature_metric_window_started_ns_ = now_ns;
 }
 
 void MCL3dlNode::cbGlobalLocalization(
@@ -1743,16 +2253,24 @@ void MCL3dlNode::publishLocalizationStatus()
 void MCL3dlNode::publishLocalizationStatusThread()
 {
   const int64_t now_ns = clock_->now().nanoseconds();
+  publishFeatureMetrics(now_ns);
   const LocalizationState state = localizationState();
   if (state == LocalizationState::TRACKING || state == LocalizationState::LOCALIZING)
   {
-    const int64_t feature_ns = last_feature_received_ns_.load();
     const int64_t odom_ns = last_odom_received_ns_.load();
-    const bool feature_stale = state == LocalizationState::TRACKING ?
-        (feature_ns == 0 || static_cast<double>(now_ns - feature_ns) / 1e9 >
-          params_->localization_sensor_timeout_sec_) :
-        (feature_ns != 0 && static_cast<double>(now_ns - feature_ns) / 1e9 >
-          params_->localization_sensor_timeout_sec_);
+    bool feature_stale = false;
+    for (const auto& received_ns : feature_last_received_ns_)
+    {
+      const int64_t feature_ns = received_ns.load();
+      const bool topic_stale = state == LocalizationState::TRACKING ?
+          (feature_ns == 0 ||
+           static_cast<double>(now_ns - feature_ns) / 1e9 >
+             params_->localization_sensor_timeout_sec_) :
+          (feature_ns != 0 &&
+           static_cast<double>(now_ns - feature_ns) / 1e9 >
+             params_->localization_sensor_timeout_sec_);
+      feature_stale = feature_stale || topic_stale;
+    }
     const bool odom_stale = state == LocalizationState::TRACKING ?
         (odom_ns == 0 || static_cast<double>(now_ns - odom_ns) / 1e9 >
           params_->localization_sensor_timeout_sec_) :
@@ -1761,18 +2279,42 @@ void MCL3dlNode::publishLocalizationStatusThread()
     if (feature_stale || odom_stale)
     {
       markLocalizationLost(feature_stale ?
-          "lidar feature stream timed out" : "odometry stream timed out");
+          "one or more lidar feature topics timed out" :
+          "odometry stream timed out");
       return;
     }
 
     if (state == LocalizationState::LOCALIZING)
     {
       const int64_t started_ns = localizing_started_ns_.load();
+      const bool local_recovery = local_recovery_active_.load();
+      const double timeout_sec = local_recovery ?
+          params_->local_recovery_timeout_sec_ :
+          params_->localization_timeout_sec_;
       if (started_ns != 0 &&
           static_cast<double>(now_ns - started_ns) / 1e9 >
-            params_->localization_timeout_sec_)
+            timeout_sec)
       {
-        markLocalizationLost("localization convergence timed out");
+        if (local_recovery)
+        {
+          local_recovery_active_.store(false);
+          markLocalizationLost("local recovery convergence timed out");
+          if (params_->auto_global_localization_ &&
+              has_last_trusted_pose_.load())
+          {
+            local_recovery_pending_.store(false);
+            global_localization_requested_.store(true);
+            last_global_attempt_ns_.store(0);
+            RCLCPP_ERROR(
+                this->get_logger(),
+                "Local recovery timed out; automatic global recovery is now "
+                "permitted");
+          }
+        }
+        else
+        {
+          markLocalizationLost("localization convergence timed out");
+        }
         return;
       }
     }
@@ -1933,9 +2475,15 @@ void MCL3dlNode::cbPosition(const geometry_msgs::msg::PoseWithCovarianceStamped:
 
   state_prev_ = mean;
   global_localization_requested_.store(false);
+  operator_global_confirmed_.store(false);
+  local_recovery_pending_.store(false);
+  local_recovery_active_.store(true);
+  resetGlobalConfirmation();
+  // Use the complete immutable map only until the fixed-pose submap warmup
+  // commits; no global candidate search is performed.
   use_global_map_.store(sub_maps_->isGlobalReady());
   last_measure_ns_.store(0);
-  startLocalizing("manual initial pose received");
+  startLocalizing("fixed/manual initial pose received; global search blocked");
   publishParticles();
   first_tf_.store(false);
 }
