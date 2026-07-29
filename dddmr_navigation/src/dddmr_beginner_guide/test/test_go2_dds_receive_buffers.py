@@ -66,6 +66,42 @@ GO2_LAUNCH_FILES = (
 
 
 class Go2DdsReceiveBuffersTest(unittest.TestCase):
+    def test_auto_interface_uses_device_owning_local_dds_address(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            fake_ip = pathlib.Path(temporary_directory) / "ip"
+            fake_ip.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [[ \"$1 $2\" == 'route get' ]]; then\n"
+                "  printf '%s\\n' "
+                "'local 192.168.123.18 dev lo src 192.168.123.18'\n"
+                "elif [[ \"$1 $2 $3\" == '-o -4 address' ]]; then\n"
+                "  printf '%s\\n' "
+                "'2: eth0 inet 192.168.123.18/24 scope global eth0'\n"
+                "fi\n",
+                encoding="utf-8",
+            )
+            fake_ip.chmod(0o755)
+            command = (
+                "set -u; "
+                "unset GO2_NET_IFACE; "
+                "GO2_DDS_IP=192.168.123.18; "
+                f"source {DDS_SETUP}; "
+                "printf '%s' \"${GO2_NET_IFACE}\""
+            )
+            environment = os.environ.copy()
+            environment["PATH"] = (
+                f"{temporary_directory}:{environment['PATH']}"
+            )
+            result = subprocess.run(
+                ["bash", "-c", command],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "eth0")
+
     def run_check(self, rmem_max: str, rmem_default: str):
         with tempfile.TemporaryDirectory() as temporary_directory:
             directory = pathlib.Path(temporary_directory)

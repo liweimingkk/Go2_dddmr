@@ -26,6 +26,31 @@ detect_go2_net_iface() {
       }
     }
   ')"
+  if [[ -n "${route_iface}" && "${route_iface}" != "lo" ]]; then
+    printf '%s\n' "${route_iface}"
+    return
+  fi
+
+  # `ip route get` reports `lo` when GO2_DDS_IP is an address owned by this
+  # host (the Orin default is 192.168.123.18). CycloneDDS must bind the real
+  # interface that owns that address, otherwise discovery succeeds only on
+  # loopback and live XT16 samples remain invisible.
+  local address_iface
+  address_iface="$(ip -o -4 address show 2>/dev/null | awk \
+    -v target="${GO2_DDS_IP}" '
+    {
+      split($4, address, "/")
+      if (address[1] == target && $2 != "lo") {
+        print $2
+        exit
+      }
+    }
+  ')"
+  if [[ -n "${address_iface}" ]]; then
+    printf '%s\n' "${address_iface}"
+    return
+  fi
+
   if [[ -n "${route_iface}" ]]; then
     printf '%s\n' "${route_iface}"
     return
