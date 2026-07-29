@@ -734,34 +734,32 @@ wait_for_container_log_pattern() {
   local description="$1"
   local pattern="$2"
   local timeout_sec="${3:-90}"
+  local deadline=$((SECONDS + timeout_sec))
   local report=""
 
   log "Waiting for ${description} in the current navigation log (timeout ${timeout_sec}s)..."
-  if ! docker inspect -f '{{.State.Running}}' "${CONTAINER_NAME}" 2>/dev/null | grep -Fxq true; then
-    log "Container ${CONTAINER_NAME} exited while waiting for ${description}."
-    docker logs --tail 120 "${CONTAINER_NAME}" 2>&1 || true
-    return 1
-  fi
-
   # The readiness record can precede this gate and can be pushed out of any
   # fixed-size tail by noisy startup diagnostics. Scan this unique container
-  # from its first record once, then follow new records until the deadline.
-  report="$(
-    timeout -s TERM -k 2s "${timeout_sec}s" \
-      docker logs --follow "${CONTAINER_NAME}" 2>&1 |
-      grep --line-buffered -m 1 -E "${pattern}" ||
-      true
-  )"
-  if [[ -n "${report}" ]]; then
-    printf '%s\n' "${report}"
-    log "Confirmed ${description}."
-    return 0
-  fi
-
-  if ! docker inspect -f '{{.State.Running}}' "${CONTAINER_NAME}" 2>/dev/null | grep -Fxq true; then
-    log "Container ${CONTAINER_NAME} exited while waiting for ${description}."
-    docker logs --tail 120 "${CONTAINER_NAME}" 2>&1 || true
-  fi
+  # from its first record. Stop reading at the first match so early readiness
+  # remains cheap to verify even if later diagnostics are noisy.
+  while (( SECONDS < deadline )); do
+    if ! docker inspect -f '{{.State.Running}}' "${CONTAINER_NAME}" 2>/dev/null | grep -Fxq true; then
+      log "Container ${CONTAINER_NAME} exited while waiting for ${description}."
+      docker logs --tail 120 "${CONTAINER_NAME}" 2>&1 || true
+      return 1
+    fi
+    report="$(
+      docker logs "${CONTAINER_NAME}" 2>&1 |
+        grep -m 1 -E "${pattern}" ||
+        true
+    )"
+    if [[ -n "${report}" ]]; then
+      printf '%s\n' "${report}"
+      log "Confirmed ${description}."
+      return 0
+    fi
+    sleep 1
+  done
   return 1
 }
 

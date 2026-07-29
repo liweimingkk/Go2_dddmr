@@ -589,8 +589,9 @@ class Go2DdsReceiveBuffersTest(unittest.TestCase):
         log_waiter = script.split(
             "wait_for_container_log_pattern() {", 1
         )[1].split("\n}\n\ncheck_odom_sync_runtime()", 1)[0]
-        self.assertIn('docker logs --follow "${CONTAINER_NAME}"', log_waiter)
-        self.assertIn("grep --line-buffered -m 1 -E", log_waiter)
+        self.assertIn('docker logs "${CONTAINER_NAME}"', log_waiter)
+        self.assertIn("grep -m 1 -E", log_waiter)
+        self.assertNotIn("docker logs --follow", log_waiter)
         self.assertNotIn("docker logs --tail 2000", log_waiter)
 
     def test_navigation_live_adapter_uses_available_unitree_overlay(self):
