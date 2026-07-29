@@ -13,7 +13,15 @@
   <arg name="start_p2p_mission" default="false"/>
   <arg name="p2p_mission_file" default=""/>
   <arg name="p2p_mission_auto_arm" default="false"/>
-  <arg name="p2p_localization_health_grace_sec" default="1.5"/>
+  <arg name="p2p_mission_planner_ready_timeout_sec" default="90.0"/>
+  <!-- MCL measures every 0.50 s while stationary. Leave Orin compute jitter
+       above that cadence; the command gate independently requires fresh
+       /mcl_pose output and healthy localization status. -->
+  <arg name="p2p_mission_input_timeout_sec" default="1.25"/>
+  <!-- The command gate stops immediately on unhealthy localization. Keep the
+       mission armed long enough for a stationary MCL correction to recover,
+       then fail if degradation persists. -->
+  <arg name="p2p_localization_health_grace_sec" default="6.0"/>
   <arg name="p2p_dwell_exit_position_tolerance" default="0.40"/>
   <arg name="p2p_dwell_exit_yaw_tolerance" default="0.25"/>
   <arg name="p2p_dwell_pose_grace_sec" default="1.0"/>
@@ -251,6 +259,10 @@
         if="$(var start_p2p_mission)">
     <param name="mission_file" value="$(var p2p_mission_file)" type="str"/>
     <param name="auto_arm" value="$(var p2p_mission_auto_arm)" type="bool"/>
+    <param name="planner_ready_timeout_sec"
+           value="$(var p2p_mission_planner_ready_timeout_sec)"/>
+    <param name="input_timeout_sec"
+           value="$(var p2p_mission_input_timeout_sec)" type="float"/>
     <param name="localization_health_grace_sec"
            value="$(var p2p_localization_health_grace_sec)" type="float"/>
     <param name="dwell_exit_position_tolerance"

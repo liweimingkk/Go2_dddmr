@@ -53,6 +53,20 @@ template<class T> class Channel {
     _cv.notify_all();
   }
 
+  // Move an item out of the channel without occupying an executor thread
+  // while waiting for the producer. ROS callbacks must remain non-blocking so
+  // other callback groups (notably external odometry) can continue to run.
+  bool try_receive(T &item) {
+    std::unique_lock<std::mutex> lock(_m);
+    if (_empty) {
+      return false;
+    }
+    item = std::move(_item);
+    _empty = true;
+    _cv.notify_all();
+    return true;
+  }
+
 };
 
 #endif // CHANNEL_H

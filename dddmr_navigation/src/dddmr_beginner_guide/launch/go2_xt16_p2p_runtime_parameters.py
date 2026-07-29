@@ -10,6 +10,8 @@ import yaml
 
 
 MAX_LOCAL_LIDAR_FRESHNESS_SEC = 0.35
+LOCKED_LATERAL_VELOCITY = 0.0
+LOCKED_LATERAL_SAMPLES = 1.0
 
 
 def _finite_float(raw_value, label: str) -> float:
@@ -51,6 +53,14 @@ def build_exact_runtime_parameters(
         )
     if minimum_y > maximum_y:
         raise ValueError("omni_min_vel_y must not exceed omni_max_vel_y")
+    if (
+        minimum_y != LOCKED_LATERAL_VELOCITY
+        or maximum_y != LOCKED_LATERAL_VELOCITY
+    ):
+        raise ValueError(
+            "Go2 XT16 P2P lateral motion is disabled; "
+            "omni_min_vel_y and omni_max_vel_y must both be 0"
+        )
 
     # Foxy converts anonymous-node inline launch parameters into a /** rule.
     # P2PMoveBase hosts several named rclcpp::Node instances in one process,
@@ -64,8 +74,9 @@ def build_exact_runtime_parameters(
         },
         "/trajectory_generators": {
             "ros__parameters": {
-                "omni_drive_simple.min_vel_y": minimum_y,
-                "omni_drive_simple.max_vel_y": maximum_y,
+                "omni_drive_simple.min_vel_y": LOCKED_LATERAL_VELOCITY,
+                "omni_drive_simple.max_vel_y": LOCKED_LATERAL_VELOCITY,
+                "omni_drive_simple.linear_y_sample": LOCKED_LATERAL_SAMPLES,
             },
         },
         "/p2p_move_base": {

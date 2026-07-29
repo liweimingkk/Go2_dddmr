@@ -11,6 +11,7 @@ from go2_nav_gate_policy import (  # noqa: E402
     RECOVERY_ROTATION_DECISION,
     localization_block_reason,
     localization_health_block_reason,
+    localization_pose_block_reason,
     recovery_rotation_gate,
 )
 
@@ -66,6 +67,34 @@ class LocalizationHealthGatePolicyTest(unittest.TestCase):
     def test_only_fresh_healthy_value_allows_motion(self):
         self.assertIsNone(
             localization_health_block_reason(True, " healthy ", 0.1, 0.5)
+        )
+
+
+class LocalizationPoseGatePolicyTest(unittest.TestCase):
+    def test_optional_pose_never_blocks(self):
+        self.assertIsNone(
+            localization_pose_block_reason(False, False, None, 1.25)
+        )
+
+    def test_missing_stale_future_and_invalid_pose_age_block(self):
+        self.assertEqual(
+            localization_pose_block_reason(True, False, None, 1.25),
+            "localization_no_pose",
+        )
+        for age in (1.251, -0.01, float("nan")):
+            with self.subTest(age=age):
+                self.assertEqual(
+                    localization_pose_block_reason(True, True, age, 1.25),
+                    "localization_pose_stale",
+                )
+        self.assertEqual(
+            localization_pose_block_reason(True, True, 0.1, 0.0),
+            "localization_pose_stale",
+        )
+
+    def test_only_fresh_pose_allows_motion(self):
+        self.assertIsNone(
+            localization_pose_block_reason(True, True, 1.25, 1.25)
         )
 
 

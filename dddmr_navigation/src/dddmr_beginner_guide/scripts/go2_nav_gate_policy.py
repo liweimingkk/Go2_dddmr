@@ -114,3 +114,25 @@ def localization_health_block_reason(
     if normalized != HEALTHY_STATE:
         return "localization_health_%s" % (normalized.lower() or "unknown")
     return None
+
+
+def localization_pose_block_reason(
+    required: bool,
+    pose_received: bool,
+    pose_age_sec: Optional[float],
+    timeout_sec: float,
+) -> Optional[str]:
+    """Block motion when MCL is no longer producing fresh pose estimates."""
+    if not required:
+        return None
+    if not pose_received or pose_age_sec is None:
+        return "localization_no_pose"
+    if (
+        not math.isfinite(pose_age_sec)
+        or not math.isfinite(timeout_sec)
+        or timeout_sec <= 0.0
+        or pose_age_sec < 0.0
+        or pose_age_sec > timeout_sec
+    ):
+        return "localization_pose_stale"
+    return None

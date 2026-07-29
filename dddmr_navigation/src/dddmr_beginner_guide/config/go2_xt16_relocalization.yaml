@@ -48,9 +48,15 @@ mcl_3dl:
     localization_tracking_max_roll_std: 0.035
     localization_tracking_max_pitch_std: 0.035
     localization_tracking_max_yaw_std: 0.35
-    localization_tracking_max_residual: 0.18
+    # The active cleaned map produced stable TRACKING observations at
+    # residual=0.181..0.189 while match ratio, spread, tilt, and height
+    # remained healthy. Keep a margin below the 0.25 LOST threshold without
+    # treating that normal motion band as a terminal mission failure.
+    localization_tracking_max_residual: 0.20
     localization_tracking_max_map_odom_tilt: 0.035
-    localization_tracking_max_ground_normal_error: 0.105
+    # XT16 ground-normal noise reached 0.118 rad with otherwise healthy
+    # geometry. Preserve a fail-closed gap to the 0.175 rad LOST threshold.
+    localization_tracking_max_ground_normal_error: 0.14
     localization_tracking_max_base_height_error: 0.06
     localization_tracking_max_pose_height_error: 0.04
     localization_lost_max_xy_std: 1.50
@@ -78,3 +84,9 @@ go2_nav_cmd_gate:
     require_localization_health: true
     localization_health_topic: "/localization_health"
     localization_health_timeout_sec: 0.75
+    # TF is deliberately re-published at current time between MCL corrections.
+    # Independently require pose output so a stalled particle filter cannot
+    # keep motion enabled behind a fresh-looking map->odom transform.
+    require_localization_pose: true
+    localization_pose_topic: "/mcl_pose"
+    localization_pose_timeout_sec: 1.25

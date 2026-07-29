@@ -515,6 +515,9 @@ if(BUILD_TESTING)
   ament_add_gtest(test_receipt_sync
     test/test_receipt_sync.cpp
   )
+  ament_add_gtest(test_channel
+    test/test_channel.cpp
+  )
 endif()
 
 # --- Everything CI/CD test finish here ---

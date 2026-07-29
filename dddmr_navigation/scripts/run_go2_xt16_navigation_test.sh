@@ -4,18 +4,23 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/run_go2_xt16_navigation_test.sh --dry-run
-  scripts/run_go2_xt16_navigation_test.sh --live
-  scripts/run_go2_xt16_navigation_test.sh --record MISSION.json \
+  scripts/run_go2_xt16_navigation_test.sh [--quick|--full] --dry-run
+  scripts/run_go2_xt16_navigation_test.sh [--quick|--full] --live
+  scripts/run_go2_xt16_navigation_test.sh [--quick|--full] --record MISSION.json \
     --initial-pose INITIAL_POSE.json
-  scripts/run_go2_xt16_navigation_test.sh --multi-dry-run MISSION.json
-  scripts/run_go2_xt16_navigation_test.sh --multi-live MISSION.json
+  scripts/run_go2_xt16_navigation_test.sh [--quick|--full] --multi-dry-run MISSION.json
+  scripts/run_go2_xt16_navigation_test.sh [--quick|--full] --multi-live MISSION.json
   scripts/run_go2_xt16_navigation_test.sh --stop
 
 Starts Go2 XT16 navigation with the map configured in:
   src/dddmr_beginner_guide/config/go2_xt16_navigation.yaml
 
 Modes:
+  --quick    Short fail-closed startup profile. Keeps all motion-safety gates,
+             but uses shorter sustained-data windows and omits the slow status
+             inventory. Use after a full run has already validated the setup.
+  --full     Full diagnostic startup profile (default). Uses longer sustained
+             windows and prints the complete runtime status before arming.
   --dry-run  Start navigation and RViz only. No real /api/sport/request output.
              This is the default.
   --live     Start navigation, RViz, and the live Sport adapter. This can move
@@ -36,7 +41,7 @@ Modes:
 Common environment overrides:
   DDDMR_PLATFORM=x64|orin-jp5
   MAX_X=0.50
-  MAX_Y=0.20             Default for dry-run and supervised live; 0 disables lateral motion.
+  MAX_Y=0.0              Lateral motion is locked out; nonzero values are rejected.
   MAX_YAW=0.50
   RVIZ=true
   PUBLISH_STATIC_TF=true
@@ -55,6 +60,8 @@ Common environment overrides:
   AUTO_MEASURE_ODOM_TIME_OFFSET=true
   ODOM_SYNC_TOLERANCE_SEC=0.05
   ODOM_SYNC_WAIT_TIMEOUT_SEC=0.1
+  GO2_NAV_ODOM_SYNC_WINDOW_SEC=8.0
+  GO2_NAV_FEATURE_WINDOW_SEC=8.0
   LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC=0.35
   GO2_NAV_OBSERVATION_WINDOW_SEC=20.0
   DDDMR_BAGS_DIR=../bags
@@ -62,9 +69,10 @@ Common environment overrides:
 
 Examples:
   scripts/run_go2_xt16_navigation_test.sh --dry-run
+  scripts/run_go2_xt16_navigation_test.sh --quick --dry-run
   GO2_NAV_LIVE_CONFIRM=I_AM_SUPERVISING_GO2_NAV \
     scripts/run_go2_xt16_navigation_test.sh --live
-  GO2_NAV_LIVE_CONFIRM=I_AM_SUPERVISING_GO2_NAV MAX_Y=0.20 \
+  GO2_NAV_LIVE_CONFIRM=I_AM_SUPERVISING_GO2_NAV MAX_Y=0.0 \
     scripts/run_go2_xt16_navigation_test.sh --live
   GO2_NAV_LIVE_CONFIRM=I_AM_SUPERVISING_GO2_NAV STOP_EXISTING=true \
     scripts/run_go2_xt16_navigation_test.sh --live
@@ -74,10 +82,26 @@ Examples:
   scripts/run_go2_xt16_navigation_test.sh --multi-dry-run \
     bags/p2p_missions/route_a.json
   GO2_NAV_LIVE_CONFIRM=I_AM_SUPERVISING_GO2_NAV \
-    scripts/run_go2_xt16_navigation_test.sh --multi-live \
+    scripts/run_go2_xt16_navigation_test.sh --quick --multi-live \
     bags/p2p_missions/route_a.json
   scripts/run_go2_xt16_navigation_test.sh --stop
 EOF
+}
+
+STARTUP_PROFILE_VALUE="${GO2_NAV_STARTUP_PROFILE:-full}"
+case "${1:-}" in
+  --quick)
+    STARTUP_PROFILE_VALUE="quick"
+    shift
+    ;;
+  --full)
+    STARTUP_PROFILE_VALUE="full"
+    shift
+    ;;
+esac
+[[ "${STARTUP_PROFILE_VALUE}" == "quick" || "${STARTUP_PROFILE_VALUE}" == "full" ]] || {
+  echo "GO2_NAV_STARTUP_PROFILE must be quick or full, got: ${STARTUP_PROFILE_VALUE}" >&2
+  exit 2
 }
 
 mode="dry-run"
@@ -202,6 +226,7 @@ DDS_BUFFER_CHECK="${SCRIPT_DIR}/check_go2_dds_receive_buffers.sh"
 OBSERVATION_GATE_SOURCE="${WS_ROOT}/src/dddmr_beginner_guide/scripts/go2_pointcloud_stream_gate.py"
 MISSION_IO_SOURCE="${WS_ROOT}/src/dddmr_route_navigation/scripts/waypoint_mission_io.py"
 CURRENT_OBSERVATION_TOPIC="/perception_3d_local/lidar/current_observation"
+MCL_FEATURE_TOPIC="/segmented_cloud_pure"
 BUILD_BASE_VALUE="${DDDMR_BUILD_BASE:-${DEFAULT_BUILD_BASE}}"
 INSTALL_BASE_VALUE="${DDDMR_INSTALL_BASE:-${DEFAULT_INSTALL_BASE}}"
 LOG_BASE_VALUE="${DDDMR_LOG_BASE:-${DEFAULT_LOG_BASE}}"
@@ -222,28 +247,51 @@ RVIZ_VALUE="${RVIZ:-true}"
 PUBLISH_STATIC_TF_VALUE="${PUBLISH_STATIC_TF:-true}"
 MAX_X_VALUE="${MAX_X:-0.50}"
 MAX_YAW_VALUE="${MAX_YAW:-0.50}"
-if [[ -n "${MAX_Y+x}" ]]; then
-  MAX_Y_VALUE="${MAX_Y}"
-else
-  MAX_Y_VALUE="0.20"
-fi
+MAX_Y_VALUE="${MAX_Y:-0.0}"
 OMNI_MIN_Y_VALUE=""
 RUN_SECONDS_VALUE="${RUN_SECONDS:-}"
 STOP_EXISTING_VALUE="${STOP_EXISTING:-false}"
 LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC_VALUE="${LOCAL_LIDAR_EXPECTED_SENSOR_TIME_SEC:-0.35}"
-OBSERVATION_WINDOW_SEC_VALUE="${GO2_NAV_OBSERVATION_WINDOW_SEC:-20.0}"
-OBSERVATION_TIMEOUT_SEC_VALUE="${GO2_NAV_OBSERVATION_TIMEOUT_SEC:-30.0}"
-OBSERVATION_MIN_SAMPLES_VALUE="${GO2_NAV_OBSERVATION_MIN_SAMPLES:-140}"
+if [[ "${STARTUP_PROFILE_VALUE}" == "quick" ]]; then
+  DEFAULT_ODOM_SYNC_WINDOW_SEC="3.0"
+  DEFAULT_ODOM_SYNC_MIN_SAMPLES="20"
+  DEFAULT_FEATURE_WINDOW_SEC="3.0"
+  DEFAULT_FEATURE_TIMEOUT_SEC="10.0"
+  DEFAULT_FEATURE_MIN_SAMPLES="20"
+  DEFAULT_OBSERVATION_WINDOW_SEC="5.0"
+  DEFAULT_OBSERVATION_TIMEOUT_SEC="12.0"
+  DEFAULT_OBSERVATION_MIN_SAMPLES="35"
+else
+  DEFAULT_ODOM_SYNC_WINDOW_SEC="8.0"
+  DEFAULT_ODOM_SYNC_MIN_SAMPLES="50"
+  DEFAULT_FEATURE_WINDOW_SEC="8.0"
+  DEFAULT_FEATURE_TIMEOUT_SEC="18.0"
+  DEFAULT_FEATURE_MIN_SAMPLES="50"
+  DEFAULT_OBSERVATION_WINDOW_SEC="20.0"
+  DEFAULT_OBSERVATION_TIMEOUT_SEC="30.0"
+  DEFAULT_OBSERVATION_MIN_SAMPLES="140"
+fi
+OBSERVATION_WINDOW_SEC_VALUE="${GO2_NAV_OBSERVATION_WINDOW_SEC:-${DEFAULT_OBSERVATION_WINDOW_SEC}}"
+OBSERVATION_TIMEOUT_SEC_VALUE="${GO2_NAV_OBSERVATION_TIMEOUT_SEC:-${DEFAULT_OBSERVATION_TIMEOUT_SEC}}"
+OBSERVATION_MIN_SAMPLES_VALUE="${GO2_NAV_OBSERVATION_MIN_SAMPLES:-${DEFAULT_OBSERVATION_MIN_SAMPLES}}"
 OBSERVATION_MIN_RATE_HZ_VALUE="${GO2_NAV_OBSERVATION_MIN_RATE_HZ:-7.0}"
 OBSERVATION_MAX_HEADER_GAP_SEC_VALUE="${GO2_NAV_OBSERVATION_MAX_HEADER_GAP_SEC:-0.25}"
 OBSERVATION_MAX_RECEIVE_GAP_SEC_VALUE="${GO2_NAV_OBSERVATION_MAX_RECEIVE_GAP_SEC:-0.25}"
 OBSERVATION_MAX_FUTURE_SKEW_SEC_VALUE="${GO2_NAV_OBSERVATION_MAX_FUTURE_SKEW_SEC:-0.05}"
+ODOM_SYNC_WINDOW_SEC_VALUE="${GO2_NAV_ODOM_SYNC_WINDOW_SEC:-${DEFAULT_ODOM_SYNC_WINDOW_SEC}}"
+ODOM_SYNC_MIN_SAMPLES_VALUE="${GO2_NAV_ODOM_SYNC_MIN_SAMPLES:-${DEFAULT_ODOM_SYNC_MIN_SAMPLES}}"
+ODOM_SYNC_MAX_RECEIVE_GAP_SEC_VALUE="${GO2_NAV_ODOM_SYNC_MAX_RECEIVE_GAP_SEC:-0.30}"
+FEATURE_WINDOW_SEC_VALUE="${GO2_NAV_FEATURE_WINDOW_SEC:-${DEFAULT_FEATURE_WINDOW_SEC}}"
+FEATURE_TIMEOUT_SEC_VALUE="${GO2_NAV_FEATURE_TIMEOUT_SEC:-${DEFAULT_FEATURE_TIMEOUT_SEC}}"
+FEATURE_MIN_SAMPLES_VALUE="${GO2_NAV_FEATURE_MIN_SAMPLES:-${DEFAULT_FEATURE_MIN_SAMPLES}}"
+FEATURE_MAX_HEADER_AGE_SEC_VALUE="${GO2_NAV_FEATURE_MAX_HEADER_AGE_SEC:-0.45}"
 LIVE_CONFIRM_PHRASE="I_AM_SUPERVISING_GO2_NAV"
 CONTAINER_NAME="${NAV_CONTAINER_NAME:-go2_xt16_nav_${mode//-/_}_x${MAX_X_VALUE//./}_y${MAX_Y_VALUE//./}_yaw${MAX_YAW_VALUE//./}_$(date +%Y%m%d_%H%M%S)}"
 RUN_LOG_DIR="${RUN_LOG_DIR:-${WS_ROOT}/run_logs}"
 ADAPTER_LOG_CONTAINER="/root/dddmr_navigation/run_logs/${CONTAINER_NAME}_adapter.log"
 ADAPTER_LOG_HOST="${RUN_LOG_DIR}/${CONTAINER_NAME}_adapter.log"
 PERCEPTION_GATE_LOG_HOST="${RUN_LOG_DIR}/${CONTAINER_NAME}_perception_gate.log"
+FEATURE_GATE_LOG_HOST="${RUN_LOG_DIR}/${CONTAINER_NAME}_feature_gate.log"
 LOCAL_LIDAR_RUNTIME_FRESHNESS_SEC_VALUE=""
 runtime_started="false"
 mission_file=""
@@ -358,11 +406,10 @@ is_positive_number() {
 validate_lateral_limit() {
   is_nonnegative_number "${MAX_Y_VALUE}" || \
     die "MAX_Y must be a finite nonnegative number."
-  awk -v value="${MAX_Y_VALUE}" 'BEGIN { exit !(value <= 0.20) }' || \
-    die "MAX_Y must not exceed the 0.20 m/s first-field-test cap."
-  OMNI_MIN_Y_VALUE="$(
-    awk -v value="${MAX_Y_VALUE}" 'BEGIN { printf "%.6f", -value }'
-  )"
+  awk -v value="${MAX_Y_VALUE}" 'BEGIN { exit !(value == 0.0) }' || \
+    die "Lateral motion is disabled: MAX_Y must be exactly 0."
+  MAX_Y_VALUE="0.000000"
+  OMNI_MIN_Y_VALUE="0.000000"
 }
 
 validate_perception_settings() {
@@ -407,6 +454,25 @@ resolve_odom_time_offset() {
     die "ODOM_SYNC_TOLERANCE_SEC must be a finite nonnegative number."
   is_nonnegative_number "${ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE}" || \
     die "ODOM_SYNC_WAIT_TIMEOUT_SEC must be a finite nonnegative number."
+  is_positive_number "${ODOM_SYNC_WINDOW_SEC_VALUE}" || \
+    die "GO2_NAV_ODOM_SYNC_WINDOW_SEC must be a finite positive number."
+  [[ "${ODOM_SYNC_MIN_SAMPLES_VALUE}" =~ ^[1-9][0-9]*$ ]] && \
+    (( ODOM_SYNC_MIN_SAMPLES_VALUE >= 2 )) || \
+    die "GO2_NAV_ODOM_SYNC_MIN_SAMPLES must be an integer of at least 2."
+  is_positive_number "${ODOM_SYNC_MAX_RECEIVE_GAP_SEC_VALUE}" || \
+    die "GO2_NAV_ODOM_SYNC_MAX_RECEIVE_GAP_SEC must be a finite positive number."
+  is_positive_number "${FEATURE_WINDOW_SEC_VALUE}" || \
+    die "GO2_NAV_FEATURE_WINDOW_SEC must be a finite positive number."
+  is_positive_number "${FEATURE_TIMEOUT_SEC_VALUE}" || \
+    die "GO2_NAV_FEATURE_TIMEOUT_SEC must be a finite positive number."
+  [[ "${FEATURE_MIN_SAMPLES_VALUE}" =~ ^[1-9][0-9]*$ ]] && \
+    (( FEATURE_MIN_SAMPLES_VALUE >= 2 )) || \
+    die "GO2_NAV_FEATURE_MIN_SAMPLES must be an integer of at least 2."
+  is_positive_number "${FEATURE_MAX_HEADER_AGE_SEC_VALUE}" || \
+    die "GO2_NAV_FEATURE_MAX_HEADER_AGE_SEC must be a finite positive number."
+  awk -v timeout="${FEATURE_TIMEOUT_SEC_VALUE}" -v window="${FEATURE_WINDOW_SEC_VALUE}" \
+    'BEGIN { exit !(timeout > window) }' || \
+    die "GO2_NAV_FEATURE_TIMEOUT_SEC must be greater than GO2_NAV_FEATURE_WINDOW_SEC."
 
   log "Running read-only odom/XT16 time-sync preflight..."
   ODOM_TIME_OFFSET_SEC_VALUE="$(
@@ -676,9 +742,15 @@ check_odom_sync_runtime() {
     die "Standardized odometry offset ${standardizer_offset}s does not match measured ${ODOM_TIME_OFFSET_SEC_VALUE}s."
   log "Standardized odometry is applying ${standardizer_offset}s before all navigation consumers."
 
-  log "Requiring a valid live /odom_sync_diagnostics sample..."
+  log "Requiring ${ODOM_SYNC_WINDOW_SEC_VALUE}s of continuous valid /odom_sync_diagnostics..."
   set +e
-  report="$(docker_ros "timeout 40 python3 /root/dddmr_navigation/scripts/check_go2_odom_sync.py --timeout 30 --max-error '${ODOM_SYNC_TOLERANCE_SEC_VALUE}' --expected-offset 0.0" 2>&1)"
+  report="$(docker_ros "timeout 50 python3 /root/dddmr_navigation/scripts/check_go2_odom_sync.py \
+    --timeout 40 \
+    --max-error '${ODOM_SYNC_TOLERANCE_SEC_VALUE}' \
+    --expected-offset 0.0 \
+    --window-sec '${ODOM_SYNC_WINDOW_SEC_VALUE}' \
+    --min-samples '${ODOM_SYNC_MIN_SAMPLES_VALUE}' \
+    --max-receive-gap-sec '${ODOM_SYNC_MAX_RECEIVE_GAP_SEC_VALUE}'" 2>&1)"
   rc=$?
   set -e
   printf '%s\n' "${report}"
@@ -756,7 +828,7 @@ read_local_lidar_freshness_limit() {
 }
 
 require_planner_lateral_limits() {
-  local minimum_y maximum_y
+  local minimum_y maximum_y lateral_samples
   minimum_y="$(
     read_runtime_double_parameter \
       /trajectory_generators \
@@ -769,25 +841,79 @@ require_planner_lateral_limits() {
       omni_drive_simple.max_vel_y \
       "the planner maximum lateral velocity"
   )"
+  lateral_samples="$(
+    read_runtime_double_parameter \
+      /trajectory_generators \
+      omni_drive_simple.linear_y_sample \
+      "the planner lateral sample count"
+  )"
 
   awk \
     -v actual="${minimum_y}" \
-    -v requested="${OMNI_MIN_Y_VALUE}" \
-    'BEGIN { delta=actual-requested; if(delta<0) delta=-delta; exit !(delta <= 1e-6) }' || \
-    die "Planner minimum lateral limit ${minimum_y}m/s does not match requested ${OMNI_MIN_Y_VALUE}m/s."
+    'BEGIN { exit !(actual == 0.0) }' || \
+    die "Planner minimum lateral limit must be 0m/s, got ${minimum_y}m/s."
   awk \
     -v actual="${maximum_y}" \
-    -v requested="${MAX_Y_VALUE}" \
-    'BEGIN { delta=actual-requested; if(delta<0) delta=-delta; exit !(delta <= 1e-6) }' || \
-    die "Planner maximum lateral limit ${maximum_y}m/s does not match requested ${MAX_Y_VALUE}m/s."
-  log "P2P planner lateral limits: min_y=${minimum_y}m/s max_y=${maximum_y}m/s"
+    'BEGIN { exit !(actual == 0.0) }' || \
+    die "Planner maximum lateral limit must be 0m/s, got ${maximum_y}m/s."
+  awk \
+    -v actual="${lateral_samples}" \
+    'BEGIN { exit !(actual == 1.0) }' || \
+    die "Planner lateral sample count must be 1, got ${lateral_samples}."
+  log "P2P lateral lockout: min_y=${minimum_y}m/s max_y=${maximum_y}m/s samples=${lateral_samples}"
+}
+
+require_zero_lateral_parameter() {
+  local node="$1"
+  local value
+  value="$(
+    read_runtime_double_parameter \
+      "${node}" \
+      max_y \
+      "the lateral command limit"
+  )"
+  awk -v actual="${value}" 'BEGIN { exit !(actual == 0.0) }' || \
+    die "${node} lateral command limit must be 0m/s, got ${value}m/s."
+  log "${node} lateral command lockout: max_y=${value}m/s"
 }
 
 require_navigation_runtime_parameters() {
   log "Reading back exact P2P runtime safety parameters..."
   read_local_lidar_freshness_limit
   require_planner_lateral_limits
+  require_zero_lateral_parameter /go2_nav_cmd_gate
+  require_zero_lateral_parameter /go2_sport_cmd_vel_dry_run
   log "Exact P2P runtime safety parameters match the requested launch limits."
+}
+
+require_mcl_feature_stream() {
+  local output status gate_path
+  gate_path="/root/dddmr_navigation/src/dddmr_beginner_guide/scripts/go2_pointcloud_stream_gate.py"
+
+  log "Validating ${FEATURE_WINDOW_SEC_VALUE}s of continuous MCL feature input..."
+  set +e
+  output="$(docker_ros \
+    "timeout -s INT -k 1s 30s python3 '${gate_path}' \
+      --topic '${MCL_FEATURE_TOPIC}' \
+      --window-sec '${FEATURE_WINDOW_SEC_VALUE}' \
+      --timeout-sec '${FEATURE_TIMEOUT_SEC_VALUE}' \
+      --min-samples '${FEATURE_MIN_SAMPLES_VALUE}' \
+      --min-rate-hz '${OBSERVATION_MIN_RATE_HZ_VALUE}' \
+      --max-header-gap-sec '${OBSERVATION_MAX_HEADER_GAP_SEC_VALUE}' \
+      --max-receive-gap-sec '${OBSERVATION_MAX_RECEIVE_GAP_SEC_VALUE}' \
+      --max-header-age-sec '${FEATURE_MAX_HEADER_AGE_SEC_VALUE}' \
+      --max-future-skew-sec '${OBSERVATION_MAX_FUTURE_SKEW_SEC_VALUE}' \
+      --expected-publishers 1" 2>&1)"
+  status=$?
+  set -e
+  printf '%s\n' "${output}" | tee "${FEATURE_GATE_LOG_HOST}"
+
+  if (( status != 0 )) || \
+     ! grep -Fxq 'CURRENT_OBSERVATION_GATE=PASS' <<<"${output}"; then
+    docker logs --tail 120 "${CONTAINER_NAME}" 2>&1 || true
+    die "MCL feature input did not remain fresh; navigation was not armed."
+  fi
+  log "Sustained MCL feature-stream gate passed."
 }
 
 require_current_observation_stream() {
@@ -796,7 +922,7 @@ require_current_observation_stream() {
 
   [[ -n "${LOCAL_LIDAR_RUNTIME_FRESHNESS_SEC_VALUE}" ]] || \
     die "Local LiDAR runtime freshness was not validated before the observation gate."
-  log "Validating ${OBSERVATION_WINDOW_SEC_VALUE}s of fresh local LiDAR observations before enabling Sport output..."
+  log "Validating ${OBSERVATION_WINDOW_SEC_VALUE}s of fresh local LiDAR observations before arming navigation..."
   set +e
   output="$(docker_ros \
     "timeout -s INT -k 1s 50s python3 '${gate_path}' \
@@ -836,7 +962,9 @@ start_container() {
     # ROS 2 rejects an explicit empty `name:=` launch override. Append this
     # argument only when a validated multi-point mission actually exists.
     printf -v p2p_mission_launch_command \
-      'launch_args+=(%q)' "p2p_mission_file:=${p2p_mission_file}"
+      'launch_args+=(%q %q)' \
+      "p2p_mission_file:=${p2p_mission_file}" \
+      "p2p_mission_planner_ready_timeout_sec:=240.0"
   elif [[ "${record_mode}" == "true" ]]; then
     start_clicked_to_goal="false"
     p2p_goals_enabled="false"
@@ -945,14 +1073,29 @@ read_mission_state() {
   local output
   output="$(
     docker_ros \
-      "timeout 4 ros2 topic echo /p2p_multi_point/state std_msgs/msg/String --once" \
+      "timeout -s INT -k 1s 3s ros2 topic echo \
+        --qos-reliability reliable \
+        --qos-durability transient_local \
+        /p2p_multi_point/state std_msgs/msg/String" \
       2>/dev/null || true
   )"
   awk -F': ' '
     $1 == "data" {
       gsub(/^["'\''"]|["'\''"]$/, "", $2)
-      print $2
-      exit
+      if ($2 == "FAILED") {
+        print "FAILED"
+        printed = 1
+        exit
+      }
+      if ($2 == "READY")
+        saw_ready = 1
+      last = $2
+    }
+    END {
+      if (!printed && saw_ready)
+        print "READY"
+      else if (!printed && last != "")
+        print last
     }
   ' <<<"${output}"
 }
@@ -1152,6 +1295,7 @@ main() {
   fi
 
   validate_lateral_limit
+  log "Startup profile: ${STARTUP_PROFILE_VALUE}"
   require_docker_image
   assert_clean_runtime
   validate_perception_settings
@@ -1172,6 +1316,8 @@ main() {
   require_navigation_runtime_parameters
   wait_for_topic /odom_sync_diagnostics 90 || die "Timed out waiting for /odom_sync_diagnostics"
   check_odom_sync_runtime
+  wait_for_topic "${MCL_FEATURE_TOPIC}" 90 || die "Timed out waiting for ${MCL_FEATURE_TOPIC}"
+  require_mcl_feature_stream
   wait_for_topic /map1/mapcloud 90 || die "Timed out waiting for /map1/mapcloud"
   wait_for_topic /map1/mapground 90 || die "Timed out waiting for /map1/mapground"
   if [[ "${ROS_DISTRO_VALUE}" == "foxy" ]]; then
@@ -1204,6 +1350,7 @@ main() {
       die "Timed out waiting for a non-empty /weighted_ground sample"
   fi
   wait_for_topic /dddmr_go2/safe_cmd_vel 90 || die "Timed out waiting for /dddmr_go2/safe_cmd_vel"
+  require_current_observation_stream
 
   if [[ "${live_mode}" == "true" ]]; then
     # The bare-DDS Go2 endpoints can take longer than the navigation graph to
@@ -1216,12 +1363,16 @@ main() {
     check_topic_contract /lowstate unitree_go/msg/LowState 1 0
     wait_for_topic /sportmodestate 60 || die "Timed out waiting for /sportmodestate"
     check_topic_contract /sportmodestate unitree_go/msg/SportModeState 1 0
-    require_current_observation_stream
     start_live_adapter
     sleep 2
+    require_zero_lateral_parameter /go2_sport_cmd_vel_adapter_live
   fi
 
-  print_status
+  if [[ "${STARTUP_PROFILE_VALUE}" == "full" ]]; then
+    print_status
+  else
+    log "Quick profile passed all fail-closed readiness gates; skipping full status inventory."
+  fi
 
   if [[ "${record_mode}" == "true" ]]; then
     run_waypoint_recorder

@@ -283,15 +283,13 @@ trajectory_generators:
     
     omni_drive_simple:
       plugin: "trajectory_generators::OmniSimpleTrajectoryGeneratorTheory"
-      # SCAN-Planner's Go2 controller keeps planar vx/vy tracking active while
-      # yaw remains bounded. Use the same collision-aware holonomic principle
-      # here, but retain DDDMR's swept cuboid and hard route corridor.
+      # This Go2 navigation profile is forward/yaw only. Keep the planner
+      # envelope at zero lateral velocity so it cannot select a trajectory that
+      # the downstream command lockout will refuse to execute.
       max_vel_x: 0.40
       min_vel_x: 0.0
-      # Launchers override these symmetrically from the supervised MAX_Y
-      # envelope. The YAML values define the tested planner ceiling.
-      max_vel_y: 0.20
-      min_vel_y: -0.20
+      max_vel_y: 0.0
+      min_vel_y: 0.0
       min_vel_trans: 0.20
       max_vel_trans: 0.45
       max_vel_theta: 0.50
@@ -309,11 +307,9 @@ trajectory_generators:
 
       controller_frequency: 10.0
       sim_time: 1.5
-      # From rest these produce executable 0/0.30 m/s forward and
-      # -0.20/0/0.20 m/s lateral candidates without multiplying the former
-      # 56-candidate workload.
+      # Sample the single permitted y=0 value only.
       linear_x_sample: 2.0
-      linear_y_sample: 3.0
+      linear_y_sample: 1.0
       angular_z_sample: 5.0
       sim_granularity: 0.05
       angular_sim_granularity: 0.025

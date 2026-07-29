@@ -157,6 +157,9 @@ class MCL3dlNode : public rclcpp::Node
     rclcpp::Clock::SharedPtr clock_;
 
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_odom_;
+    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_odom_heartbeat_;
+    rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr
+      sub_feature_heartbeat_;
     rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr sub_position_;
 
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_ground_normal_;
@@ -254,12 +257,13 @@ class MCL3dlNode : public rclcpp::Node
     rclcpp::CallbackGroup::SharedPtr tf_pub_group_;   
     rclcpp::CallbackGroup::SharedPtr tf_listener_group_;
     rclcpp::CallbackGroup::SharedPtr localization_status_group_;
+    rclcpp::CallbackGroup::SharedPtr sensor_heartbeat_group_;
     rclcpp::TimerBase::SharedPtr tf_pub_timer_;
     rclcpp::TimerBase::SharedPtr localization_status_timer_;
     
     geometry_msgs::msg::TransformStamped odom_trans_;
     geometry_msgs::msg::TransformStamped map2odom_trans_;
-    //std::mutex tf_pub_mutex_;
+    std::mutex tf_pub_mutex_;
     
     std::map<std::string, pcl::PointCloud<mcl_3dl::pcl_t>::Ptr> pcl_segmentations_;
 

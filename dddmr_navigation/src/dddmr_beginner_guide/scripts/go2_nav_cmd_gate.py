@@ -4,13 +4,14 @@ import math
 from typing import Optional
 
 import rclpy
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
 from rclpy.node import Node
 from std_msgs.msg import String
 
 from go2_nav_gate_policy import (
     localization_block_reason,
     localization_health_block_reason,
+    localization_pose_block_reason,
 )
 
 
@@ -56,6 +57,15 @@ class Go2NavCmdGate(Node):
         self.localization_health_timeout_sec = float(
             self.declare_parameter("localization_health_timeout_sec", 0.75).value
         )
+        self.require_localization_pose = bool(
+            self.declare_parameter("require_localization_pose", False).value
+        )
+        self.localization_pose_topic = self.declare_parameter(
+            "localization_pose_topic", "/mcl_pose"
+        ).get_parameter_value().string_value
+        self.localization_pose_timeout_sec = float(
+            self.declare_parameter("localization_pose_timeout_sec", 1.25).value
+        )
 
         self.latest_cmd: Optional[Twist] = None
         self.last_cmd_time = None
@@ -63,6 +73,8 @@ class Go2NavCmdGate(Node):
         self.last_localization_status_time = None
         self.localization_health: Optional[str] = None
         self.last_localization_health_time = None
+        self.localization_pose_received = False
+        self.last_localization_pose_time = None
         self.last_log_time = self.get_clock().now()
         self.last_output_key = None
 
@@ -80,13 +92,20 @@ class Go2NavCmdGate(Node):
             self.localization_health_cb,
             10,
         )
+        self.create_subscription(
+            PoseWithCovarianceStamped,
+            self.localization_pose_topic,
+            self.localization_pose_cb,
+            10,
+        )
         self.create_timer(self.timer_period_sec(), self.timer_cb)
 
         self.get_logger().warn(
             "Go2 nav cmd gate: %s -> %s enabled=%s max_x=%.3f max_y=%.3f "
             "max_yaw=%.3f publish_rate_hz=%.3f timeout=%.3f "
             "require_localization_tracking=%s localization_timeout=%.3f "
-            "require_localization_health=%s health_timeout=%.3f"
+            "require_localization_health=%s health_timeout=%.3f "
+            "require_localization_pose=%s pose_timeout=%.3f"
             % (
                 self.input_topic,
                 self.output_topic,
@@ -100,6 +119,8 @@ class Go2NavCmdGate(Node):
                 self.localization_status_timeout_sec,
                 self.require_localization_health,
                 self.localization_health_timeout_sec,
+                self.require_localization_pose,
+                self.localization_pose_timeout_sec,
             )
         )
 
@@ -115,12 +136,19 @@ class Go2NavCmdGate(Node):
         self.localization_health = msg.data
         self.last_localization_health_time = self.get_clock().now()
 
+    def localization_pose_cb(self, msg: PoseWithCovarianceStamped) -> None:
+        del msg
+        self.localization_pose_received = True
+        self.last_localization_pose_time = self.get_clock().now()
+
     def timer_cb(self) -> None:
         now = self.get_clock().now()
         reason = "pass"
         localization_reason = self.localization_block_reason(now)
         if localization_reason is None:
             localization_reason = self.localization_health_block_reason(now)
+        if localization_reason is None:
+            localization_reason = self.localization_pose_block_reason(now)
         if not self.enabled:
             output = Twist()
             reason = "disabled"
@@ -177,6 +205,19 @@ class Go2NavCmdGate(Node):
             self.localization_health,
             health_age_sec,
             self.localization_health_timeout_sec,
+        )
+
+    def localization_pose_block_reason(self, now) -> Optional[str]:
+        pose_age_sec = None
+        if self.last_localization_pose_time is not None:
+            pose_age_sec = (
+                now - self.last_localization_pose_time
+            ).nanoseconds / 1e9
+        return localization_pose_block_reason(
+            self.require_localization_pose,
+            self.localization_pose_received,
+            pose_age_sec,
+            self.localization_pose_timeout_sec,
         )
 
     def log_if_needed(self, now, output: Twist, reason: str) -> None:

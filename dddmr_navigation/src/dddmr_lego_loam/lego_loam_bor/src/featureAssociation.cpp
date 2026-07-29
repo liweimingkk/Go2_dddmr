@@ -1604,7 +1604,9 @@ void FeatureAssociation::publishCloudsLast() {
 void FeatureAssociation::runFeatureAssociation() {
 
   ProjectionOut projection;
-  _input_channel.receive(projection);
+  if (!_input_channel.try_receive(projection)) {
+    return;
+  }
   OdomSyncResult odom_sync_result;
   bool external_odometry_valid = false;
 

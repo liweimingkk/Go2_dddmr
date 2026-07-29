@@ -38,7 +38,10 @@ int main(int argc, char ** argv)
   rclcpp::init(argc, argv);
   auto node = std::make_shared<mcl_3dl::MCL3dlNode>("mcl_3dl");
   auto node_sub_maps = std::make_shared<mcl_3dl::SubMaps>("sub_maps");
-  rclcpp::executors::MultiThreadedExecutor executor;
+  // Reserve enough workers for the two lightweight sensor-heartbeat callback
+  // groups even while sub-map and particle-filter callbacks are computing.
+  rclcpp::executors::MultiThreadedExecutor executor(
+      rclcpp::ExecutorOptions(), 4);
   executor.add_node(node);
   executor.add_node(node_sub_maps);
   node->configure(node_sub_maps);

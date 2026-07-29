@@ -132,6 +132,8 @@ bool MCL3dlNode::configure(const std::shared_ptr<mcl_3dl::SubMaps>& sub_maps)
   tf_listener_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   localization_status_group_ =
       this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  sensor_heartbeat_group_ =
+      this->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
   
   //@Initialize transform listener and broadcaster
   tfbuf_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
@@ -156,6 +158,29 @@ bool MCL3dlNode::configure(const std::shared_ptr<mcl_3dl::SubMaps>& sub_maps)
   sub_odom_ = this->create_subscription<nav_msgs::msg::Odometry>(
       "odom", 2,
       std::bind(&MCL3dlNode::cbOdom, this, std::placeholders::_1), sub_options);
+
+  // Keep transport freshness independent from particle-filter computation.
+  // cbOdom and cbLeGoFeatureCloud intentionally serialize expensive state
+  // updates; on embedded CPUs either callback can hold that lock longer than
+  // localization_sensor_timeout_sec even while DDS inputs remain healthy.
+  // These callbacks only record arrival and run in a dedicated reentrant
+  // group.  Processed-pose freshness is still enforced separately by the
+  // command gate's /mcl_pose timeout.
+  rclcpp::SubscriptionOptions heartbeat_options;
+  heartbeat_options.callback_group = sensor_heartbeat_group_;
+  sub_odom_heartbeat_ = this->create_subscription<nav_msgs::msg::Odometry>(
+      "odom", rclcpp::QoS(10),
+      [this](const nav_msgs::msg::Odometry::SharedPtr) {
+        last_odom_received_ns_.store(clock_->now().nanoseconds());
+      },
+      heartbeat_options);
+  sub_feature_heartbeat_ =
+      this->create_subscription<sensor_msgs::msg::PointCloud2>(
+      "laser_cloud_less_sharp", rclcpp::SensorDataQoS(),
+      [this](const sensor_msgs::msg::PointCloud2::SharedPtr) {
+        last_feature_received_ns_.store(clock_->now().nanoseconds());
+      },
+      heartbeat_options);
 
   sub_position_ = this->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
       "initial_3d_pose", 2,
@@ -348,6 +373,15 @@ void MCL3dlNode::cbOdom(const nav_msgs::msg::Odometry::SharedPtr msg){
     {
       return;
     }
+    // Global candidate scoring can take longer than the sensor timeout on
+    // embedded CPUs.  The odometry callback is still actively consuming a
+    // valid synchronized frame, so refresh both processing heartbeats before
+    // exposing LOCALIZING to the independent status timer.  Without this, the
+    // timer can immediately undo an accepted global localization using the
+    // callback's pre-computation receipt time.
+    const int64_t global_localization_complete_ns = clock_->now().nanoseconds();
+    last_odom_received_ns_.store(global_localization_complete_ns);
+    last_feature_received_ns_.store(global_localization_complete_ns);
     global_localization_requested_.store(false);
     just_seeded_globally = true;
   }
@@ -370,12 +404,20 @@ void MCL3dlNode::cbOdom(const nav_msgs::msg::Odometry::SharedPtr msg){
   odom_last_ = msg_time;
   odom_prev_ = odom_;
 
-  if (!measure(pcl_segmentations_))
+  const bool measurement_valid = measure(pcl_segmentations_);
+  // A completed measurement proves that both inputs made forward processing
+  // progress.  Keep timeout accounting based on completion rather than the
+  // callback entry instant, which may precede an expensive particle update by
+  // several seconds on Orin.
+  const int64_t measurement_complete_ns = clock_->now().nanoseconds();
+  last_odom_received_ns_.store(measurement_complete_ns);
+  last_feature_received_ns_.store(measurement_complete_ns);
+  if (!measurement_valid)
   {
     return;
   }
   last_measured_feature_sequence_.store(feature_sequence);
-  last_measure_ns_.store(now_ns);
+  last_measure_ns_.store(measurement_complete_ns);
 
   if (localizationState() == LocalizationState::LOST)
   {
@@ -1327,9 +1369,10 @@ bool MCL3dlNode::measure(
   }
 
   
-  map2odom_trans_.header.stamp = laser_header_.stamp;
-  map2odom_trans_.header.frame_id = params_->frame_ids_["map"];
-  map2odom_trans_.child_frame_id = params_->frame_ids_["odom"];
+  geometry_msgs::msg::TransformStamped next_map2odom;
+  next_map2odom.header.stamp = laser_header_.stamp;
+  next_map2odom.header.frame_id = params_->frame_ids_["map"];
+  next_map2odom.child_frame_id = params_->frame_ids_["odom"];
   Vec3 rpy = map_rot.getRPY();
   if (params_->flat_ground_enabled_)
   {
@@ -1349,10 +1392,15 @@ bool MCL3dlNode::measure(
   }
   map_rot.setRPY(filtered_rpy);
   map_pos = f_pos_->in(map_pos);
-  map2odom_trans_.transform.translation.x = map_pos.x_;
-  map2odom_trans_.transform.translation.y = map_pos.y_;
-  map2odom_trans_.transform.translation.z = map_pos.z_;
-  map2odom_trans_.transform.rotation = tf2::toMsg(tf2::Quaternion(map_rot.x_, map_rot.y_, map_rot.z_, map_rot.w_));
+  next_map2odom.transform.translation.x = map_pos.x_;
+  next_map2odom.transform.translation.y = map_pos.y_;
+  next_map2odom.transform.translation.z = map_pos.z_;
+  next_map2odom.transform.rotation =
+      tf2::toMsg(tf2::Quaternion(map_rot.x_, map_rot.y_, map_rot.z_, map_rot.w_));
+  {
+    std::lock_guard<std::mutex> lock(tf_pub_mutex_);
+    map2odom_trans_ = next_map2odom;
+  }
 
   // Calculate covariance from sampled particles to reduce calculation cost on global localization.
   // Use the number of original particles or at least 10% of full particles.
@@ -1498,7 +1546,7 @@ bool MCL3dlNode::measure(
 
   geometry_msgs::msg::PoseWithCovarianceStamped pose;
   pose.header.stamp = odom_last_;
-  pose.header.frame_id = map2odom_trans_.header.frame_id;
+  pose.header.frame_id = params_->frame_ids_["map"];
   pose.pose.pose.position.x = e.pos_.x_;
   pose.pose.pose.position.y = e.pos_.y_;
   pose.pose.pose.position.z = e.pos_.z_;
@@ -1730,12 +1778,23 @@ void MCL3dlNode::publishLocalizationStatusThread()
 void MCL3dlNode::publishTFThread()
 {
   if (tf_ready_.load() && isTracking() && params_->publish_tf_){
-    if(laser_header_.stamp.sec==0 && laser_header_.stamp.nanosec == 0){
-      laser_header_.stamp = odom_header_.stamp;
-      RCLCPP_WARN_THROTTLE(this->get_logger(), *clock_, 3000, "Laser msg.header.timestamp = 0, use odom stamp as the timestamp");
+    geometry_msgs::msg::TransformStamped transform;
+    {
+      std::lock_guard<std::mutex> lock(tf_pub_mutex_);
+      transform = map2odom_trans_;
     }
-    map2odom_trans_.header.stamp = laser_header_.stamp;
-    tfb_->sendTransform(map2odom_trans_);
+
+    // map->odom is a slowly corrected localization transform while odom->base
+    // carries the high-rate motion. Publish the latest correction at wall/ROS
+    // time plus the configured tolerance, as AMCL-style localizers do. Using
+    // the measurement cloud stamp here made the latest common TF time lag by
+    // multiple seconds during an expensive MCL update, even though odometry
+    // and LiDAR were both current.
+    const double tolerance_sec =
+        std::max(0.0, tf2::durationToSec(params_->tf_tolerance_));
+    transform.header.stamp =
+        clock_->now() + rclcpp::Duration::from_seconds(tolerance_sec);
+    tfb_->sendTransform(transform);
     first_tf_.store(true);
   }
 }
