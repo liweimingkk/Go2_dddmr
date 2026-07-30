@@ -28,6 +28,17 @@ LAPTOP_NAVIGATION_RVIZ_CONFIG = (
     / "rviz"
     / "go2_xt16_navigation_laptop.rviz"
 )
+LAPTOP_MAPPING_RVIZ_LAUNCHER = (
+    WORKSPACE / "scripts" / "run_go2_xt16_laptop_mapping_rviz.sh"
+)
+LAPTOP_MAPPING_RVIZ_CONFIG = (
+    WORKSPACE
+    / "src"
+    / "dddmr_lego_loam"
+    / "lego_loam_bor"
+    / "rviz"
+    / "go2_xt16_mapping_laptop.rviz"
+)
 MOUTH_MAPPING_CONFIG = (
     WORKSPACE
     / "src"
@@ -641,6 +652,37 @@ class Go2DdsReceiveBuffersTest(unittest.TestCase):
         )
         self.assertIn("go2_xt16_navigation_laptop.rviz", launcher)
         self.assertIn("2D Goal Pose -> /goal_pose_3d", launcher)
+
+    def test_laptop_mapping_rviz_is_read_only_and_bandwidth_bounded(self):
+        config = LAPTOP_MAPPING_RVIZ_CONFIG.read_text(encoding="utf-8")
+        self.assertIn("Value: /lego_loam_map", config)
+        self.assertIn("Value: /lego_loam_ground", config)
+        self.assertIn("Value: /mouth_ground_cloud", config)
+        self.assertIn("Value: /key_poses", config)
+        self.assertIn("Value: /pose_graph", config)
+        self.assertNotIn("Value: /lidar_points", config)
+        self.assertNotIn("rviz_default_plugins/SetGoal", config)
+        self.assertNotIn("rviz_default_plugins/SetInitialPose", config)
+        self.assertNotIn("rviz_default_plugins/PublishPoint", config)
+        self.assertNotIn("/cmd_vel", config)
+        self.assertNotIn("/api/sport/request", config)
+
+    def test_laptop_mapping_rviz_launcher_checks_live_map_stream(self):
+        launcher = LAPTOP_MAPPING_RVIZ_LAUNCHER.read_text(encoding="utf-8")
+        self.assertIn(
+            'ORIN_OPERATOR_IP="${GO2_ORIN_OPERATOR_IP:-192.168.50.1}"',
+            launcher,
+        )
+        self.assertIn(
+            "REQUIRED_TOPICS=(/lego_loam_map /lego_loam_ground)",
+            launcher,
+        )
+        self.assertIn("ros2 topic info", launcher)
+        self.assertIn("--no-daemon", launcher)
+        self.assertIn("--field width", launcher)
+        self.assertIn("GO2_DDS_EXTRA_IFACES=wlan0", launcher)
+        self.assertIn("go2_xt16_mapping_laptop.rviz", launcher)
+        self.assertNotIn("ros2 topic pub", launcher)
 
     def test_live_mouth_mapping_uses_receipt_time_sync(self):
         config = MOUTH_MAPPING_CONFIG.read_text(encoding="utf-8")

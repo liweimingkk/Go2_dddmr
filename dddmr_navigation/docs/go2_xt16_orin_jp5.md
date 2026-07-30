@@ -126,6 +126,38 @@ optional DDDMR 3D pose tools with standard RViz 2D tools while preserving
 robot-side navigation readiness checks have passed; a goal can move the Go2
 when the supervised live adapter is active.
 
+For a read-only live view while the Orin is mapping, expose `wlan0` to the
+mapping container in addition to the primary XT16/Go2 `eth0` interface:
+
+```bash
+cd ~/go2_dddmr_full/dddmr_navigation
+sudo env \
+  DDDMR_PLATFORM=orin-jp5 \
+  DDDMR_DOCKER_NAME=go2_xt16_mouth_mapping_field \
+  GO2_NET_IFACE=eth0 \
+  GO2_DDS_EXTRA_IFACES=wlan0 \
+  RVIZ=false \
+  MAP_RVIZ=false \
+  STOP_AFTER_SAVE=false \
+  ./scripts/run_go2_xt16_mouth_mapping_save_to_nav.sh --start-only
+```
+
+Then start the dedicated mapping viewer on the laptop:
+
+```bash
+cd /home/kkkkkkq/new2_success/new22/new2/dddmr_navigation
+./scripts/run_go2_xt16_laptop_mapping_rviz.sh
+```
+
+The laptop launcher waits for real `/lego_loam_map` and
+`/lego_loam_ground` publishers, receives one sample from each, and then opens
+RViz. The view shows the accumulated map, accumulated ground, mouth-ground
+contribution, key poses, and pose-graph edges. It contains no goal, initial
+pose, point-publish, navigation, or Unitree command tool. Raw
+`/lidar_points` is intentionally omitted because forwarding the full 10 Hz
+XT16 stream over operator Wi-Fi is unnecessary for normal map monitoring.
+Use `--check-only` to validate DDS discovery and samples without opening RViz.
+
 Then run tests:
 
 ```bash
