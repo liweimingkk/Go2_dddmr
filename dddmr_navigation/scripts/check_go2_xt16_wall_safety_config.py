@@ -182,7 +182,7 @@ def validate(config: dict[str, Any]) -> dict[str, float]:
     min_y = require_number(
         omni, "min_vel_y", "trajectory_generators.omni_drive_simple"
     )
-    max_y = require_positive(
+    max_y = require_number(
         omni, "max_vel_y", "trajectory_generators.omni_drive_simple"
     )
     min_trans = require_positive(
@@ -203,6 +203,10 @@ def validate(config: dict[str, Any]) -> dict[str, float]:
     lateral_samples = require_positive(
         omni, "linear_y_sample", "trajectory_generators.omni_drive_simple"
     )
+    if max_y < 0.0:
+        raise ValueError(
+            "trajectory_generators.omni_drive_simple.max_vel_y must be nonnegative"
+        )
     if max_y > 0.20 + 1e-9:
         raise ValueError(
             "trajectory_generators.omni_drive_simple.max_vel_y exceeds the "
@@ -212,7 +216,7 @@ def validate(config: dict[str, Any]) -> dict[str, float]:
         raise ValueError(
             "trajectory_generators.omni_drive_simple lateral limits must be symmetric"
         )
-    if min_trans > max_y + 1e-9:
+    if max_y > 0.0 and min_trans > max_y + 1e-9:
         raise ValueError(
             "trajectory_generators.omni_drive_simple.min_vel_trans must admit "
             "a pure lateral candidate at max_vel_y"
@@ -222,10 +226,17 @@ def validate(config: dict[str, Any]) -> dict[str, float]:
             "trajectory_generators.omni_drive_simple.max_vel_trans must admit "
             "the configured maximum diagonal command"
         )
-    if lateral_samples < 3.0:
+    if max_y > 0.0 and lateral_samples < 3.0:
         raise ValueError(
             "trajectory_generators.omni_drive_simple.linear_y_sample must "
             "cover left, zero, and right"
+        )
+    if max_y == 0.0 and not math.isclose(
+        lateral_samples, 1.0, rel_tol=0.0, abs_tol=1e-9
+    ):
+        raise ValueError(
+            "trajectory_generators.omni_drive_simple.linear_y_sample must be "
+            "1 while lateral motion is locked out"
         )
     report["omni.max_vel_y"] = max_y
     report["omni.min_vel_y"] = min_y
@@ -366,11 +377,21 @@ def validate(config: dict[str, Any]) -> dict[str, float]:
         "max_goal_projection_xy",
         "global_planner",
     )
+    start_projection_xy = require_positive(
+        global_planner_params,
+        "max_start_projection_xy",
+        "global_planner",
+    )
     start_projection_z = require_positive(
         global_planner_params,
         "max_start_projection_z",
         "global_planner",
     )
+    if start_projection_xy > 0.10 + 1e-9:
+        raise ValueError(
+            "global_planner.max_start_projection_xy exceeds the 0.10 m "
+            "dynamic-start escape bound"
+        )
     if corridor_z + 1e-9 < start_projection_z:
         raise ValueError(
             "mpc_critics.route_corridor.max_z_distance must cover the normal "
@@ -381,7 +402,34 @@ def validate(config: dict[str, Any]) -> dict[str, float]:
             "global_planner.max_goal_projection_xy exceeds the 0.35 m "
             "cargo-delivery bound"
         )
+    if global_planner_params.get("allow_start_in_dynamic_inflation") is not True:
+        raise ValueError(
+            "global_planner.allow_start_in_dynamic_inflation must be true "
+            "for bounded local-obstacle escape"
+        )
+    start_static_layer = global_planner_params.get("start_static_clearance_layer")
+    global_perception = perception_params(config, "perception_3d_global")
+    global_plugins = global_perception.get("plugins")
+    if (
+        not isinstance(start_static_layer, str)
+        or not isinstance(global_plugins, list)
+        or start_static_layer not in global_plugins
+    ):
+        raise ValueError(
+            "global_planner.start_static_clearance_layer must name a configured "
+            "global perception plugin"
+        )
+    static_layer_config = require_mapping(
+        global_perception.get(start_static_layer),
+        f"perception_3d_global.{start_static_layer}",
+    )
+    if static_layer_config.get("plugin") != "perception_3d::StaticLayer":
+        raise ValueError(
+            "global_planner.start_static_clearance_layer must select "
+            "perception_3d::StaticLayer"
+        )
     report["global_planner.max_goal_projection_xy"] = goal_projection_xy
+    report["global_planner.max_start_projection_xy"] = start_projection_xy
     report["global_planner.max_start_projection_z"] = start_projection_z
     return report
 

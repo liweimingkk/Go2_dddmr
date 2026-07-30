@@ -64,6 +64,12 @@ class StackedPerception{
     /*Get value from d graph. Loop all plugins and return minimum one (closest to obstacles)*/
     double get_min_dGraphValue(const unsigned int index);
 
+    /*Get one named layer's dGraph value without weakening the aggregate API.*/
+    bool get_layer_dGraphValue(
+      const std::string & layer_name,
+      const unsigned int index,
+      double & value);
+
     /*Get value from d graph. Loop all plugins and return minimum size of dGraph one (closest to obstacles)*/
     unsigned long getdGraphSize();
 

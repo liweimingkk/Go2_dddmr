@@ -566,6 +566,13 @@ global_planner:
     # Keep start projection bounded to the robot base-to-floor offset.
     max_start_projection_xy: 0.10
     max_start_projection_z: 0.55
+    # Local avoidance can put the current pose inside a live obstacle's
+    # inflation radius. Permit only the tightly bounded start graph node when
+    # the saved static map remains clear. Goals and all expanded A* successors
+    # still require fused static/live clearance, and the local planner keeps
+    # full oriented-cuboid collision authority.
+    allow_start_in_dynamic_inflation: true
+    start_static_clearance_layer: "map"
     # Coffee is delivered in the Go2 cargo basket, not by an arm. The endpoint
     # may therefore snap up to 0.35 m horizontally to the closest safe floor
     # node instead of requiring grasp-pose precision. Static/live obstacle

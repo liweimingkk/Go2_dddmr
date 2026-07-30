@@ -46,6 +46,10 @@ class Perception3D_ROS : public rclcpp::Node {
     Perception3D_ROS(std::string name);
     ~Perception3D_ROS();
     double get_min_dGraphValue(const unsigned int index);
+    bool get_layer_dGraphValue(
+      const std::string & layer_name,
+      const unsigned int index,
+      double & value);
     std::shared_ptr<GlobalUtils> getGlobalUtils(){return gbl_utils_;}
     StackedPerception* getStackedPerception(){return stacked_perception_;}  
     void getGlobalPose(geometry_msgs::msg::TransformStamped& gbl_pose);

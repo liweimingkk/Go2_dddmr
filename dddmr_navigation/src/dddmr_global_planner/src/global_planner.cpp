@@ -28,6 +28,7 @@
 * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
+#include <global_planner/endpoint_clearance_policy.h>
 #include <global_planner/global_planner.h>
 
 #include <algorithm>
@@ -164,6 +165,21 @@ void GlobalPlanner::initial(const std::shared_ptr<perception_3d::Perception3D_RO
     max_start_projection_xy_, max_start_projection_z_,
     max_goal_projection_xy_, max_goal_projection_z_);
 
+  declare_parameter(
+    "allow_start_in_dynamic_inflation", rclcpp::ParameterValue(false));
+  this->get_parameter(
+    "allow_start_in_dynamic_inflation",
+    allow_start_in_dynamic_inflation_);
+  declare_parameter(
+    "start_static_clearance_layer", rclcpp::ParameterValue("map"));
+  this->get_parameter(
+    "start_static_clearance_layer", start_static_clearance_layer_);
+  RCLCPP_INFO(
+    this->get_logger(),
+    "dynamic start escape: enabled=%d static_layer=%s",
+    allow_start_in_dynamic_inflation_,
+    start_static_clearance_layer_.c_str());
+
   if (
     a_star_expanding_radius_ <= 0.0 || maximum_ground_connection_z_ <= 0.0 ||
     find_start_tolerance_ <= 0.0 || find_goal_tolerance_ <= 0.0 ||
@@ -172,6 +188,13 @@ void GlobalPlanner::initial(const std::shared_ptr<perception_3d::Perception3D_RO
     max_goal_projection_xy_ <= 0.0 || max_goal_projection_z_ <= 0.0)
   {
     throw std::invalid_argument("global planner endpoint tolerances must be positive");
+  }
+  if (
+    allow_start_in_dynamic_inflation_ &&
+    start_static_clearance_layer_.empty())
+  {
+    throw std::invalid_argument(
+      "start_static_clearance_layer must not be empty when dynamic start escape is enabled");
   }
 
   
@@ -478,7 +501,8 @@ void GlobalPlanner::getROSPath(std::vector<unsigned int>& path_id, nav_msgs::msg
 bool GlobalPlanner::selectTraversableGround(
   const pcl::PointXYZI & requested, double search_radius,
   double max_projection_xy, double max_projection_z,
-  const char * endpoint_name, unsigned int & selected_id)
+  const char * endpoint_name, bool is_start_endpoint,
+  unsigned int & selected_id)
 {
   const double inscribed_radius =
     perception_3d_ros_->getGlobalUtils()->getInscribedRadius();
@@ -486,6 +510,13 @@ bool GlobalPlanner::selectTraversableGround(
   double best_z_distance = std::numeric_limits<double>::infinity();
   double best_squared_distance = std::numeric_limits<double>::infinity();
   int best_id = -1;
+  int dynamic_escape_id = -1;
+  double dynamic_escape_xy_distance = std::numeric_limits<double>::infinity();
+  double dynamic_escape_z_distance = std::numeric_limits<double>::infinity();
+  double dynamic_escape_squared_distance =
+    std::numeric_limits<double>::infinity();
+  double dynamic_escape_aggregate_clearance = 0.0;
+  double dynamic_escape_static_clearance = 0.0;
   int nearest_id = -1;
   double nearest_squared_distance = std::numeric_limits<double>::infinity();
   double nearest_clearance = 0.0;
@@ -513,6 +544,29 @@ bool GlobalPlanner::selectTraversableGround(
     const double squared_distance = dx * dx + dy * dy + dz * dz;
     const double clearance =
       perception_3d_ros_->get_min_dGraphValue(candidate_id);
+    double static_clearance = 0.0;
+    bool static_clearance_available = false;
+    if (
+      project_start_goal_to_traversable_ground_ &&
+      is_start_endpoint &&
+      allow_start_in_dynamic_inflation_ &&
+      clearance < inscribed_radius)
+    {
+      static_clearance_available =
+        perception_3d_ros_->get_layer_dGraphValue(
+        start_static_clearance_layer_,
+        static_cast<unsigned int>(candidate_id),
+        static_clearance);
+    }
+    const EndpointClearanceDecision clearance_decision =
+      evaluateEndpointClearance(
+      project_start_goal_to_traversable_ground_,
+      is_start_endpoint,
+      allow_start_in_dynamic_inflation_,
+      clearance,
+      inscribed_radius,
+      static_clearance_available,
+      static_clearance);
 
     if (squared_distance < nearest_squared_distance) {
       nearest_squared_distance = squared_distance;
@@ -531,16 +585,29 @@ bool GlobalPlanner::selectTraversableGround(
       best_bounded_clearance = clearance;
       best_clearance_id = candidate_id;
     }
-    if (
-      project_start_goal_to_traversable_ground_ &&
-      clearance < inscribed_radius)
-    {
+    if (!clearance_decision.traversable) {
       continue;
     }
 
     // A navigation goal's Z commonly comes from RViz's fixed plane rather
     // than the mapped floor. Prefer the closest horizontal ground sample;
     // use vertical distance only as the tie-breaker.
+    if (clearance_decision.uses_dynamic_start_exception) {
+      if (
+        xy_distance < dynamic_escape_xy_distance ||
+        (xy_distance == dynamic_escape_xy_distance &&
+        z_distance < dynamic_escape_z_distance))
+      {
+        dynamic_escape_xy_distance = xy_distance;
+        dynamic_escape_z_distance = z_distance;
+        dynamic_escape_squared_distance = squared_distance;
+        dynamic_escape_aggregate_clearance = clearance;
+        dynamic_escape_static_clearance = static_clearance;
+        dynamic_escape_id = candidate_id;
+      }
+      continue;
+    }
+
     if (
       xy_distance < best_xy_distance ||
       (xy_distance == best_xy_distance && z_distance < best_z_distance))
@@ -550,6 +617,15 @@ bool GlobalPlanner::selectTraversableGround(
       best_squared_distance = squared_distance;
       best_id = candidate_id;
     }
+  }
+
+  bool used_dynamic_start_exception = false;
+  if (best_id < 0 && dynamic_escape_id >= 0) {
+    best_id = dynamic_escape_id;
+    best_xy_distance = dynamic_escape_xy_distance;
+    best_z_distance = dynamic_escape_z_distance;
+    best_squared_distance = dynamic_escape_squared_distance;
+    used_dynamic_start_exception = true;
   }
 
   if (nearest_id < 0) {
@@ -597,7 +673,17 @@ bool GlobalPlanner::selectTraversableGround(
     perception_3d_ros_->get_min_dGraphValue(selected_id);
   const bool used_projection_search =
     std::sqrt(best_squared_distance) > search_radius;
-  if (best_id != nearest_id) {
+  if (used_dynamic_start_exception) {
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *clock_, 1000,
+      "%s is inside live-obstacle inflation (aggregate clearance %.3f m), "
+      "but static layer '%s' is clear at %.3f m; allowing only this tightly "
+      "bounded start node so A* and the local collision critics can plan an "
+      "escape.",
+      endpoint_name, dynamic_escape_aggregate_clearance,
+      start_static_clearance_layer_.c_str(),
+      dynamic_escape_static_clearance);
+  } else if (best_id != nearest_id) {
     const auto & nearest = pcl_ground_->points[nearest_id];
     const double nearest_xy = std::hypot(
       static_cast<double>(nearest.x - requested.x),
@@ -665,11 +751,11 @@ bool GlobalPlanner::getStartGoalID(
     selectTraversableGround(
       pcl_start, find_start_tolerance_,
       max_start_projection_xy_, max_start_projection_z_,
-      "Start", start_id) &&
+      "Start", true, start_id) &&
     selectTraversableGround(
       pcl_goal, find_goal_tolerance_,
       max_goal_projection_xy_, max_goal_projection_z_,
-      "Goal", goal_id);
+      "Goal", false, goal_id);
 }
 
 void GlobalPlanner::makePlan(const std::shared_ptr<rclcpp_action::ServerGoalHandle<dddmr_sys_core::action::GetPlan>> goal_handle){

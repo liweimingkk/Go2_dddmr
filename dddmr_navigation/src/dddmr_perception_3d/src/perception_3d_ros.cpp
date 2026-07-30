@@ -294,6 +294,14 @@ double Perception3D_ROS::get_min_dGraphValue(const unsigned int index){
   return stacked_perception_->get_min_dGraphValue(index);
 }
 
+bool Perception3D_ROS::get_layer_dGraphValue(
+  const std::string & layer_name,
+  const unsigned int index,
+  double & value)
+{
+  return stacked_perception_->get_layer_dGraphValue(layer_name, index, value);
+}
+
 unsigned long Perception3D_ROS::getdGraphSize(){
   // return minimum size of dGraph for a start algorithm to rule out dgrpah value, this feature is for dynamic ground size
   return stacked_perception_->getdGraphSize();

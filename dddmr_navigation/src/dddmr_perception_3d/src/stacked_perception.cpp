@@ -125,6 +125,20 @@ double StackedPerception::get_min_dGraphValue(const unsigned int index){
   return tmp_val;
 }
 
+bool StackedPerception::get_layer_dGraphValue(
+  const std::string & layer_name,
+  const unsigned int index,
+  double & value)
+{
+  for (const auto & plugin : plugins_) {
+    if (plugin->getName() == layer_name) {
+      value = plugin->get_dGraphValue(index);
+      return true;
+    }
+  }
+  return false;
+}
+
 void StackedPerception::aggregateObservations(){
 
   shared_data_->aggregate_observation_.reset(new pcl::PointCloud<pcl::PointXYZI>);

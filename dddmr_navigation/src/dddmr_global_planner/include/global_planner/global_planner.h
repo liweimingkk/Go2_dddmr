@@ -140,6 +140,8 @@ class GlobalPlanner : public rclcpp::Node {
       double max_start_projection_z_;
       double max_goal_projection_xy_;
       double max_goal_projection_z_;
+      bool allow_start_in_dynamic_inflation_;
+      std::string start_static_clearance_layer_;
       
       /*Original point cloud*/
       pcl::PointCloud<pcl::PointXYZI>::Ptr pcl_ground_;
@@ -182,6 +184,7 @@ class GlobalPlanner : public rclcpp::Node {
         double max_projection_xy,
         double max_projection_z,
         const char * endpoint_name,
+        bool is_start_endpoint,
         unsigned int & selected_id);
 
       void pubStaticGraph();

@@ -172,6 +172,12 @@ if(BUILD_TESTING)
     geometry_msgs
     nav_msgs
   )
+  ament_add_gtest(test_endpoint_clearance_policy
+    test/test_endpoint_clearance_policy.cpp
+  )
+  target_include_directories(test_endpoint_clearance_policy PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
 endif()
 
 ament_export_include_directories(include)

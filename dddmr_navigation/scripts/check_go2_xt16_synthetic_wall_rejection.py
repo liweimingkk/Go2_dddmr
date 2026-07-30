@@ -82,6 +82,23 @@ def synthetic_map(
     return make_cloud(node, wall), make_cloud(node, ground)
 
 
+def obstacle_cluster(
+    center_x: float, center_y: float
+) -> list[tuple[float, float, float, float]]:
+    # MultiLayerSpinningLidar downsamples to 0.1 m before requiring a cluster
+    # with at least ten points.  This connected 4x4 lattice survives that
+    # filter and represents a compact live obstacle rather than a static wall.
+    offsets = (-0.135, -0.045, 0.045, 0.135)
+    return [
+        # The synthetic sensor frame is base_link. Keep the centroid inside
+        # the configured +/-15 degree vertical FOV while staying at the
+        # plugin's inclusive 0.05 m minimum marking height.
+        (center_x + dx, center_y + dy, 0.05, 1.0)
+        for dx in offsets
+        for dy in offsets
+    ]
+
+
 def send_static_pose(
     node: Node, broadcaster: StaticTransformBroadcaster, x: float, y: float
 ) -> None:
@@ -304,6 +321,58 @@ def main() -> int:
                     f"status={blocked_status} poses={blocked_poses}"
                 )
 
+        # Reproduce the live-robot failure mode: after local avoidance, a
+        # nearby dynamic obstacle can inflate the current graph node even
+        # though the saved static map remains clear.  The planner must be able
+        # to leave that tightly bounded start, while the same exception must
+        # never make a dynamically blocked goal valid.
+        start_obstacle = obstacle_cluster(0.0, 0.20)
+        for _ in range(15):
+            sensor_pub.publish(make_cloud(node, start_obstacle, "base_link"))
+            rclpy.spin_once(node, timeout_sec=0.1)
+        dynamic_start_as_goal_status, dynamic_start_as_goal_poses = request_plan(
+            node, client, -1.2, 0.0, args.timeout
+        )
+        if (
+            dynamic_start_as_goal_poses != 0
+            or dynamic_start_as_goal_status == GoalStatus.STATUS_SUCCEEDED
+        ):
+            raise RuntimeError(
+                "synthetic live obstacle did not block the current graph node "
+                "when tested as a strict goal: "
+                f"status={dynamic_start_as_goal_status} "
+                f"poses={dynamic_start_as_goal_poses}"
+            )
+        dynamic_start_status, dynamic_start_poses = request_plan(
+            node, client, -1.2, -0.8, args.timeout
+        )
+        if (
+            dynamic_start_status != GoalStatus.STATUS_SUCCEEDED
+            or dynamic_start_poses == 0
+        ):
+            raise RuntimeError(
+                "static-safe start inside live-obstacle inflation could not escape: "
+                f"status={dynamic_start_status} poses={dynamic_start_poses}"
+            )
+
+        blocked_goal_obstacles = start_obstacle + obstacle_cluster(0.0, -0.80)
+        for _ in range(15):
+            sensor_pub.publish(
+                make_cloud(node, blocked_goal_obstacles, "base_link")
+            )
+            rclpy.spin_once(node, timeout_sec=0.1)
+        dynamic_goal_status, dynamic_goal_poses = request_plan(
+            node, client, -1.2, -0.8, args.timeout
+        )
+        if (
+            dynamic_goal_poses != 0
+            or dynamic_goal_status == GoalStatus.STATUS_SUCCEEDED
+        ):
+            raise RuntimeError(
+                "dynamic-start exception admitted a live-obstacle goal: "
+                f"status={dynamic_goal_status} poses={dynamic_goal_poses}"
+            )
+
         max_dwa_handoff_sec = 0.0
         if args.dwa_handoff_refreshes:
             if not dwa_client.wait_for_server(timeout_sec=args.timeout):
@@ -332,6 +401,19 @@ def main() -> int:
             f"projected_poses={projected_poses}"
         )
         print(f"cross_wall_status={cross_status} cross_wall_poses={cross_poses}")
+        print(
+            "dynamic_start_as_goal_rejection_status="
+            f"{dynamic_start_as_goal_status} "
+            f"dynamic_start_as_goal_rejection_poses={dynamic_start_as_goal_poses}"
+        )
+        print(
+            "dynamic_start_escape_status="
+            f"{dynamic_start_status} dynamic_start_escape_poses={dynamic_start_poses}"
+        )
+        print(
+            "dynamic_goal_rejection_status="
+            f"{dynamic_goal_status} dynamic_goal_rejection_poses={dynamic_goal_poses}"
+        )
         if blocked_endpoint is not None:
             blocked_status, blocked_poses = blocked_endpoint
             print(
