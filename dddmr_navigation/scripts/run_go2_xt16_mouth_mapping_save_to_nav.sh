@@ -30,6 +30,8 @@ Common environment overrides:
   RVIZ=true                  Open mouth/ground fusion RViz while mapping.
   MAP_RVIZ=true              Open a second RViz showing the accumulated map.
   STOP_AFTER_SAVE=true       Stop the mapping container after saving.
+  INTERRUPT_STOP_TIMEOUT_SEC=20
+                             Docker stop grace period after Ctrl+C/SIGTERM.
   CLEAN_STALE_MAPPING=true   Remove stale containers left by this script first.
   STOP_NAV_BEFORE_MAPPING=true
                              Stop running go2_xt16 navigation before mapping.
@@ -243,6 +245,7 @@ UPDATE_NAV_CONFIG="${UPDATE_NAV_CONFIG:-true}"
 ALLOW_NAV_RUNNING="${ALLOW_NAV_RUNNING:-false}"
 STOP_NAV_BEFORE_MAPPING="${STOP_NAV_BEFORE_MAPPING:-true}"
 CLEAN_STALE_MAPPING="${CLEAN_STALE_MAPPING:-true}"
+INTERRUPT_STOP_TIMEOUT_SEC_VALUE="${INTERRUPT_STOP_TIMEOUT_SEC:-20}"
 
 MAPPING_CONTAINER_VALUE="${MAPPING_CONTAINER:-}"
 OWN_CONTAINER=false
@@ -254,6 +257,8 @@ else
   STOP_AFTER_SAVE="${STOP_AFTER_SAVE:-true}"
   OWN_CONTAINER=true
 fi
+CONTROLLED_MAPPING_CONTAINER=false
+MAPPING_SIGNAL_HANDLED=false
 
 log() {
   printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"
@@ -262,6 +267,53 @@ log() {
 die() {
   printf 'ERROR: %s\n' "$*" >&2
   exit 1
+}
+
+mapping_container_is_running() {
+  docker ps \
+    --filter "name=^/${CONTAINER_NAME}$" \
+    --format '{{.Names}}' |
+    grep -Fxq "${CONTAINER_NAME}"
+}
+
+handle_mapping_signal() {
+  local signal_name="$1"
+  local exit_code=130
+
+  [[ "${signal_name}" == "TERM" ]] && exit_code=143
+  trap - INT TERM
+  if [[ "${MAPPING_SIGNAL_HANDLED}" == "true" ]]; then
+    exit "${exit_code}"
+  fi
+  MAPPING_SIGNAL_HANDLED=true
+
+  log "Received ${signal_name}; shutting down the mapping workflow."
+  if [[ "${CONTROLLED_MAPPING_CONTAINER}" == "true" ]] &&
+     mapping_container_is_running; then
+    log "Stopping mapping container: ${CONTAINER_NAME}"
+    if ! docker stop -t "${INTERRUPT_STOP_TIMEOUT_SEC_VALUE}" \
+        "${CONTAINER_NAME}" >/dev/null; then
+      log "Graceful Docker stop failed; forcing container stop: ${CONTAINER_NAME}"
+      docker kill "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+    fi
+    if mapping_container_is_running; then
+      log "WARNING: mapping container is still running: ${CONTAINER_NAME}"
+    else
+      log "Mapping container stopped; container and logs were retained: ${CONTAINER_NAME}"
+    fi
+  else
+    log "No active mapping container is controlled by this process."
+  fi
+  exit "${exit_code}"
+}
+
+arm_mapping_signal_handlers() {
+  trap 'handle_mapping_signal INT' INT
+  trap 'handle_mapping_signal TERM' TERM
+}
+
+disarm_mapping_signal_handlers() {
+  trap - INT TERM
 }
 
 print_save_existing_command() {
@@ -894,6 +946,7 @@ start_mapping_container() {
   fi
 
   log "Starting mapping container: ${CONTAINER_NAME}"
+  CONTROLLED_MAPPING_CONTAINER=true
   docker run "${DOCKER_RUN_ARGS[@]}" -d \
     --name "${CONTAINER_NAME}" \
     --privileged \
@@ -951,6 +1004,10 @@ exec ros2 launch lego_loam_bor lego_loam_go2_xt16_mouth.launch \
 }
 
 main() {
+  is_positive_integer "${INTERRUPT_STOP_TIMEOUT_SEC_VALUE}" || \
+    die "INTERRUPT_STOP_TIMEOUT_SEC must be a positive integer."
+  arm_mapping_signal_handlers
+
   require_file "${NAV_CONFIG}"
   require_docker_image
   stop_live_navigation_before_mapping
@@ -966,6 +1023,7 @@ main() {
     start_mapping_container
   else
     docker ps --format '{{.Names}}' | grep -Fxq "${CONTAINER_NAME}" || die "Mapping container is not running: ${CONTAINER_NAME}"
+    CONTROLLED_MAPPING_CONTAINER=true
     log "Using existing mapping container: ${CONTAINER_NAME}"
   fi
 
@@ -976,6 +1034,7 @@ main() {
   start_map_result_rviz
 
   if [[ "${COMMAND_MODE}" == "start-only" ]]; then
+    disarm_mapping_signal_handlers
     leave_mapping_running
     return 0
   fi
@@ -985,6 +1044,7 @@ main() {
     sleep "${MAPPING_SECONDS_VALUE}"
   else
     if ! wait_for_save_confirmation; then
+      disarm_mapping_signal_handlers
       leave_mapping_running
       return 0
     fi
@@ -1034,7 +1094,10 @@ main() {
     log "Stopping mapping container: ${CONTAINER_NAME}"
     docker stop -t 5 "${CONTAINER_NAME}" >/dev/null || true
     docker rm "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+    CONTROLLED_MAPPING_CONTAINER=false
+    disarm_mapping_signal_handlers
   else
+    disarm_mapping_signal_handlers
     log "Mapping container left running: ${CONTAINER_NAME}"
   fi
 }

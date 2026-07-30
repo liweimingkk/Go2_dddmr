@@ -92,4 +92,47 @@ assert_contains "${invalid_name_output}" "invalid Docker container name"
   }
 )
 
+set +e
+signal_output="$(
+  (
+    CONTAINER_NAME="mapping_signal_test"
+    CONTROLLED_MAPPING_CONTAINER="true"
+    MAPPING_SIGNAL_HANDLED="false"
+    INTERRUPT_STOP_TIMEOUT_SEC_VALUE="3"
+    mock_running="true"
+
+    docker() {
+      case "${1:-}" in
+        ps)
+          if [[ "${mock_running}" == "true" ]]; then
+            printf '%s\n' "${CONTAINER_NAME}"
+          fi
+          ;;
+        stop)
+          mock_running="false"
+          ;;
+        kill)
+          mock_running="false"
+          ;;
+        *)
+          return 2
+          ;;
+      esac
+    }
+
+    handle_mapping_signal INT
+  )
+)"
+signal_rc=$?
+set -e
+if (( signal_rc != 130 )); then
+  printf 'SIGINT handler returned %s, expected 130.\n%s\n' \
+    "${signal_rc}" "${signal_output}" >&2
+  exit 1
+fi
+assert_contains "${signal_output}" "Received INT; shutting down the mapping workflow."
+assert_contains \
+  "${signal_output}" \
+  "Mapping container stopped; container and logs were retained: mapping_signal_test"
+
 echo "Mapping save workflow shell tests passed."
