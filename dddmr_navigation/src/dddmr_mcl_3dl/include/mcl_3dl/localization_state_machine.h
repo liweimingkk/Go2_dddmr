@@ -57,6 +57,15 @@ inline bool switchesToCurrentMapAfterWarmup(
     kind == LocalizationAttemptKind::LOCAL_RECOVERY;
 }
 
+inline bool sensorTimeoutCausesLost(const LocalizationState state)
+{
+  // TRACKING can expose a previously accepted pose to navigation consumers,
+  // so stale input must revoke it immediately. LOCALIZING is already
+  // fail-closed; transient callback starvation during submap/KD-tree work
+  // should remain recoverable until the bounded convergence timer expires.
+  return state == LocalizationState::TRACKING;
+}
+
 inline const char* localizationStateName(const LocalizationState state)
 {
   switch (state)

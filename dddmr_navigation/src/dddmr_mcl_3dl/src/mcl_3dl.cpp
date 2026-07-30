@@ -380,10 +380,17 @@ void MCL3dlNode::cbOdom(const nav_msgs::msg::Odometry::SharedPtr msg){
   }
   if (feature_stream_stale)
   {
-    if (state == LocalizationState::TRACKING || state == LocalizationState::LOCALIZING)
+    if (sensorTimeoutCausesLost(state))
     {
       markLocalizationLostIfCurrent(
         "one or more lidar feature topics timed out", state_snapshot);
+    }
+    else if (state == LocalizationState::LOCALIZING)
+    {
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *clock_, 3000,
+        "Lidar feature heartbeat is stale while LOCALIZING; motion remains "
+        "blocked and the bounded convergence timer is still authoritative");
     }
     return;
   }
@@ -2423,13 +2430,24 @@ void MCL3dlNode::publishLocalizationStatusThread()
           params_->localization_sensor_timeout_sec_);
     if (feature_stale || odom_stale)
     {
-      if (markLocalizationLostIfCurrent(
-            feature_stale ?
-              "one or more lidar feature topics timed out" :
-              "odometry stream timed out",
-            state_snapshot))
+      if (sensorTimeoutCausesLost(state))
       {
-        return;
+        if (markLocalizationLostIfCurrent(
+              feature_stale ?
+                "one or more lidar feature topics timed out" :
+                "odometry stream timed out",
+              state_snapshot))
+        {
+          return;
+        }
+      }
+      else
+      {
+        RCLCPP_WARN_THROTTLE(
+          this->get_logger(), *clock_, 3000,
+          "Localization input heartbeat is stale while LOCALIZING; motion "
+          "remains blocked while waiting for input recovery or convergence "
+          "timeout");
       }
     }
 

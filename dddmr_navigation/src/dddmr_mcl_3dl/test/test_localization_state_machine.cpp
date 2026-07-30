@@ -238,5 +238,17 @@ TEST(LocalizationAttemptKind, SeparatesTimeoutAndWarmupPolicies)
     LocalizationAttemptKind::GLOBAL_RECOVERY));
 }
 
+TEST(LocalizationSensorTimeoutPolicy, OnlyRevokesAcceptedTracking)
+{
+  EXPECT_FALSE(sensorTimeoutCausesLost(
+    LocalizationState::UNINITIALIZED));
+  EXPECT_FALSE(sensorTimeoutCausesLost(
+    LocalizationState::LOCALIZING));
+  EXPECT_TRUE(sensorTimeoutCausesLost(
+    LocalizationState::TRACKING));
+  EXPECT_FALSE(sensorTimeoutCausesLost(
+    LocalizationState::LOST));
+}
+
 }  // namespace
 }  // namespace mcl_3dl
