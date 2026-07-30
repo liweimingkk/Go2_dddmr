@@ -3,6 +3,9 @@
   <arg name="rviz_config" default="$(find-pkg-share lego_loam_bor)/rviz/lego_loam.rviz"/>
   <arg name="publish_static_tf" default="true"/>
   <arg name="config_file" default="$(find-pkg-share lego_loam_bor)/config/loam_go2_xt16_live.yaml"/>
+  <!-- Defaults to the verified raw stream. Set this explicitly to the glass
+       filter output only after offline plane/config validation. -->
+  <arg name="xt16_topic" default="/lidar_points"/>
   <arg name="lidar_x" default="0.1710"/>
   <arg name="lidar_y" default="0.0"/>
   <arg name="lidar_z" default="0.0908"/>
@@ -40,7 +43,7 @@
     <param name="featureAssociation.odom_sync_tolerance_sec" value="$(var odom_sync_tolerance_sec)"/>
     <param name="featureAssociation.odom_sync_wait_timeout_sec" value="$(var odom_sync_wait_timeout_sec)"/>
     <param name="featureAssociation.odom_time_offset_sec" value="$(var feature_odom_time_offset_sec)"/>
-    <remap from="/lslidar_point_cloud" to="/lidar_points"/>
+    <remap from="/lslidar_point_cloud" to="$(var xt16_topic)"/>
     <remap from="/odom" to="$(var odom_topic)"/>
     <param name="use_sim_time" value="false"/>
   </node>

@@ -412,7 +412,7 @@ colcon test-result --test-result-base \"\${DDDMR_BUILD_BASE}\" --verbose"
 
   build-navigation)
     run_docker "${IMAGE}" bash -lc "${source_prefix}
-colcon --log-base \"\${DDDMR_LOG_BASE}\" build ${COLCON_EXECUTOR_ARGS_VALUE} --base-paths src --symlink-install --packages-up-to lego_loam_bor dddmr_pg_map_server mcl_3dl global_planner p2p_move_base perception_3d dddmr_beginner_guide dddmr_rviz_default_plugins map_delete_panel scan_planner dddmr_scan_planner --build-base \"\${DDDMR_BUILD_BASE}\" --install-base \"\${DDDMR_INSTALL_BASE}\" --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPython3_EXECUTABLE=/usr/bin/python3 -DTRT_ENABLED=OFF"
+colcon --log-base \"\${DDDMR_LOG_BASE}\" build ${COLCON_EXECUTOR_ARGS_VALUE} --base-paths src --symlink-install --packages-up-to lego_loam_bor dddmr_glass_filter dddmr_pg_map_server mcl_3dl global_planner p2p_move_base perception_3d dddmr_beginner_guide dddmr_rviz_default_plugins map_delete_panel scan_planner dddmr_scan_planner --build-base \"\${DDDMR_BUILD_BASE}\" --install-base \"\${DDDMR_INSTALL_BASE}\" --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPython3_EXECUTABLE=/usr/bin/python3 -DTRT_ENABLED=OFF"
     ;;
 
   pose-graph-editor)

@@ -1,0 +1,15 @@
+version: 1
+# Use a fixed frame backed by independent odometry during mapping. Do not use
+# base_link: the glass polygon must remain stationary while the robot moves.
+frame_id: odom
+planes:
+  - id: example_facade_replace_me
+    # Ordered clockwise or counter-clockwise as viewed from either side.
+    # Replace every coordinate after measuring the real facade.
+    vertices:
+      - [5.0, -2.0, -0.5]
+      - [5.0,  2.0, -0.5]
+      - [5.0,  2.0,  3.0]
+      - [5.0, -2.0,  3.0]
+    # Preserve returns on/near the glass and act only on endpoints farther away.
+    minimum_behind_distance: 0.15
