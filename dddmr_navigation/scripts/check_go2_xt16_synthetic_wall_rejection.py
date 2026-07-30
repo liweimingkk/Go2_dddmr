@@ -7,6 +7,7 @@ import argparse
 import os
 from pathlib import Path
 import shutil
+import struct
 import subprocess
 import tempfile
 import time
@@ -19,7 +20,6 @@ from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import PointCloud2, PointField
-from sensor_msgs_py import point_cloud2
 from std_msgs.msg import Header
 from tf2_ros.static_transform_broadcaster import StaticTransformBroadcaster
 
@@ -51,7 +51,17 @@ def make_cloud(
         PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
         PointField(name="intensity", offset=12, datatype=PointField.FLOAT32, count=1),
     ]
-    return point_cloud2.create_cloud(header, fields, points)
+    cloud = PointCloud2()
+    cloud.header = header
+    cloud.height = 1
+    cloud.width = len(points)
+    cloud.fields = fields
+    cloud.is_bigendian = False
+    cloud.point_step = 16
+    cloud.row_step = cloud.point_step * cloud.width
+    cloud.data = b"".join(struct.pack("<ffff", *point) for point in points)
+    cloud.is_dense = True
+    return cloud
 
 
 def frange(start: float, stop: float, step: float) -> list[float]:
