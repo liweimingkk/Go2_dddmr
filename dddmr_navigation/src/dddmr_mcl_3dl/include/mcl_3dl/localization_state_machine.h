@@ -19,8 +19,10 @@
 #define MCL_3DL_LOCALIZATION_STATE_MACHINE_H
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 
 namespace mcl_3dl
@@ -33,6 +35,27 @@ enum class LocalizationState
   TRACKING,
   LOST,
 };
+
+enum class LocalizationAttemptKind
+{
+  NONE,
+  CONFIGURED_INITIAL,
+  FIXED_POSE,
+  LOCAL_RECOVERY,
+  GLOBAL_RECOVERY,
+};
+
+inline bool usesRecoveryTimeout(const LocalizationAttemptKind kind)
+{
+  return kind == LocalizationAttemptKind::LOCAL_RECOVERY;
+}
+
+inline bool switchesToCurrentMapAfterWarmup(
+    const LocalizationAttemptKind kind)
+{
+  return kind == LocalizationAttemptKind::FIXED_POSE ||
+    kind == LocalizationAttemptKind::LOCAL_RECOVERY;
+}
 
 inline const char* localizationStateName(const LocalizationState state)
 {
@@ -94,6 +117,81 @@ struct LocalizationObservation
   double pose_height_error{0.0};
   bool ground_valid{true};
   bool particle_count_converged{false};
+};
+
+class LocalizationConvergenceTimer
+{
+public:
+  struct Snapshot
+  {
+    uint64_t generation;
+    int64_t started_ns;
+  };
+
+  uint64_t reset()
+  {
+    started_ns_.store(0);
+    return generation_.fetch_add(1) + 1;
+  }
+
+  bool armAfterCompletedMeasurement(const int64_t completed_ns)
+  {
+    if (completed_ns <= 0)
+    {
+      return false;
+    }
+    int64_t expected = 0;
+    return started_ns_.compare_exchange_strong(expected, completed_ns);
+  }
+
+  int64_t startedNs() const
+  {
+    return started_ns_.load();
+  }
+
+  uint64_t generation() const
+  {
+    return generation_.load();
+  }
+
+  bool isGenerationCurrent(const uint64_t expected) const
+  {
+    return generation() == expected;
+  }
+
+  Snapshot snapshot() const
+  {
+    while (true)
+    {
+      const uint64_t before = generation_.load();
+      const int64_t started_ns = started_ns_.load();
+      const uint64_t after = generation_.load();
+      if (before == after)
+      {
+        return Snapshot{after, started_ns};
+      }
+    }
+  }
+
+  bool isCurrent(const Snapshot& expected) const
+  {
+    const Snapshot current = snapshot();
+    return current.generation == expected.generation &&
+      current.started_ns == expected.started_ns;
+  }
+
+  static bool expired(
+      const Snapshot& snapshot,
+      const int64_t now_ns,
+      const double timeout_sec)
+  {
+    return snapshot.started_ns > 0 &&
+      static_cast<double>(now_ns - snapshot.started_ns) / 1e9 > timeout_sec;
+  }
+
+private:
+  std::atomic<uint64_t> generation_{0};
+  std::atomic<int64_t> started_ns_{0};
 };
 
 class LocalizationStateMachine

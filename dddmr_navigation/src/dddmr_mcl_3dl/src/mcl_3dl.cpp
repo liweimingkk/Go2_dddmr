@@ -51,7 +51,6 @@ MCL3dlNode::MCL3dlNode(std::string name) : Node(name)
   , last_odom_received_ns_(0)
   , last_measure_ns_(0)
   , last_global_attempt_ns_(0)
-  , localizing_started_ns_(0)
   , latest_match_ratio_(0.0f)
   , latest_residual_(std::numeric_limits<float>::infinity())
   , feature_sequence_(0)
@@ -61,7 +60,6 @@ MCL3dlNode::MCL3dlNode(std::string name) : Node(name)
   , feature_processing_total_ns_(0)
   , feature_last_header_age_ns_(0)
   , local_recovery_pending_(false)
-  , local_recovery_active_(false)
   , operator_global_confirmed_(false)
 {
   for (auto& count : feature_received_counts_)
@@ -265,8 +263,9 @@ bool MCL3dlNode::configure(const std::shared_ptr<mcl_3dl::SubMaps>& sub_maps)
   // /initial_3d_pose arrives. Always start from the configured/local seed.
   // auto_global_localization only permits escalation after local recovery
   // fails; the service remains the explicit operator-confirmed path.
-  local_recovery_active_.store(true);
-  startLocalizing("configured initial pose; global search is blocked");
+  startLocalizing(
+    "configured initial pose; global search is blocked",
+    LocalizationAttemptKind::CONFIGURED_INITIAL);
   publishLocalizationStatus();
 
   return true;
@@ -352,7 +351,9 @@ void MCL3dlNode::cbOdom(const nav_msgs::msg::Odometry::SharedPtr msg){
   const bool moved =
       std::sqrt(dx * dx + dy * dy + dz * dz) > params_->update_min_d_ ||
       std::sqrt(droll * droll + dpitch * dpitch + dyaw * dyaw) > params_->update_min_a_;
-  const LocalizationState state = localizationState();
+  const LocalizationStateSnapshot state_snapshot =
+      localizationStateSnapshot();
+  const LocalizationState state = state_snapshot.state;
   if (state == LocalizationState::TRACKING && first_tf_.load() &&
       !moved && !periodic_measure)
   {
@@ -381,7 +382,8 @@ void MCL3dlNode::cbOdom(const nav_msgs::msg::Odometry::SharedPtr msg){
   {
     if (state == LocalizationState::TRACKING || state == LocalizationState::LOCALIZING)
     {
-      markLocalizationLost("one or more lidar feature topics timed out");
+      markLocalizationLostIfCurrent(
+        "one or more lidar feature topics timed out", state_snapshot);
     }
     return;
   }
@@ -419,10 +421,6 @@ void MCL3dlNode::cbOdom(const nav_msgs::msg::Odometry::SharedPtr msg){
     const int64_t global_localization_complete_ns = clock_->now().nanoseconds();
     last_odom_received_ns_.store(global_localization_complete_ns);
     last_feature_received_ns_.store(global_localization_complete_ns);
-    global_localization_requested_.store(false);
-    operator_global_confirmed_.store(false);
-    local_recovery_active_.store(false);
-    local_recovery_pending_.store(false);
     just_seeded_globally = true;
   }
   else if (current_state == LocalizationState::LOST &&
@@ -465,6 +463,27 @@ void MCL3dlNode::cbOdom(const nav_msgs::msg::Odometry::SharedPtr msg){
   if (!measurement_valid)
   {
     return;
+  }
+  // Prerequisite work before the first usable particle-filter result can take
+  // longer than the bounded recovery window on Orin. Start convergence timing
+  // only after a measurement completes. Motion remains blocked throughout
+  // LOCALIZING.
+  bool convergence_timer_armed = false;
+  {
+    std::lock_guard<std::mutex> state_lock(localization_state_mutex_);
+    if (localization_state_machine_->state() == LocalizationState::LOCALIZING)
+    {
+      convergence_timer_armed =
+        localization_convergence_timer_.armAfterCompletedMeasurement(
+          measurement_complete_ns);
+    }
+  }
+  if (convergence_timer_armed)
+  {
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Localization convergence timeout armed after the first completed "
+      "measurement");
   }
   last_measured_feature_sequence_.store(feature_sequence);
   last_measure_ns_.store(measurement_complete_ns);
@@ -1141,11 +1160,9 @@ bool MCL3dlNode::startLocalRecovery()
         sub_maps_->normals_ground_current_);
   }
   state_prev_ = expected;
-  use_global_map_.store(false);
-  global_localization_requested_.store(false);
-  local_recovery_pending_.store(false);
-  local_recovery_active_.store(true);
-  startLocalizing("local recovery around last trusted pose");
+  startLocalizing(
+    "local recovery around last trusted pose",
+    LocalizationAttemptKind::LOCAL_RECOVERY);
   publishParticles();
   RCLCPP_WARN(
       this->get_logger(),
@@ -1456,9 +1473,6 @@ bool MCL3dlNode::attemptGlobalLocalization(
   initializeGlobalParticles(scored);
   state_prev_ = scored.front().state;
   last_feature_received_ns_.store(clock_->now().nanoseconds());
-  use_global_map_.store(true);
-  tf_ready_.store(false);
-  first_tf_.store(false);
 
   geometry_msgs::msg::PoseWithCovarianceStamped seed_pose;
   seed_pose.header.frame_id = params_->frame_ids_["map"];
@@ -1478,7 +1492,8 @@ bool MCL3dlNode::attemptGlobalLocalization(
   startLocalizing(
       "global coarse match accepted with quality " +
       std::to_string(scored.front().quality) + " residual " +
-      std::to_string(scored.front().residual));
+      std::to_string(scored.front().residual),
+      LocalizationAttemptKind::GLOBAL_RECOVERY);
   publishParticles();
   RCLCPP_WARN(
       this->get_logger(),
@@ -1492,7 +1507,6 @@ bool MCL3dlNode::attemptGlobalLocalization(
       scored.front().state.pos_.z_, scored.front().quality,
       scored.front().surface_quality, scored.front().residual,
       candidate_margin);
-  resetGlobalConfirmation();
   return true;
 }
 
@@ -1620,7 +1634,9 @@ bool MCL3dlNode::measure(
   if (sub_maps_->isWarmUpReady())
   {
     sub_maps_->swapKdTree();
-    if (isTracking() || local_recovery_active_.load())
+    if (isTracking() ||
+        switchesToCurrentMapAfterWarmup(
+          localization_attempt_kind_.load()))
     {
       use_global_map_.store(false);
     }
@@ -1873,69 +1889,6 @@ bool MCL3dlNode::measure(
         final_result.ground_z, e.pos_.z_);
   }
 
-  bool state_changed = false;
-  LocalizationState new_state;
-  {
-    std::lock_guard<std::mutex> state_lock(localization_state_mutex_);
-    localization_health_ = health_reason;
-    state_changed = localization_state_machine_->observe(observation);
-    new_state = localization_state_machine_->state();
-    if (state_changed && new_state == LocalizationState::TRACKING)
-    {
-      localization_state_reason_ = "particle filter converged on consecutive observations";
-    }
-    else if (state_changed && new_state == LocalizationState::LOST)
-    {
-      localization_state_reason_ =
-          "final pose residual, geometry health, or particle spread exceeded lost thresholds";
-    }
-  }
-
-  if (new_state == LocalizationState::TRACKING)
-  {
-    tf_ready_.store(true);
-  }
-  else
-  {
-    tf_ready_.store(false);
-  }
-
-  if (state_changed)
-  {
-    RCLCPP_WARN(
-        this->get_logger(),
-        "Localization state changed to %s: match=%.3f residual=%.3f "
-        "xyz_std=%.3f/%.3f rpy_std=%.3f/%.3f/%.3f map_odom_tilt=%.3f "
-        "ground_normal_error=%.3f base_height_error=%.3f pose_height_error=%.3f "
-        "health=%s particles=%lu",
-        localizationStateName(new_state), final_match_ratio, final_residual,
-        spread.xy, spread.z, spread.roll, spread.pitch, spread.yaw,
-        observation.map_odom_tilt, observation.ground_normal_error,
-        observation.base_height_error, observation.pose_height_error,
-        health_reason.c_str(), pf_->getParticleSize());
-    publishLocalizationStatus();
-    if (new_state == LocalizationState::LOST)
-    {
-      use_global_map_.store(false);
-      resetGlobalConfirmation();
-      if (local_recovery_active_.exchange(false))
-      {
-        if (params_->auto_global_localization_)
-        {
-          global_localization_requested_.store(true);
-          RCLCPP_ERROR(
-              this->get_logger(),
-              "Local recovery failed; automatic global recovery is now "
-              "permitted but remains candidate-gated");
-        }
-      }
-      else
-      {
-        local_recovery_pending_.store(has_last_trusted_pose_.load());
-      }
-    }
-  }
-
   geometry_msgs::msg::PoseWithCovarianceStamped pose;
   pose.header.stamp = odom_last_;
   pose.header.frame_id = params_->frame_ids_["map"];
@@ -1953,31 +1906,110 @@ bool MCL3dlNode::measure(
   pose.pose.covariance[21] = cov[3][3];
   pose.pose.covariance[28] = cov[4][4];
   pose.pose.covariance[35] = spread.yaw * spread.yaw;
-  if (new_state != LocalizationState::LOST)
-  {
-    pub_pose_->publish(pose);
-  }
 
-  if (new_state == LocalizationState::TRACKING)
+  bool state_changed = false;
+  bool auto_global_recovery = false;
+  LocalizationState new_state;
+  LocalizationAttemptKind completed_attempt =
+    LocalizationAttemptKind::NONE;
   {
-    has_last_trusted_pose_.store(true);
-    last_trusted_state_ = e;
-    last_trusted_odom_ = odom_;
-    local_recovery_active_.store(false);
-    local_recovery_pending_.store(false);
-    global_localization_requested_.store(false);
-    operator_global_confirmed_.store(false);
-    resetGlobalConfirmation();
-    std::unique_lock<mcl_3dl::SubMaps::sub_maps_mutex_t> lock(*(sub_maps_->getMutex()));
-    if (state_changed)
+    // The status timer runs in another callback group. Keep the state
+    // transition, TF gate, recovery flags, trusted pose, and submap update in
+    // one transaction so a concurrent LOST transition cannot be overwritten
+    // by a cached TRACKING result.
+    std::lock_guard<std::mutex> state_lock(localization_state_mutex_);
+    if (localization_state_machine_->state() != LocalizationState::LOST)
     {
-      sub_maps_->setInitialPose(pose);
-      use_global_map_.store(true);
+      localization_health_ = health_reason;
+      state_changed = localization_state_machine_->observe(observation);
+    }
+    new_state = localization_state_machine_->state();
+
+    if (state_changed && new_state == LocalizationState::TRACKING)
+    {
+      localization_attempt_kind_.store(LocalizationAttemptKind::NONE);
+      localization_convergence_timer_.reset();
+      localization_state_reason_ =
+          "particle filter converged on consecutive observations";
+    }
+    else if (state_changed && new_state == LocalizationState::LOST)
+    {
+      completed_attempt = localization_attempt_kind_.load();
+      const std::string lost_reason =
+          "final pose residual, geometry health, or particle spread exceeded "
+          "lost thresholds";
+      markLocalizationLostLocked(lost_reason);
+      // Preserve the diagnostic that caused the observation-driven
+      // transition; generic externally-triggered LOST transitions use
+      // NOT_TRACKING instead.
+      localization_health_ = health_reason;
+      resetGlobalConfirmation();
+      if (usesRecoveryTimeout(completed_attempt))
+      {
+        local_recovery_pending_.store(false);
+        if (params_->auto_global_localization_)
+        {
+          global_localization_requested_.store(true);
+          last_global_attempt_ns_.store(0);
+          auto_global_recovery = true;
+        }
+      }
+    }
+
+    if (new_state == LocalizationState::TRACKING)
+    {
+      tf_ready_.store(true);
+      has_last_trusted_pose_.store(true);
+      last_trusted_state_ = e;
+      last_trusted_odom_ = odom_;
+      local_recovery_pending_.store(false);
+      global_localization_requested_.store(false);
+      operator_global_confirmed_.store(false);
+      resetGlobalConfirmation();
+      std::unique_lock<mcl_3dl::SubMaps::sub_maps_mutex_t> lock(
+        *(sub_maps_->getMutex()));
+      if (state_changed)
+      {
+        sub_maps_->setInitialPose(pose);
+        use_global_map_.store(true);
+      }
+      else
+      {
+        sub_maps_->setPose(pose);
+      }
     }
     else
     {
-      sub_maps_->setPose(pose);
+      tf_ready_.store(false);
     }
+
+    if (new_state != LocalizationState::LOST)
+    {
+      pub_pose_->publish(pose);
+    }
+  }
+
+  if (state_changed)
+  {
+    RCLCPP_WARN(
+        this->get_logger(),
+        "Localization state changed to %s: match=%.3f residual=%.3f "
+        "xyz_std=%.3f/%.3f rpy_std=%.3f/%.3f/%.3f map_odom_tilt=%.3f "
+        "ground_normal_error=%.3f base_height_error=%.3f pose_height_error=%.3f "
+        "health=%s particles=%lu",
+        localizationStateName(new_state), final_match_ratio, final_residual,
+        spread.xy, spread.z, spread.roll, spread.pitch, spread.yaw,
+        observation.map_odom_tilt, observation.ground_normal_error,
+        observation.base_height_error, observation.pose_height_error,
+        health_reason.c_str(), pf_->getParticleSize());
+    if (auto_global_recovery)
+    {
+      RCLCPP_ERROR(
+          this->get_logger(),
+          "Local recovery failed; automatic global recovery is now "
+          "permitted but remains candidate-gated");
+    }
+    publishLocalizationStatus();
   }
 
   const auto tnow = std::chrono::high_resolution_clock::now();
@@ -2050,23 +2082,46 @@ LocalizationState MCL3dlNode::localizationState() const
   return localization_state_machine_->state();
 }
 
+MCL3dlNode::LocalizationStateSnapshot
+MCL3dlNode::localizationStateSnapshot() const
+{
+  std::lock_guard<std::mutex> lock(localization_state_mutex_);
+  return LocalizationStateSnapshot{
+    localization_state_machine_->state(),
+    localization_convergence_timer_.generation()};
+}
+
 bool MCL3dlNode::isTracking() const
 {
   return localizationState() == LocalizationState::TRACKING;
 }
 
-void MCL3dlNode::startLocalizing(const std::string& reason)
+void MCL3dlNode::startLocalizing(
+    const std::string& reason,
+    const LocalizationAttemptKind attempt_kind)
 {
   bool changed = false;
   {
     std::lock_guard<std::mutex> lock(localization_state_mutex_);
+    // The independent status timer must not commit an expiry from an older
+    // seed after this attempt becomes current.
+    localization_convergence_timer_.reset();
+    localization_attempt_kind_.store(attempt_kind);
     changed = localization_state_machine_->startLocalizing();
     localization_state_reason_ = reason;
     localization_health_ = "NOT_TRACKING";
+    tf_ready_.store(false);
+    first_tf_.store(false);
+    global_localization_requested_.store(false);
+    operator_global_confirmed_.store(false);
+    local_recovery_pending_.store(false);
+    const bool use_global_map =
+      attempt_kind == LocalizationAttemptKind::GLOBAL_RECOVERY ||
+      (attempt_kind == LocalizationAttemptKind::FIXED_POSE &&
+       sub_maps_->isGlobalReady());
+    use_global_map_.store(use_global_map);
+    resetGlobalConfirmation();
   }
-  localizing_started_ns_.store(clock_->now().nanoseconds());
-  tf_ready_.store(false);
-  first_tf_.store(false);
   if (changed)
   {
     RCLCPP_WARN(this->get_logger(), "Localization state changed to LOCALIZING: %s", reason.c_str());
@@ -2074,42 +2129,130 @@ void MCL3dlNode::startLocalizing(const std::string& reason)
   publishLocalizationStatus();
 }
 
-void MCL3dlNode::markLocalizationLost(const std::string& reason)
+bool MCL3dlNode::markLocalizationLostLocked(const std::string& reason)
+{
+  const bool changed = localization_state_machine_->markLost();
+  localization_state_reason_ = reason;
+  localization_health_ = "NOT_TRACKING";
+  localization_convergence_timer_.reset();
+  localization_attempt_kind_.store(LocalizationAttemptKind::NONE);
+  tf_ready_.store(false);
+  use_global_map_.store(false);
+  const bool operator_global = operator_global_confirmed_.load();
+  if (!operator_global)
+  {
+    global_localization_requested_.store(false);
+  }
+  local_recovery_pending_.store(
+    has_last_trusted_pose_.load() && !operator_global);
+  return changed;
+}
+
+bool MCL3dlNode::markLocalizationLostIfCurrent(
+    const std::string& reason,
+    const LocalizationStateSnapshot& expected)
 {
   bool changed = false;
   {
     std::lock_guard<std::mutex> lock(localization_state_mutex_);
-    changed = localization_state_machine_->markLost();
-    localization_state_reason_ = reason;
-    localization_health_ = "NOT_TRACKING";
+    if (localization_state_machine_->state() != expected.state ||
+        !localization_convergence_timer_.isGenerationCurrent(
+          expected.generation))
+    {
+      return false;
+    }
+    changed = markLocalizationLostLocked(reason);
+    resetGlobalConfirmation();
   }
-  tf_ready_.store(false);
-  use_global_map_.store(false);
-  resetGlobalConfirmation();
-  if (!operator_global_confirmed_.load())
-  {
-    global_localization_requested_.store(false);
-  }
-  local_recovery_active_.store(false);
-  local_recovery_pending_.store(
-      has_last_trusted_pose_.load() &&
-      !operator_global_confirmed_.load());
   if (changed)
   {
     RCLCPP_ERROR(this->get_logger(), "Localization state changed to LOST: %s", reason.c_str());
   }
   publishLocalizationStatus();
+  return true;
+}
+
+bool MCL3dlNode::markLocalizationLostIfConvergenceExpired(
+    const LocalizationConvergenceTimer::Snapshot& timer_snapshot,
+    const int64_t now_ns)
+{
+  bool auto_global_recovery = false;
+  std::string reason;
+  {
+    std::lock_guard<std::mutex> lock(localization_state_mutex_);
+    if (localization_state_machine_->state() !=
+          LocalizationState::LOCALIZING ||
+        !localization_convergence_timer_.isCurrent(timer_snapshot))
+    {
+      return false;
+    }
+
+    const LocalizationAttemptKind attempt_kind =
+      localization_attempt_kind_.load();
+    const bool local_recovery = usesRecoveryTimeout(attempt_kind);
+    const double timeout_sec = local_recovery ?
+      params_->local_recovery_timeout_sec_ :
+      params_->localization_timeout_sec_;
+    if (!LocalizationConvergenceTimer::expired(
+          timer_snapshot, now_ns, timeout_sec))
+    {
+      return false;
+    }
+
+    reason = local_recovery ?
+      "local recovery convergence timed out" :
+      "localization convergence timed out";
+    markLocalizationLostLocked(reason);
+
+    auto_global_recovery =
+      local_recovery &&
+      params_->auto_global_localization_ &&
+      has_last_trusted_pose_.load();
+    if (auto_global_recovery)
+    {
+      local_recovery_pending_.store(false);
+      global_localization_requested_.store(true);
+      last_global_attempt_ns_.store(0);
+    }
+    resetGlobalConfirmation();
+  }
+
+  RCLCPP_ERROR(
+    this->get_logger(), "Localization state changed to LOST: %s",
+    reason.c_str());
+  if (auto_global_recovery)
+  {
+    RCLCPP_ERROR(
+      this->get_logger(),
+      "Local recovery timed out; automatic global recovery is now "
+      "permitted");
+  }
+  publishLocalizationStatus();
+  return true;
 }
 
 void MCL3dlNode::requestGlobalLocalization(const std::string& reason)
 {
-  operator_global_confirmed_.store(true);
-  global_localization_requested_.store(true);
-  local_recovery_pending_.store(false);
-  local_recovery_active_.store(false);
-  resetGlobalConfirmation();
-  last_global_attempt_ns_.store(0);
-  markLocalizationLost(reason);
+  bool changed = false;
+  {
+    // Treat the operator token, global request, and fail-closed LOST
+    // transition as one transaction. Otherwise the status timer can clear a
+    // request between the individual atomic stores.
+    std::lock_guard<std::mutex> lock(localization_state_mutex_);
+    operator_global_confirmed_.store(true);
+    global_localization_requested_.store(true);
+    local_recovery_pending_.store(false);
+    last_global_attempt_ns_.store(0);
+    changed = markLocalizationLostLocked(reason);
+    resetGlobalConfirmation();
+  }
+  if (changed)
+  {
+    RCLCPP_ERROR(
+      this->get_logger(), "Localization state changed to LOST: %s",
+      reason.c_str());
+  }
+  publishLocalizationStatus();
 }
 
 void MCL3dlNode::recordFeatureMetrics(
@@ -2254,7 +2397,9 @@ void MCL3dlNode::publishLocalizationStatusThread()
 {
   const int64_t now_ns = clock_->now().nanoseconds();
   publishFeatureMetrics(now_ns);
-  const LocalizationState state = localizationState();
+  const LocalizationStateSnapshot state_snapshot =
+      localizationStateSnapshot();
+  const LocalizationState state = state_snapshot.state;
   if (state == LocalizationState::TRACKING || state == LocalizationState::LOCALIZING)
   {
     const int64_t odom_ns = last_odom_received_ns_.load();
@@ -2278,43 +2423,23 @@ void MCL3dlNode::publishLocalizationStatusThread()
           params_->localization_sensor_timeout_sec_);
     if (feature_stale || odom_stale)
     {
-      markLocalizationLost(feature_stale ?
-          "one or more lidar feature topics timed out" :
-          "odometry stream timed out");
-      return;
+      if (markLocalizationLostIfCurrent(
+            feature_stale ?
+              "one or more lidar feature topics timed out" :
+              "odometry stream timed out",
+            state_snapshot))
+      {
+        return;
+      }
     }
 
     if (state == LocalizationState::LOCALIZING)
     {
-      const int64_t started_ns = localizing_started_ns_.load();
-      const bool local_recovery = local_recovery_active_.load();
-      const double timeout_sec = local_recovery ?
-          params_->local_recovery_timeout_sec_ :
-          params_->localization_timeout_sec_;
-      if (started_ns != 0 &&
-          static_cast<double>(now_ns - started_ns) / 1e9 >
-            timeout_sec)
+      const auto timer_snapshot =
+        localization_convergence_timer_.snapshot();
+      if (markLocalizationLostIfConvergenceExpired(
+            timer_snapshot, now_ns))
       {
-        if (local_recovery)
-        {
-          local_recovery_active_.store(false);
-          markLocalizationLost("local recovery convergence timed out");
-          if (params_->auto_global_localization_ &&
-              has_last_trusted_pose_.load())
-          {
-            local_recovery_pending_.store(false);
-            global_localization_requested_.store(true);
-            last_global_attempt_ns_.store(0);
-            RCLCPP_ERROR(
-                this->get_logger(),
-                "Local recovery timed out; automatic global recovery is now "
-                "permitted");
-          }
-        }
-        else
-        {
-          markLocalizationLost("localization convergence timed out");
-        }
         return;
       }
     }
@@ -2474,18 +2599,11 @@ void MCL3dlNode::cbPosition(const geometry_msgs::msg::PoseWithCovarianceStamped:
   pf_->predict(integ_reset_func);
 
   state_prev_ = mean;
-  global_localization_requested_.store(false);
-  operator_global_confirmed_.store(false);
-  local_recovery_pending_.store(false);
-  local_recovery_active_.store(true);
-  resetGlobalConfirmation();
-  // Use the complete immutable map only until the fixed-pose submap warmup
-  // commits; no global candidate search is performed.
-  use_global_map_.store(sub_maps_->isGlobalReady());
   last_measure_ns_.store(0);
-  startLocalizing("fixed/manual initial pose received; global search blocked");
+  startLocalizing(
+    "fixed/manual initial pose received; global search blocked",
+    LocalizationAttemptKind::FIXED_POSE);
   publishParticles();
-  first_tf_.store(false);
 }
 
 /*

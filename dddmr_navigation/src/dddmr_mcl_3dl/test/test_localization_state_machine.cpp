@@ -170,5 +170,73 @@ TEST(LocalizationStateMachine, SupportsExplicitResetAndRecovery)
   EXPECT_EQ(machine.state(), LocalizationState::UNINITIALIZED);
 }
 
+TEST(LocalizationConvergenceTimer, StartsOnlyAfterCompletedMeasurement)
+{
+  LocalizationConvergenceTimer timer;
+  constexpr int64_t second = 1000000000LL;
+
+  EXPECT_EQ(timer.startedNs(), 0);
+  const auto waiting = timer.snapshot();
+  EXPECT_FALSE(LocalizationConvergenceTimer::expired(
+    waiting, 100 * second, 8.0));
+
+  const uint64_t generation = timer.generation();
+  EXPECT_TRUE(timer.armAfterCompletedMeasurement(100 * second));
+  EXPECT_TRUE(timer.isGenerationCurrent(generation));
+  EXPECT_EQ(timer.startedNs(), 100 * second);
+  EXPECT_FALSE(timer.armAfterCompletedMeasurement(101 * second));
+  const auto armed = timer.snapshot();
+  EXPECT_FALSE(LocalizationConvergenceTimer::expired(
+    armed, 108 * second, 8.0));
+  EXPECT_TRUE(LocalizationConvergenceTimer::expired(
+    armed, 108 * second + 1, 8.0));
+}
+
+TEST(LocalizationConvergenceTimer, ResetDefersAReplacementSeed)
+{
+  LocalizationConvergenceTimer timer;
+  constexpr int64_t second = 1000000000LL;
+
+  ASSERT_TRUE(timer.armAfterCompletedMeasurement(10 * second));
+  const auto old_attempt = timer.snapshot();
+  EXPECT_TRUE(LocalizationConvergenceTimer::expired(
+    old_attempt, 19 * second, 8.0));
+
+  timer.reset();
+  EXPECT_EQ(timer.startedNs(), 0);
+  EXPECT_FALSE(timer.isCurrent(old_attempt));
+  EXPECT_FALSE(timer.isGenerationCurrent(old_attempt.generation));
+  const auto waiting = timer.snapshot();
+  EXPECT_FALSE(LocalizationConvergenceTimer::expired(
+    waiting, 100 * second, 8.0));
+  EXPECT_TRUE(timer.armAfterCompletedMeasurement(100 * second));
+  const auto replacement_attempt = timer.snapshot();
+  EXPECT_TRUE(timer.isCurrent(replacement_attempt));
+  EXPECT_FALSE(LocalizationConvergenceTimer::expired(
+    replacement_attempt, 101 * second, 8.0));
+}
+
+TEST(LocalizationAttemptKind, SeparatesTimeoutAndWarmupPolicies)
+{
+  EXPECT_FALSE(usesRecoveryTimeout(
+    LocalizationAttemptKind::CONFIGURED_INITIAL));
+  EXPECT_FALSE(switchesToCurrentMapAfterWarmup(
+    LocalizationAttemptKind::CONFIGURED_INITIAL));
+
+  EXPECT_FALSE(usesRecoveryTimeout(LocalizationAttemptKind::FIXED_POSE));
+  EXPECT_TRUE(switchesToCurrentMapAfterWarmup(
+    LocalizationAttemptKind::FIXED_POSE));
+
+  EXPECT_TRUE(usesRecoveryTimeout(
+    LocalizationAttemptKind::LOCAL_RECOVERY));
+  EXPECT_TRUE(switchesToCurrentMapAfterWarmup(
+    LocalizationAttemptKind::LOCAL_RECOVERY));
+
+  EXPECT_FALSE(usesRecoveryTimeout(
+    LocalizationAttemptKind::GLOBAL_RECOVERY));
+  EXPECT_FALSE(switchesToCurrentMapAfterWarmup(
+    LocalizationAttemptKind::GLOBAL_RECOVERY));
+}
+
 }  // namespace
 }  // namespace mcl_3dl

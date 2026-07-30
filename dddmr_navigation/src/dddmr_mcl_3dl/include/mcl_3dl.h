@@ -212,6 +212,12 @@ class MCL3dlNode : public rclcpp::Node
       double roughness{std::numeric_limits<double>::infinity()};
     };
 
+    struct LocalizationStateSnapshot
+    {
+      LocalizationState state;
+      uint64_t generation;
+    };
+
     bool attemptGlobalLocalization(
       const std::map<std::string, pcl::PointCloud<pcl_t>::Ptr>& pcl_segmentations);
     std::vector<GlobalCandidate> buildGlobalCandidates() const;
@@ -245,9 +251,18 @@ class MCL3dlNode : public rclcpp::Node
     void publishLocalizationStatusThread();
     void publishLocalizationStatus();
     LocalizationState localizationState() const;
+    LocalizationStateSnapshot localizationStateSnapshot() const;
     bool isTracking() const;
-    void startLocalizing(const std::string& reason);
-    void markLocalizationLost(const std::string& reason);
+    void startLocalizing(
+      const std::string& reason,
+      LocalizationAttemptKind attempt_kind);
+    bool markLocalizationLostLocked(const std::string& reason);
+    bool markLocalizationLostIfCurrent(
+      const std::string& reason,
+      const LocalizationStateSnapshot& expected);
+    bool markLocalizationLostIfConvergenceExpired(
+      const LocalizationConvergenceTimer::Snapshot& timer_snapshot,
+      int64_t now_ns);
     void requestGlobalLocalization(const std::string& reason);
     void cbGlobalLocalization(
       const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
@@ -290,7 +305,9 @@ class MCL3dlNode : public rclcpp::Node
     std::atomic<int64_t> last_odom_received_ns_;
     std::atomic<int64_t> last_measure_ns_;
     std::atomic<int64_t> last_global_attempt_ns_;
-    std::atomic<int64_t> localizing_started_ns_;
+    LocalizationConvergenceTimer localization_convergence_timer_;
+    std::atomic<LocalizationAttemptKind> localization_attempt_kind_{
+      LocalizationAttemptKind::NONE};
     std::atomic<float> latest_match_ratio_;
     std::atomic<float> latest_residual_;
     std::atomic<uint64_t> feature_sequence_;
@@ -307,7 +324,6 @@ class MCL3dlNode : public rclcpp::Node
     int64_t feature_metric_previous_processing_ns_{0};
     int64_t feature_metric_window_started_ns_{0};
     std::atomic_bool local_recovery_pending_;
-    std::atomic_bool local_recovery_active_;
     std::atomic_bool operator_global_confirmed_;
     std::atomic_bool has_last_trusted_pose_{false};
     State6DOF last_trusted_state_;
