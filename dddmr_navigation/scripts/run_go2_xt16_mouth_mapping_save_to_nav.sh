@@ -45,6 +45,9 @@ Common environment overrides:
   MOUTH_MAX_TIME_DIFF=0.03
   MOUTH_SYNC_MODE=receipt_time
                              Live default; use header_offset for bag replay.
+  MOUTH_GROUND_MODE=connected_surface
+                             Ramp-capable ground classification. This does not
+                             enable the stair-specific axis-split pose solver.
   MOUTH_TIME_OFFSET_SEC=...   header_offset mode only; skips auto measurement.
   AUTO_MEASURE_MOUTH_TIME_OFFSET=true
                              Measure and inject the mouth/XT16 clock offset first.
@@ -209,6 +212,7 @@ PUBLISH_STATIC_TF_VALUE="${PUBLISH_STATIC_TF:-true}"
 MAPPING_SECONDS_VALUE="${MAPPING_SECONDS:-}"
 MOUTH_MAX_TIME_DIFF_VALUE="${MOUTH_MAX_TIME_DIFF:-0.03}"
 MOUTH_SYNC_MODE_VALUE="${MOUTH_SYNC_MODE:-receipt_time}"
+MOUTH_GROUND_MODE_VALUE="${MOUTH_GROUND_MODE:-connected_surface}"
 MOUTH_TIME_OFFSET_SEC_VALUE="${MOUTH_TIME_OFFSET_SEC:-}"
 AUTO_MEASURE_MOUTH_TIME_OFFSET_VALUE="${AUTO_MEASURE_MOUTH_TIME_OFFSET:-true}"
 MOUTH_OFFSET_MEASURE_SECONDS_VALUE="${MOUTH_OFFSET_MEASURE_SECONDS:-8}"
@@ -941,6 +945,14 @@ exec python3 /root/dddmr_navigation/scripts/measure_go2_odom_xt16_time_offset.py
 start_mapping_container() {
   mkdir -p "${BAGS_DIR}"
 
+  case "${MOUTH_GROUND_MODE_VALUE}" in
+    fixed_z|connected_surface)
+      ;;
+    *)
+      die "MOUTH_GROUND_MODE must be fixed_z or connected_surface."
+      ;;
+  esac
+
   if [[ ( "${RVIZ_VALUE}" == "true" || "${MAP_RVIZ_VALUE}" == "true" ) && -n "${DISPLAY:-}" ]] && command -v xhost >/dev/null 2>&1; then
     xhost +local:docker >/dev/null || true
   fi
@@ -982,8 +994,9 @@ source /root/dddmr_navigation/scripts/setup_go2_dds_env.sh
 source /root/dddmr_navigation/${INSTALL_BASE_VALUE}/setup.bash
 set -u
 echo 'MOUTH_MAPPING_CONTRACT mouth_cloud_topic=${MOUTH_CLOUD_TOPIC_VALUE} mouth_filter_frame=base_link'
+echo 'MOUTH_MAPPING_PROFILE profile=normal_6dof_ramp mouth_mode=${MOUTH_GROUND_MODE_VALUE} axis_split=false external_odom_factor=false planar_constraint=false'
 echo 'MOUTH_MAPPING_TIMING mouth_sync_mode=${MOUTH_SYNC_MODE_VALUE} mouth_max_time_diff=${MOUTH_MAX_TIME_DIFF_VALUE} mouth_time_offset_sec=${MOUTH_TIME_OFFSET_SEC_VALUE}'
-echo 'ODOM_MAPPING_TIMING odom_topic=${ODOM_TOPIC_VALUE} xt16_topic=${XT16_TOPIC_VALUE} odom_sync_tolerance_sec=${ODOM_SYNC_TOLERANCE_SEC_VALUE} odom_sync_wait_timeout_sec=${ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE} odom_time_offset_sec=${ODOM_TIME_OFFSET_SEC_VALUE}'
+echo 'ODOM_MAPPING_TIMING odom_topic=${ODOM_TOPIC_VALUE} xt16_topic=${XT16_TOPIC_VALUE} odom_sync_tolerance_sec=${ODOM_SYNC_TOLERANCE_SEC_VALUE} odom_sync_wait_timeout_sec=${ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE} standardizer_offset_sec=${ODOM_TIME_OFFSET_SEC_VALUE} feature_offset_sec=0.0'
 exec ros2 launch lego_loam_bor lego_loam_go2_xt16_mouth.launch \
   rviz:=${RVIZ_VALUE} \
   rviz_config:=/root/dddmr_navigation/src/dddmr_lego_loam/lego_loam_bor/rviz/go2_xt16_mouth_validation.rviz \
@@ -995,12 +1008,14 @@ exec ros2 launch lego_loam_bor lego_loam_go2_xt16_mouth.launch \
   odom_topic:=/dddmr_go2/robot_odom_standard \
   mouth_cloud_topic:=${MOUTH_CLOUD_TOPIC_VALUE} \
   mouth_filter_frame:=base_link \
+  mouth_ground_mode:=${MOUTH_GROUND_MODE_VALUE} \
   mouth_sync_mode:=${MOUTH_SYNC_MODE_VALUE} \
   mouth_max_time_diff:=${MOUTH_MAX_TIME_DIFF_VALUE} \
   mouth_time_offset_sec:=${MOUTH_TIME_OFFSET_SEC_VALUE} \
   odom_sync_tolerance_sec:=${ODOM_SYNC_TOLERANCE_SEC_VALUE} \
   odom_sync_wait_timeout_sec:=${ODOM_SYNC_WAIT_TIMEOUT_SEC_VALUE} \
-  odom_time_offset_sec:=${ODOM_TIME_OFFSET_SEC_VALUE}" >/dev/null
+  odom_time_offset_sec:=${ODOM_TIME_OFFSET_SEC_VALUE} \
+  feature_odom_time_offset_sec:=0.0" >/dev/null
 }
 
 main() {

@@ -20,40 +20,38 @@ live `header.frame_id` was observed as `utlidar_lidar`, but that frame was not
 available in the current TF tree. Use raw `/utlidar/cloud` only after adding and
 checking the correct `utlidar_lidar` transform.
 
-## Stair-Surface Classification
+## Default Live Mapping Profile
 
-The Go2 mouth mapping config now uses:
+The default live Go2 mouth mapping config is the ordinary 6DoF outdoor/ramp
+profile:
 
 ```yaml
 mouth_ground_mode: connected_surface
+axis_split_factor_enabled: false
+external_odom_factor_enabled: false
+planar_constraint_enabled: false
 ```
 
-This mode does not limit every accepted point to one fixed `base_link` height.
-It first finds locally planar support patches. A seed must be below and
-immediately ahead of the robot and must agree with the current XT16
-`patched_ground`; the mouth LiDAR therefore extends the roof-LiDAR ground map
-instead of inventing an unrelated floating surface. It then follows
-independently sized patches through the configured Go2 step-capability
-envelope. A floor plus at least two successive tread heights is accepted as a
-stair chain. A single low box top, an unsupported horizontal platform, a
-narrow patch, a riser, and an excessive slope remain non-ground.
+Synchronized external odometry remains the initial motion prediction, while
+ordinary LeGO-LOAM scan-to-map optimization estimates all six pose axes. Its
+degeneracy projection holds weak scan directions instead of integrating the
+stair solver's scan-only Z update. Both full external-odom graph factors and
+the planar Z prior are disabled because the Go2 odom height can remain nearly
+flat and would suppress a real ramp.
 
-`mouth_ground_z_min/max` are retained only for the explicit `fixed_z`
-stationary troubleshooting fallback. The connected mode instead uses the
-broad `mouth_support_seed_*` footprint to identify the current support surface;
-it does not encode the temporary test stair's rise or total physical step
-count. `mouth_minimum_stair_height_levels` is a conservative evidence count,
-not the expected staircase length.
+`connected_surface` is retained only as the mouth-lidar ground classifier so
+an uphill support surface is not clipped to one `base_link`-relative height
+band. It does not enable `axis_split_factor_enabled`; the axis-split pose
+solver is the stair-specific mode and remains off.
 
-Accepted mouth points are appended to the existing `patched_ground` path and
-are saved in `ground.pcd/mapground`. Rejected mouth points enter the existing
-surface-keyframe path. The Go2 map server removes surface points overlapping
-`mapground` and merges the remainder into the existing `mapcloud`. No
-`mapterrain` or third navigation map is created.
+The ordinary profile still appends accepted mouth points to
+`patched_ground`, saved as `ground.pcd/mapground`. Rejected mouth points use
+the existing surface-keyframe path; no third navigation map is created.
 
-Before walking mapping, explicitly verify in RViz that `/mouth_ground_cloud`
-contains treads but not risers or nearby boxes under expected body attitude
-changes.
+Start mapping while stationary. Before walking, explicitly verify in RViz that
+`/mouth_ground_cloud` contains the nearby flat support surface, not people,
+vegetation, curbs, or nearby boxes. On a test ramp, verify that it follows the
+continuous slope and does not turn unrelated raised surfaces into ground.
 
 ## Time Synchronization
 

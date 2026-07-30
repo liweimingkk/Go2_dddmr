@@ -16,6 +16,36 @@ assert_contains() {
   fi
 }
 
+assert_file_contains() {
+  local path="$1"
+  local expected="$2"
+  grep -Fq -- "${expected}" "${path}" || {
+    printf 'Expected %s to contain: %s\n' "${path}" "${expected}" >&2
+    exit 1
+  }
+}
+
+CONFIG_FILE="${SCRIPT_DIR}/../src/dddmr_lego_loam/lego_loam_bor/config/loam_go2_xt16_mouth_config.yaml"
+LAUNCH_FILE="${SCRIPT_DIR}/../src/dddmr_lego_loam/lego_loam_bor/launch/lego_loam_go2_xt16_mouth.launch"
+
+assert_file_contains "${CONFIG_FILE}" 'mouth_ground_mode: "connected_surface"'
+assert_file_contains "${CONFIG_FILE}" "distance_between_key_frame: 0.5"
+assert_file_contains "${CONFIG_FILE}" "axis_split_factor_enabled: false"
+assert_file_contains "${CONFIG_FILE}" "external_odom_factor_enabled: false"
+assert_file_contains "${CONFIG_FILE}" "planar_constraint_enabled: false"
+assert_file_contains "${LAUNCH_FILE}" '<arg name="mouth_ground_mode" default="connected_surface"/>'
+assert_file_contains \
+  "${LAUNCH_FILE}" \
+  '<arg name="feature_odom_time_offset_sec" default="0.0"/>'
+assert_file_contains \
+  "${LAUNCH_FILE}" \
+  '<param name="featureAssociation.odom_time_offset_sec" value="$(var feature_odom_time_offset_sec)"/>'
+assert_file_contains \
+  "${TARGET}" \
+  'MOUTH_GROUND_MODE_VALUE="${MOUTH_GROUND_MODE:-connected_surface}"'
+assert_file_contains "${TARGET}" "profile=normal_6dof_ramp"
+assert_file_contains "${TARGET}" "feature_odom_time_offset_sec:=0.0"
+
 confirmation_output="$(
   printf '\nnot-save\nSAVE\n' | wait_for_save_confirmation
 )"

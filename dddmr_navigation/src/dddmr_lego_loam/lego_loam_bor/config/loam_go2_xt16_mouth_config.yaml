@@ -38,10 +38,9 @@ lego_loam_ip:
         ground_negative_stop: -3.1415926
 
         enable_mouth_ground_fusion: true
-        # Use local planar geometry plus a support-connected search. This lets
-        # successive treads enter the existing mapground without encoding the
-        # temporary test stair's height. fixed_z remains available as a
-        # stationary troubleshooting fallback.
+        # Default live profile: ordinary 6DoF outdoor/ramp mapping. The mouth
+        # classifier may follow connected sloped support surfaces, but the
+        # stair-specific axis-split pose solver remains disabled below.
         mouth_ground_mode: "connected_surface"
         # Current validated Go2 topic. Raw /utlidar/cloud has frame
         # utlidar_lidar in this live graph and must not be treated as validated
@@ -50,9 +49,9 @@ lego_loam_ip:
         # /utlidar/cloud_base already publishes frame_id=base_link. Keep empty
         # by default so future frame mistakes are visible instead of masked.
         mouth_frame_override: ""
-        # The Go2 body controller keeps base_link approximately gravity
-        # aligned. The 35 degree surface envelope below tolerates normal body
-        # attitude changes while still rejecting stair risers.
+        # Start stationary and inspect /mouth_ground_cloud before walking.
+        # connected_surface is used here so an uphill surface is not clipped
+        # to one base_link-relative height band.
         mouth_filter_frame: "base_link"
         # This config is used by the live mouth launch. Pair on local receipt
         # time because the Unitree and XT16 clock epochs can change after a
@@ -63,7 +62,7 @@ lego_loam_ip:
         mouth_max_time_diff: 0.03
         # Ignored in live receipt_time mode.
         mouth_time_offset_sec: 0.0
-        # Used only when mouth_ground_mode=fixed_z.
+        # Used only for the explicit fixed_z troubleshooting fallback.
         mouth_ground_z_min: -0.42
         mouth_ground_z_max: -0.18
         mouth_x_min: 0.05
@@ -125,9 +124,8 @@ lego_loam_mo:
     use_sim_time: false
 
     mapping:
-        # Preserve treads that are visible for less than the default 0.5 m.
-        # This is spatial sampling resolution, independent of stair height.
-        distance_between_key_frame: 0.15
+        # Ordinary mapping baseline. The stair profile used 0.15 m keyframes.
+        distance_between_key_frame: 0.5
         angle_between_key_frame: 0.5
         enable_loop_closure: false
         surrounding_keyframe_search_num: 50
@@ -140,19 +138,23 @@ lego_loam_mo:
         # The full 6DoF diagnostic still uses these thresholds; axis-split
         # mode solves its world-Z column conditionally instead of projecting it.
         degeneracy_eigenvalue_thresholds: [100.0, 100.0, 100.0, 100.0, 100.0, 100.0]
-        # Keep the measured approximately 2 m stair rise from scan/ground geometry.
-        # Odom/IMU supplies rotation and world X/Y, never world Z.
-        axis_split_factor_enabled: true
+        # Ordinary 6DoF scan-to-map mode. Axis-split is a stair-only experiment
+        # and must not be enabled by this live profile.
+        axis_split_factor_enabled: false
         axis_split_scan_z_variance: 0.01
         axis_split_unobservable_z_variance: 1000000.0
         axis_split_scan_z_min_information: 10.0
         # Per LM iteration; diagnostics report whether any iteration was clamped.
         axis_split_scan_z_max_iteration_step: 0.15
+        # External odometry remains the synchronized motion prediction. Do not
+        # add its full 6DoF graph factor here: the Go2 odom Z can stay nearly
+        # planar and would flatten a real ramp.
         external_odom_factor_enabled: false
         external_odom_rotation_variance: 0.0025
         external_odom_translation_variance: 0.01
-        # Mutually exclusive with the axis-split factor: this legacy prior
-        # would pull Z back to the nearly planar external odometry trajectory.
+        # A planar Z prior would also flatten ramps. Standard LeGO-LOAM
+        # degeneracy projection holds weak scan directions while observable
+        # ramp geometry remains free to update Z.
         planar_constraint_enabled: false
         planar_roll_pitch_variance: 0.0025
         planar_z_variance: 0.01
@@ -161,5 +163,5 @@ lego_loam_mo:
 lego_loam_map_visualization:
   ros__parameters:
     use_sim_time: false
-    ground_voxel_size: 0.1
+    ground_voxel_size: 0.3
     ground_edge_threshold_num: 50
