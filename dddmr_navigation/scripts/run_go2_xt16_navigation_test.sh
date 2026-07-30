@@ -14,6 +14,7 @@ Usage:
 
 Starts Go2 XT16 navigation with the map configured in:
   src/dddmr_beginner_guide/config/go2_xt16_navigation.yaml
+Set MAP for a one-run map override without editing that file.
 
 Modes:
   --quick    Short fail-closed startup profile. Keeps all motion-safety gates,
@@ -69,11 +70,16 @@ Common environment overrides:
   GO2_NAV_OBSERVATION_GATE_ATTEMPTS=3
   GO2_NAV_OBSERVATION_STARTUP_AGE_MARGIN_SEC=0.05
   DDDMR_BAGS_DIR=../bags
+  MAP=...                    Fast map override. Accepts a /root/dddmr_bags/...
+                             container path, a host path below DDDMR_BAGS_DIR,
+                             or a directory name below DDDMR_BAGS_DIR.
   NAV_CONTAINER_NAME=...
 
 Examples:
   scripts/run_go2_xt16_navigation_test.sh --dry-run
   scripts/run_go2_xt16_navigation_test.sh --quick --dry-run
+  MAP=/root/dddmr_bags/go2_xt16_mouth_mapping_20260730_153458_map_2026_07_30_07_34_57 \
+    scripts/run_go2_xt16_navigation_test.sh --quick --dry-run
   GO2_NAV_LIVE_CONFIRM=I_AM_SUPERVISING_GO2_NAV \
     scripts/run_go2_xt16_navigation_test.sh --live
   GO2_NAV_LIVE_CONFIRM=I_AM_SUPERVISING_GO2_NAV MAX_Y=0.0 \
@@ -206,6 +212,8 @@ ROS_DISTRO_VALUE="${DDDMR_ROS_DISTRO:-${DEFAULT_ROS_DISTRO}}"
 }
 ROS_SETUP_FILE_VALUE="/opt/ros/${ROS_DISTRO_VALUE}/setup.bash"
 BAGS_DIR="${DDDMR_BAGS_DIR:-${REPO_ROOT}/bags}"
+MAP_REQUESTED="${MAP:-}"
+NAV_CONFIG_SOURCE="${GO2_NAV_CONFIG_FILE:-${WS_ROOT}/src/dddmr_beginner_guide/config/go2_xt16_navigation.yaml}"
 ROS_DOMAIN_ID_VALUE="${ROS_DOMAIN_ID:-0}"
 GO2_DDS_IP_VALUE="${GO2_DDS_IP:-192.168.123.18}"
 GO2_NET_IFACE_VALUE="${GO2_NET_IFACE:-${DEFAULT_GO2_NET_IFACE}}"
@@ -310,6 +318,10 @@ mission_file_container=""
 initial_pose_file=""
 initial_pose_file_container=""
 mission_id=""
+MAP_HOST_DIR=""
+MAP_CONTAINER_DIR=""
+RUNTIME_NAV_CONFIG_HOST=""
+RUNTIME_NAV_CONFIG_CONTAINER="/run/go2_xt16_navigation_runtime.yaml"
 docker_sudo_auto_enabled="false"
 
 if [[ "${mode}" == "stop" && -z "${DDDMR_DOCKER_USE_SUDO+x}" && \
@@ -370,6 +382,104 @@ resolve_bags_path() {
 container_bags_path() {
   local host_path="$1"
   printf '/root/dddmr_bags/%s\n' "${host_path#"${BAGS_DIR}"/}"
+}
+
+resolve_map_path() {
+  local requested="$1"
+  local candidate=""
+  local relative=""
+
+  BAGS_DIR="$(realpath -m -- "${BAGS_DIR}")"
+  if [[ "${requested}" == "/root/dddmr_bags" ]]; then
+    die "MAP must name a map directory below /root/dddmr_bags."
+  elif [[ "${requested}" == /root/dddmr_bags/* ]]; then
+    relative="${requested#/root/dddmr_bags/}"
+    candidate="${BAGS_DIR}/${relative}"
+  elif [[ "${requested}" == /* ]]; then
+    candidate="${requested}"
+  else
+    requested="${requested#./}"
+    requested="${requested#bags/}"
+    candidate="${BAGS_DIR}/${requested}"
+  fi
+
+  if ! candidate="$(realpath -e -- "${candidate}" 2>/dev/null)"; then
+    die "MAP directory does not exist: ${requested}"
+  fi
+  [[ -d "${candidate}" ]] || die "MAP is not a directory: ${candidate}"
+  [[ "${candidate}" == "${BAGS_DIR}"/* ]] || \
+    die "MAP must stay below DDDMR_BAGS_DIR (${BAGS_DIR}): ${candidate}"
+
+  relative="${candidate#"${BAGS_DIR}"/}"
+  [[ "${relative}" =~ ^[A-Za-z0-9._/-]+$ ]] || \
+    die "MAP contains unsupported characters: ${relative}"
+  printf '%s\n' "${candidate}"
+}
+
+prepare_map_override() {
+  local required=""
+
+  [[ -n "${MAP_REQUESTED}" ]] || return 0
+  [[ -f "${NAV_CONFIG_SOURCE}" ]] || \
+    die "Navigation config does not exist: ${NAV_CONFIG_SOURCE}"
+
+  BAGS_DIR="$(realpath -m -- "${BAGS_DIR}")"
+  MAP_HOST_DIR="$(resolve_map_path "${MAP_REQUESTED}")"
+  MAP_CONTAINER_DIR="$(container_bags_path "${MAP_HOST_DIR}")"
+  for required in poses.pcd map.pcd ground.pcd edges.pcd; do
+    [[ -s "${MAP_HOST_DIR}/${required}" ]] || \
+      die "Selected MAP is missing a non-empty ${required}: ${MAP_HOST_DIR}"
+  done
+  [[ -d "${MAP_HOST_DIR}/pcd" ]] || \
+    die "Selected MAP is missing its keyframe directory: ${MAP_HOST_DIR}/pcd"
+  find "${MAP_HOST_DIR}/pcd" -maxdepth 1 -type f -name '*_ground.pcd' \
+    -print -quit | grep -q . || \
+    die "Selected MAP has no keyframe ground PCDs: ${MAP_HOST_DIR}/pcd"
+
+  mkdir -p -- "${RUN_LOG_DIR}"
+  RUNTIME_NAV_CONFIG_HOST="$(
+    mktemp --suffix=.yaml \
+      "${RUN_LOG_DIR}/${CONTAINER_NAME}_map_override.XXXXXX"
+  )"
+  python3 - \
+    "${NAV_CONFIG_SOURCE}" \
+    "${RUNTIME_NAV_CONFIG_HOST}" \
+    "${MAP_CONTAINER_DIR}" <<'PY'
+from pathlib import Path
+import sys
+
+source = Path(sys.argv[1])
+destination = Path(sys.argv[2])
+pose_graph_dir = sys.argv[3]
+lines = source.read_text().splitlines()
+
+in_map1 = False
+replacement_count = 0
+output = []
+for line in lines:
+    stripped = line.strip()
+    if line and not line.startswith((" ", "\t")) and stripped.endswith(":"):
+        in_map1 = stripped == "map1:"
+    if in_map1 and stripped.startswith("pose_graph_dir:"):
+        indent = line[: len(line) - len(line.lstrip())]
+        output.append(f'{indent}pose_graph_dir: "{pose_graph_dir}"')
+        replacement_count += 1
+    else:
+        output.append(line)
+
+if replacement_count != 1:
+    raise SystemExit(
+        "expected exactly one pose_graph_dir under map1, "
+        f"found {replacement_count}"
+    )
+
+destination.write_text("\n".join(output) + "\n")
+PY
+  chmod 0644 "${RUNTIME_NAV_CONFIG_HOST}"
+
+  log "Fast map override selected:"
+  log "  host: ${MAP_HOST_DIR}"
+  log "  container pose_graph_dir: ${MAP_CONTAINER_DIR}"
 }
 
 validate_mission_request() {
@@ -1045,6 +1155,18 @@ start_container() {
   local start_p2p_mission="false"
   local p2p_mission_file=""
   local p2p_mission_launch_command=""
+  local map_config_launch_command=""
+  local -a map_config_mount=()
+  if [[ -n "${RUNTIME_NAV_CONFIG_HOST}" ]]; then
+    map_config_mount=(
+      -v
+      "${RUNTIME_NAV_CONFIG_HOST}:${RUNTIME_NAV_CONFIG_CONTAINER}:ro"
+    )
+    printf -v map_config_launch_command \
+      'launch_args+=(%q %q)' \
+      "config_file:=${RUNTIME_NAV_CONFIG_CONTAINER}" \
+      "map_config_file:=${RUNTIME_NAV_CONFIG_CONTAINER}"
+  fi
   if [[ "${multi_mode}" == "true" ]]; then
     start_clicked_to_goal="false"
     p2p_goals_enabled="false"
@@ -1099,6 +1221,7 @@ start_container() {
     -v "/dev:/dev" \
     -v "${WS_ROOT}:/root/dddmr_navigation" \
     -v "${BAGS_DIR}:/root/dddmr_bags" \
+    "${map_config_mount[@]}" \
     "${IMAGE}" \
     bash -lc "set -eo pipefail
 set +u
@@ -1137,6 +1260,7 @@ launch_args=(
   \"go2_sport_allow_real_request_topic:=false\"
   \"go2_sport_max_yaw:=${MAX_YAW_VALUE}\"
 )
+${map_config_launch_command}
 ${p2p_mission_launch_command}
 exec ros2 launch dddmr_beginner_guide go2_xt16_navigation.launch \
   \"\${launch_args[@]}\"" >/dev/null
@@ -1384,6 +1508,7 @@ main() {
 
   validate_lateral_limit
   log "Startup profile: ${STARTUP_PROFILE_VALUE}"
+  prepare_map_override
   require_docker_image
   assert_clean_runtime
   validate_perception_settings
