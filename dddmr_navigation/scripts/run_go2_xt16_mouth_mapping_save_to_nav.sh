@@ -9,14 +9,24 @@ usage() {
   cat <<'EOF'
 Usage:
   scripts/run_go2_xt16_mouth_mapping_save_to_nav.sh
+  scripts/run_go2_xt16_mouth_mapping_save_to_nav.sh --start-only
+  scripts/run_go2_xt16_mouth_mapping_save_to_nav.sh --save-existing CONTAINER
   scripts/run_go2_xt16_mouth_mapping_save_to_nav.sh --measure-odom-only
 
 Starts Go2 XT16 + mouth lidar mapping, saves the current pose graph, copies it to
 the host bags directory, and updates the navigation config used by
 go2_xt16_navigation.launch.
 
+Two-stage field workflow:
+  --start-only
+      Start mapping, prove the required service/topics and mouth-ground sample,
+      then leave the detached mapping container running without saving.
+  --save-existing CONTAINER
+      Reconnect to a container started with --start-only, save immediately,
+      update navigation config, and stop the container by default.
+
 Common environment overrides:
-  MAPPING_SECONDS=120        Map for N seconds, then save. If empty, wait for Enter.
+  MAPPING_SECONDS=120        Map for N seconds, then save. If empty, require SAVE.
   RVIZ=true                  Open mouth/ground fusion RViz while mapping.
   MAP_RVIZ=true              Open a second RViz showing the accumulated map.
   STOP_AFTER_SAVE=true       Stop the mapping container after saving.
@@ -66,10 +76,61 @@ Safety:
 EOF
 }
 
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]] &&
-   [[ "${1:-}" == "-h" || "${1:-}" == "--help" || "${1:-}" == "help" ]]; then
-  usage
-  exit 0
+COMMAND_MODE="interactive"
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  case "${1:-}" in
+    "")
+      (( $# == 0 )) || {
+        usage >&2
+        exit 2
+      }
+      ;;
+    --start-only)
+      (( $# == 1 )) || {
+        usage >&2
+        exit 2
+      }
+      if [[ -n "${MAPPING_CONTAINER:-}" ]]; then
+        echo "ERROR: --start-only cannot be combined with MAPPING_CONTAINER." >&2
+        exit 2
+      fi
+      COMMAND_MODE="start-only"
+      ;;
+    --save-existing)
+      (( $# == 2 )) || {
+        usage >&2
+        exit 2
+      }
+      if [[ ! "$2" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
+        echo "ERROR: invalid Docker container name: $2" >&2
+        exit 2
+      fi
+      COMMAND_MODE="save-existing"
+      MAPPING_CONTAINER="$2"
+      MAPPING_SECONDS="0"
+      MAP_RVIZ="${MAP_RVIZ:-false}"
+      STOP_AFTER_SAVE="${STOP_AFTER_SAVE:-true}"
+      ;;
+    --measure-odom-only)
+      (( $# == 1 )) || {
+        usage >&2
+        exit 2
+      }
+      COMMAND_MODE="measure-odom-only"
+      ;;
+    -h|--help|help)
+      (( $# == 1 )) || {
+        usage >&2
+        exit 2
+      }
+      usage
+      exit 0
+      ;;
+    *)
+      usage >&2
+      exit 2
+      ;;
+  esac
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -201,6 +262,33 @@ log() {
 die() {
   printf 'ERROR: %s\n' "$*" >&2
   exit 1
+}
+
+print_save_existing_command() {
+  log "Reconnect/save command:"
+  printf '  sudo env DDDMR_PLATFORM=%q RVIZ=false MAP_RVIZ=false %q --save-existing %q\n' \
+    "${PLATFORM_VALUE}" "$0" "${CONTAINER_NAME}"
+}
+
+leave_mapping_running() {
+  log "No save was requested. Mapping container left running: ${CONTAINER_NAME}"
+  print_save_existing_command
+}
+
+wait_for_save_confirmation() {
+  local answer
+
+  log "Mapping is running. Type SAVE and press Enter to save and update navigation config."
+  while true; do
+    if ! IFS= read -r answer; then
+      log "Control input closed before explicit SAVE."
+      return 1
+    fi
+    if [[ "${answer}" == "SAVE" ]]; then
+      return 0
+    fi
+    log "Ignored input that was not exactly SAVE; mapping continues."
+  done
 }
 
 require_file() {
@@ -887,12 +975,19 @@ main() {
   require_mouth_ground_sample
   start_map_result_rviz
 
+  if [[ "${COMMAND_MODE}" == "start-only" ]]; then
+    leave_mapping_running
+    return 0
+  fi
+
   if [[ -n "${MAPPING_SECONDS_VALUE}" ]]; then
     log "Mapping for ${MAPPING_SECONDS_VALUE}s before save..."
     sleep "${MAPPING_SECONDS_VALUE}"
   else
-    log "Mapping is running. Press Enter to save and update navigation config."
-    read -r _
+    if ! wait_for_save_confirmation; then
+      leave_mapping_running
+      return 0
+    fi
   fi
 
   require_mouth_ground_sample
@@ -945,18 +1040,17 @@ main() {
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-  case "${1:-}" in
-    "")
+  case "${COMMAND_MODE}" in
+    interactive|start-only|save-existing)
       main
       ;;
-    --measure-odom-only)
+    measure-odom-only)
       require_docker_image
       measure_odom_time_offset
       printf 'CONFIRMED_ODOM_TIME_OFFSET_SEC=%s\n' "${ODOM_TIME_OFFSET_SEC_VALUE}"
       ;;
     *)
-      usage >&2
-      exit 2
+      die "Internal command mode error: ${COMMAND_MODE}"
       ;;
   esac
 fi

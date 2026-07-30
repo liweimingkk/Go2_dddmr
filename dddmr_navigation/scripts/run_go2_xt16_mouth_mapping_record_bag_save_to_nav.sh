@@ -21,7 +21,11 @@ writes metadata.yaml before the recorder container is removed.
 
 The mapping controls from run_go2_xt16_mouth_mapping_save_to_nav.sh are passed
 through unchanged. In particular, set MAPPING_SECONDS=N for automatic save, or
-leave it empty to press Enter in the mapping workflow.
+leave it empty and type SAVE in the mapping workflow.
+
+The recording wrapper does not support --start-only or --save-existing because
+it owns the recorder lifecycle. Use the core mapping script for the two-stage
+disconnect/reconnect workflow.
 
 Recording overrides:
   DDDMR_BAGS_DIR=...                 Shared host output directory. Default: ../bags.
@@ -203,6 +207,12 @@ on_exit() {
 }
 
 main() {
+  case "${1:-}" in
+    --start-only|--save-existing)
+      die "Two-stage mapping is not supported by the recording wrapper; use ${MAPPING_SCRIPT} directly."
+      ;;
+  esac
+
   require_file "${MAPPING_SCRIPT}"
   require_docker_image
   require_positive_integer "${BAG_STOP_TIMEOUT_SEC}"
