@@ -237,6 +237,7 @@ ODOM_SYNC_CHECKER="${GO2_ODOM_SYNC_CHECKER:-${SCRIPT_DIR}/check_go2_odom_sync.py
 DDS_BUFFER_CHECK="${SCRIPT_DIR}/check_go2_dds_receive_buffers.sh"
 OBSERVATION_GATE_SOURCE="${WS_ROOT}/src/dddmr_beginner_guide/scripts/go2_pointcloud_stream_gate.py"
 MISSION_IO_SOURCE="${WS_ROOT}/src/dddmr_route_navigation/scripts/waypoint_mission_io.py"
+MAP_CONTRACT_TOOL="${SCRIPT_DIR}/go2_pose_graph_map_contract.py"
 CURRENT_OBSERVATION_TOPIC="/perception_3d_local/lidar/current_observation"
 MCL_FEATURE_TOPIC="/laser_cloud_less_sharp"
 BUILD_BASE_VALUE="${DDDMR_BUILD_BASE:-${DEFAULT_BUILD_BASE}}"
@@ -320,9 +321,20 @@ initial_pose_file_container=""
 mission_id=""
 MAP_HOST_DIR=""
 MAP_CONTAINER_DIR=""
+MAP_KEY_FRAME_COUNT=""
+MAP_RAW_MAP_POINT_COUNT=""
+MAP_RAW_GROUND_POINT_COUNT=""
+MAP_RECOMMENDED_STATIC_LAYER_TIMEOUT_SEC=""
 RUNTIME_NAV_CONFIG_HOST=""
 RUNTIME_NAV_CONFIG_CONTAINER="/run/go2_xt16_navigation_runtime.yaml"
 docker_sudo_auto_enabled="false"
+if [[ -n "${GO2_NAV_STATIC_LAYER_TIMEOUT_SEC+x}" ]]; then
+  STATIC_LAYER_TIMEOUT_SEC_VALUE="${GO2_NAV_STATIC_LAYER_TIMEOUT_SEC}"
+  STATIC_LAYER_TIMEOUT_EXPLICIT="true"
+else
+  STATIC_LAYER_TIMEOUT_SEC_VALUE="90"
+  STATIC_LAYER_TIMEOUT_EXPLICIT="false"
+fi
 
 if [[ "${mode}" == "stop" && -z "${DDDMR_DOCKER_USE_SUDO+x}" && \
       -S "${DOCKER_SOCKET_PATH_VALUE}" && ! -w "${DOCKER_SOCKET_PATH_VALUE}" ]]; then
@@ -417,69 +429,90 @@ resolve_map_path() {
 }
 
 prepare_map_override() {
-  local required=""
+  local contract_report="" key="" value=""
 
   [[ -n "${MAP_REQUESTED}" ]] || return 0
   [[ -f "${NAV_CONFIG_SOURCE}" ]] || \
     die "Navigation config does not exist: ${NAV_CONFIG_SOURCE}"
+  [[ -f "${MAP_CONTRACT_TOOL}" ]] || \
+    die "Pose-graph map contract helper is missing: ${MAP_CONTRACT_TOOL}"
 
   BAGS_DIR="$(realpath -m -- "${BAGS_DIR}")"
   MAP_HOST_DIR="$(resolve_map_path "${MAP_REQUESTED}")"
   MAP_CONTAINER_DIR="$(container_bags_path "${MAP_HOST_DIR}")"
-  for required in poses.pcd map.pcd ground.pcd edges.pcd; do
-    [[ -s "${MAP_HOST_DIR}/${required}" ]] || \
-      die "Selected MAP is missing a non-empty ${required}: ${MAP_HOST_DIR}"
-  done
-  [[ -d "${MAP_HOST_DIR}/pcd" ]] || \
-    die "Selected MAP is missing its keyframe directory: ${MAP_HOST_DIR}/pcd"
-  find "${MAP_HOST_DIR}/pcd" -maxdepth 1 -type f -name '*_ground.pcd' \
-    -print -quit | grep -q . || \
-    die "Selected MAP has no keyframe ground PCDs: ${MAP_HOST_DIR}/pcd"
+  if ! contract_report="$(
+    python3 "${MAP_CONTRACT_TOOL}" inspect --map-dir "${MAP_HOST_DIR}"
+  )"; then
+    die "Selected MAP failed its immutable pose-graph contract."
+  fi
+  while IFS='=' read -r key value; do
+    case "${key}" in
+      KEY_FRAME_COUNT)
+        MAP_KEY_FRAME_COUNT="${value}"
+        ;;
+      MAP_POINT_COUNT)
+        MAP_RAW_MAP_POINT_COUNT="${value}"
+        ;;
+      GROUND_POINT_COUNT)
+        MAP_RAW_GROUND_POINT_COUNT="${value}"
+        ;;
+      STATIC_LAYER_TIMEOUT_SEC)
+        MAP_RECOMMENDED_STATIC_LAYER_TIMEOUT_SEC="${value}"
+        ;;
+    esac
+  done <<<"${contract_report}"
+  [[ "${MAP_KEY_FRAME_COUNT}" =~ ^[1-9][0-9]*$ ]] || \
+    die "Pose-graph contract did not report a positive key-frame count."
+  [[ "${MAP_RAW_MAP_POINT_COUNT}" =~ ^[1-9][0-9]*$ ]] || \
+    die "Pose-graph contract did not report a positive map point count."
+  [[ "${MAP_RAW_GROUND_POINT_COUNT}" =~ ^[1-9][0-9]*$ ]] || \
+    die "Pose-graph contract did not report a positive ground point count."
+  [[ "${MAP_RECOMMENDED_STATIC_LAYER_TIMEOUT_SEC}" =~ ^[1-9][0-9]*$ ]] || \
+    die "Pose-graph contract did not report a static-layer timeout."
 
   mkdir -p -- "${RUN_LOG_DIR}"
   RUNTIME_NAV_CONFIG_HOST="$(
     mktemp --suffix=.yaml \
       "${RUN_LOG_DIR}/${CONTAINER_NAME}_map_override.XXXXXX"
   )"
-  python3 - \
-    "${NAV_CONFIG_SOURCE}" \
-    "${RUNTIME_NAV_CONFIG_HOST}" \
-    "${MAP_CONTAINER_DIR}" <<'PY'
-from pathlib import Path
-import sys
-
-source = Path(sys.argv[1])
-destination = Path(sys.argv[2])
-pose_graph_dir = sys.argv[3]
-lines = source.read_text().splitlines()
-
-in_map1 = False
-replacement_count = 0
-output = []
-for line in lines:
-    stripped = line.strip()
-    if line and not line.startswith((" ", "\t")) and stripped.endswith(":"):
-        in_map1 = stripped == "map1:"
-    if in_map1 and stripped.startswith("pose_graph_dir:"):
-        indent = line[: len(line) - len(line.lstrip())]
-        output.append(f'{indent}pose_graph_dir: "{pose_graph_dir}"')
-        replacement_count += 1
-    else:
-        output.append(line)
-
-if replacement_count != 1:
-    raise SystemExit(
-        "expected exactly one pose_graph_dir under map1, "
-        f"found {replacement_count}"
-    )
-
-destination.write_text("\n".join(output) + "\n")
-PY
+  python3 "${MAP_CONTRACT_TOOL}" render-config \
+    --source "${NAV_CONFIG_SOURCE}" \
+    --destination "${RUNTIME_NAV_CONFIG_HOST}" \
+    --pose-graph-dir "${MAP_CONTAINER_DIR}" \
+    --expected-key-frame-count "${MAP_KEY_FRAME_COUNT}" || \
+    die "Failed to pair the navigation config with the selected MAP contract."
   chmod 0644 "${RUNTIME_NAV_CONFIG_HOST}"
 
   log "Fast map override selected:"
   log "  host: ${MAP_HOST_DIR}"
   log "  container pose_graph_dir: ${MAP_CONTAINER_DIR}"
+  log "  key frames: ${MAP_KEY_FRAME_COUNT} (validated feature/surface/ground sets)"
+  log "  raw points: map=${MAP_RAW_MAP_POINT_COUNT} ground=${MAP_RAW_GROUND_POINT_COUNT}"
+  log "  runtime expected_key_frame_count: ${MAP_KEY_FRAME_COUNT}"
+}
+
+configure_static_layer_timeout() {
+  if [[ "${STATIC_LAYER_TIMEOUT_EXPLICIT}" == "false" && \
+        -n "${MAP_RECOMMENDED_STATIC_LAYER_TIMEOUT_SEC}" ]]; then
+    if (( MAP_RECOMMENDED_STATIC_LAYER_TIMEOUT_SEC > \
+          STATIC_LAYER_TIMEOUT_SEC_VALUE )); then
+      STATIC_LAYER_TIMEOUT_SEC_VALUE="${MAP_RECOMMENDED_STATIC_LAYER_TIMEOUT_SEC}"
+      log "Dense MAP detected; raised only the static-layer readiness timeout to ${STATIC_LAYER_TIMEOUT_SEC_VALUE}s."
+    fi
+  fi
+
+  [[ "${STATIC_LAYER_TIMEOUT_SEC_VALUE}" =~ ^[1-9][0-9]*$ ]] && \
+    (( STATIC_LAYER_TIMEOUT_SEC_VALUE >= 30 )) && \
+    (( STATIC_LAYER_TIMEOUT_SEC_VALUE <= 1800 )) || \
+    die "GO2_NAV_STATIC_LAYER_TIMEOUT_SEC must be an integer from 30 through 1800."
+  log "Static-layer readiness timeout: ${STATIC_LAYER_TIMEOUT_SEC_VALUE}s (map geometry unchanged)"
+}
+
+weighted_ground_timeout_error() {
+  if [[ -n "${MAP_HOST_DIR}" ]]; then
+    die "Timed out after ${STATIC_LAYER_TIMEOUT_SEC_VALUE}s waiting for weighted planning-ground publication (MAP key_frames=${MAP_KEY_FRAME_COUNT}, raw_ground_points=${MAP_RAW_GROUND_POINT_COUNT})."
+  fi
+  die "Timed out after ${STATIC_LAYER_TIMEOUT_SEC_VALUE}s waiting for weighted planning-ground publication."
 }
 
 validate_mission_request() {
@@ -1509,6 +1542,7 @@ main() {
   validate_lateral_limit
   log "Startup profile: ${STARTUP_PROFILE_VALUE}"
   prepare_map_override
+  configure_static_layer_timeout
   require_docker_image
   assert_clean_runtime
   validate_perception_settings
@@ -1556,11 +1590,12 @@ main() {
   if [[ "${ROS_DISTRO_VALUE}" == "foxy" ]]; then
     wait_for_container_log_pattern \
       "weighted planning-ground publication" \
-      '\[global_planner\].*Publish weighted ground point cloud\.' 90 || \
-      die "Timed out waiting for weighted planning-ground publication"
+      '\[global_planner\].*Publish weighted ground point cloud\.' \
+      "${STATIC_LAYER_TIMEOUT_SEC_VALUE}" || weighted_ground_timeout_error
   else
-    wait_for_pointcloud_sample /weighted_ground 90 transient_local || \
-      die "Timed out waiting for a non-empty /weighted_ground sample"
+    wait_for_pointcloud_sample \
+      /weighted_ground "${STATIC_LAYER_TIMEOUT_SEC_VALUE}" transient_local || \
+      weighted_ground_timeout_error
   fi
   wait_for_topic /dddmr_go2/safe_cmd_vel 90 || die "Timed out waiting for /dddmr_go2/safe_cmd_vel"
   require_current_observation_stream
