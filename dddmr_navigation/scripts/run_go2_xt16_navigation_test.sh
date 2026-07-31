@@ -78,7 +78,7 @@ Common environment overrides:
 Examples:
   scripts/run_go2_xt16_navigation_test.sh --dry-run
   scripts/run_go2_xt16_navigation_test.sh --quick --dry-run
-  MAP=/root/dddmr_bags/go2_xt16_mouth_mapping_20260730_153458_map_2026_07_30_07_34_57 \
+  MAP=/root/dddmr_bags/go2_xt16_mouth_mapping_20260723_153831_cleaned_20260724_130438 \
     scripts/run_go2_xt16_navigation_test.sh --quick --dry-run
   GO2_NAV_LIVE_CONFIRM=I_AM_SUPERVISING_GO2_NAV \
     scripts/run_go2_xt16_navigation_test.sh --live
