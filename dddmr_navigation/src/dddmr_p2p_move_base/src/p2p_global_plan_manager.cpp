@@ -33,7 +33,8 @@
 namespace p2p_move_base
 {
 P2PGlobalPlanManager::P2PGlobalPlanManager(std::string name)
-  : Node(name), name_(name), is_planning_(false), got_first_goal_(false)
+  : Node(name), name_(name), project_goal_to_ground_(false),
+    is_planning_(false), got_first_goal_(false)
 {
   clock_ = this->get_clock();
 }
@@ -134,6 +135,7 @@ void P2PGlobalPlanManager::queryThread(){
   auto goal_msg = dddmr_sys_core::action::GetPlan::Goal();
   goal_msg.goal = goal_;
   goal_msg.activate_threading = true;
+  goal_msg.project_goal_to_ground = project_goal_to_ground_;
 
   auto send_goal_options = rclcpp_action::Client<dddmr_sys_core::action::GetPlan>::SendGoalOptions();
   
@@ -191,9 +193,13 @@ void P2PGlobalPlanManager::global_planner_client_result_callback(const rclcpp_ac
   is_planning_ = false;
 }
 
-void P2PGlobalPlanManager::setGoal(const geometry_msgs::msg::PoseStamped& goal){
+void P2PGlobalPlanManager::setGoal(
+  const geometry_msgs::msg::PoseStamped & goal,
+  bool project_goal_to_ground)
+{
   std::unique_lock<std::mutex> lock(access_);
   goal_ = goal;
+  project_goal_to_ground_ = project_goal_to_ground;
   got_first_goal_ = true;
 }
 

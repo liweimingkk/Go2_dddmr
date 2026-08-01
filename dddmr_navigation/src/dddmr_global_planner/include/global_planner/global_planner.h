@@ -88,7 +88,10 @@ class GlobalPlanner : public rclcpp::Node {
 
       void initial(const std::shared_ptr<perception_3d::Perception3D_ROS>& perception_3d);
       
-      nav_msgs::msg::Path makeROSPlan(const geometry_msgs::msg::PoseStamped& start, const geometry_msgs::msg::PoseStamped& goal);
+      nav_msgs::msg::Path makeROSPlan(
+        const geometry_msgs::msg::PoseStamped & start,
+        const geometry_msgs::msg::PoseStamped & goal,
+        bool project_goal_to_ground = false);
       std::shared_ptr<dddmr_sys_core::action::GetPlan::Result> global_plan_result_;
 
     private:
@@ -140,6 +143,8 @@ class GlobalPlanner : public rclcpp::Node {
       double max_start_projection_z_;
       double max_goal_projection_xy_;
       double max_goal_projection_z_;
+      double goal_projection_surface_max_z_gap_;
+      int goal_projection_min_surface_points_;
       bool allow_start_in_dynamic_inflation_;
       std::string start_static_clearance_layer_;
       
@@ -176,8 +181,12 @@ class GlobalPlanner : public rclcpp::Node {
       void postSmoothPath(std::vector<unsigned int>& path_id, std::vector<unsigned int>& smoothed_path_id);
       void getStaticGraphFromPerception3D();
 
-      bool getStartGoalID(const geometry_msgs::msg::PoseStamped& start, const geometry_msgs::msg::PoseStamped& goal, 
-                          unsigned int& start_id, unsigned int& goal_id);
+      bool getStartGoalID(
+        const geometry_msgs::msg::PoseStamped & start,
+        const geometry_msgs::msg::PoseStamped & goal,
+        bool project_goal_to_ground,
+        unsigned int & start_id,
+        unsigned int & goal_id);
       bool selectTraversableGround(
         const pcl::PointXYZI & requested,
         double search_radius,
@@ -185,6 +194,7 @@ class GlobalPlanner : public rclcpp::Node {
         double max_projection_z,
         const char * endpoint_name,
         bool is_start_endpoint,
+        bool project_by_xy,
         unsigned int & selected_id);
 
       void pubStaticGraph();

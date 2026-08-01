@@ -285,7 +285,8 @@ void P2PMoveBase::executeCb(const std::shared_ptr<rclcpp_action::ServerGoalHandl
   global_plan_recovery_guard_.reset();
   local_failure_debounce_.reset();
   STATE_->current_goal_ = move_base_goal->target_pose;
-  GPM_->setGoal(STATE_->current_goal_);
+  GPM_->setGoal(
+    STATE_->current_goal_, move_base_goal->project_goal_to_ground);
   GPM_->resume();
   publishDecisionState();
 

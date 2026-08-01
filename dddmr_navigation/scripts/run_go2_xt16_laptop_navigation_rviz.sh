@@ -53,7 +53,7 @@ source "${SCRIPT_DIR}/setup_go2_dds_env.sh"
 
 printf 'Starting laptop navigation RViz on %s (ROS_DOMAIN_ID=%s).\n' \
   "${GO2_NET_IFACE}" "${ROS_DOMAIN_ID}"
-printf 'Goal tool: 2D Goal Pose -> /goal_pose_3d\n'
+printf 'Goal tool: 2D Goal Pose -> /goal_pose_3d (planner resolves slope-ground Z from XY)\n'
 printf 'WARNING: clicking a goal can move the Go2 when the supervised live adapter is active.\n'
 
 exec ros2 run rviz2 rviz2 -d "${RVIZ_CONFIG}" "$@"

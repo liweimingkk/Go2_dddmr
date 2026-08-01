@@ -1,5 +1,8 @@
 geometry_msgs/PoseStamped target_pose
 float32 target_value
+# True only when target_pose carries a 2-D XY goal and its Z must be resolved
+# against the planner's traversable ground. Explicit 3-D goals leave this false.
+bool project_goal_to_ground
 ---
 #result definition RUNNING = 0, SUCCESS = 1, FAILURE = 2
 int32 status

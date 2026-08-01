@@ -115,6 +115,8 @@ class DWA_GlobalPlanner : public rclcpp::Node {
       std::string robot_frame_;
       geometry_msgs::msg::PoseStamped new_goal_;
       geometry_msgs::msg::PoseStamped current_goal_;
+      bool new_goal_project_to_ground_{false};
+      bool current_goal_project_to_ground_{false};
       nav_msgs::msg::Path global_path_;
       nav_msgs::msg::Path global_dwa_path_;
       double look_ahead_distance_;

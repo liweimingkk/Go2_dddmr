@@ -20,9 +20,13 @@ class Nav2dGoalSub():
 
 
     def goalCB(self, msg):
-        self.node_.get_logger().info("Got goal at: %.2f, %.2f, %.2f"  % (msg.pose.position.x, msg.pose.position.y, msg.pose.position.z))
+        self.node_.get_logger().info(
+            "Got 2-D goal at: %.2f, %.2f; planner will resolve ground Z"
+            % (msg.pose.position.x, msg.pose.position.y)
+        )
         self.nav2d_goal = PToPMoveBase.Goal()
         self.nav2d_goal.target_pose = msg
+        self.nav2d_goal.project_goal_to_ground = True
 
     def clicked_pointCB(self, msg):
         self.node_.get_logger().info("Got clicked point at: %.2f, %.2f, %.2f"  % (msg.point.x, msg.point.y, msg.point.z))
@@ -34,6 +38,7 @@ class Nav2dGoalSub():
         a_pose.header.frame_id = "map"
         self.nav2d_goal = PToPMoveBase.Goal()
         self.nav2d_goal.target_pose = a_pose
+        self.nav2d_goal.project_goal_to_ground = False
 
     def send_goal(self):
 

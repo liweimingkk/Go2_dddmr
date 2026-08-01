@@ -67,6 +67,7 @@ private:
   std::string global_planner_action_name_;
   double global_plan_query_frequency_;
   geometry_msgs::msg::PoseStamped goal_;
+  bool project_goal_to_ground_;
   bool is_planning_;
   bool got_first_goal_;
   nav_msgs::msg::Path global_path_;
@@ -90,7 +91,9 @@ public:
   void queryThread();
 
   void initial();
-  void setGoal(const geometry_msgs::msg::PoseStamped& goal);
+  void setGoal(
+    const geometry_msgs::msg::PoseStamped & goal,
+    bool project_goal_to_ground);
   void resume();
   void stop();
   bool hasPlan();

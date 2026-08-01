@@ -134,27 +134,35 @@ DWA_GlobalPlanner::~DWA_GlobalPlanner(){
   action_server_global_planner_.reset();
 }
 
-bool DWA_GlobalPlanner::isNewGoal(){
+bool DWA_GlobalPlanner::isNewGoal()
+{
   std::lock_guard<std::mutex> path_lock(path_mutex_);
-  if(new_goal_.pose.position.x==current_goal_.pose.position.x && 
-      new_goal_.pose.position.y==current_goal_.pose.position.y && 
-        new_goal_.pose.position.z==current_goal_.pose.position.z && 
-          new_goal_.pose.orientation.x==current_goal_.pose.orientation.x && 
-            new_goal_.pose.orientation.y==current_goal_.pose.orientation.y && 
-              new_goal_.pose.orientation.z==current_goal_.pose.orientation.z && 
-                new_goal_.pose.orientation.w==current_goal_.pose.orientation.w)
-     {
-      
-      return false;
-     }
-  
-  RCLCPP_INFO(this->get_logger(), "Received new goal at: %.2f, %.2f, %.2f", new_goal_.pose.position.x, new_goal_.pose.position.y, new_goal_.pose.position.z);
+  if (
+    new_goal_project_to_ground_ == current_goal_project_to_ground_ &&
+    new_goal_.pose.position.x == current_goal_.pose.position.x &&
+    new_goal_.pose.position.y == current_goal_.pose.position.y &&
+    new_goal_.pose.position.z == current_goal_.pose.position.z &&
+    new_goal_.pose.orientation.x == current_goal_.pose.orientation.x &&
+    new_goal_.pose.orientation.y == current_goal_.pose.orientation.y &&
+    new_goal_.pose.orientation.z == current_goal_.pose.orientation.z &&
+    new_goal_.pose.orientation.w == current_goal_.pose.orientation.w)
+  {
+    return false;
+  }
+
+  RCLCPP_INFO(
+    this->get_logger(),
+    "Received new goal at: %.2f, %.2f, %.2f (project_to_ground=%d)",
+    new_goal_.pose.position.x, new_goal_.pose.position.y,
+    new_goal_.pose.position.z, new_goal_project_to_ground_);
   return true;
 }
 
 void DWA_GlobalPlanner::makePlan(const std::shared_ptr<rclcpp_action::ServerGoalHandle<dddmr_sys_core::action::GetPlan>> goal_handle){
   
   new_goal_ = goal_handle->get_goal()->goal;
+  new_goal_project_to_ground_ =
+    goal_handle->get_goal()->project_goal_to_ground;
 
   if(!perception_3d_ros_->getSharedDataPtr()->is_static_layer_ready_){
     RCLCPP_INFO_THROTTLE(this->get_logger(), *clock_, 1000, "Waiting for static layer");
@@ -177,7 +185,9 @@ void DWA_GlobalPlanner::makePlan(const std::shared_ptr<rclcpp_action::ServerGoal
     perception_3d_ros_->getGlobalPose(start);
 
     nav_msgs::msg::Path new_global_path =
-      global_planner_->makeROSPlan(start, goal_handle->get_goal()->goal);
+      global_planner_->makeROSPlan(
+        start, goal_handle->get_goal()->goal,
+        goal_handle->get_goal()->project_goal_to_ground);
     auto result = std::make_shared<dddmr_sys_core::action::GetPlan::Result>();
     result->path = new_global_path;
 
@@ -210,6 +220,7 @@ void DWA_GlobalPlanner::makePlan(const std::shared_ptr<rclcpp_action::ServerGoal
         std::lock_guard<std::mutex> path_lock(path_mutex_);
         ++path_generation_;
         current_goal_ = new_goal_;
+        current_goal_project_to_ground_ = new_goal_project_to_ground_;
         global_path_ = new_global_path;
         pcl_global_path_ = std::move(new_pcl_global_path);
         kdtree_global_path_ = std::move(new_kdtree_global_path);

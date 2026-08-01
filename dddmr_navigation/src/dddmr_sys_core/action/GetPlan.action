@@ -3,6 +3,8 @@ geometry_msgs/PoseStamped goal
 geometry_msgs/PoseStamped start
 #below for dwa global plnner
 bool activate_threading
+# Ignore goal.pose.position.z and resolve a unique ground surface by XY.
+bool project_goal_to_ground
 ---
 #result definition
 nav_msgs/Path path
