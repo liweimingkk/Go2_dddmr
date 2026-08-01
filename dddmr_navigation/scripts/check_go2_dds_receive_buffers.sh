@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# One XT16 PointCloud2 sample is approximately 650 KiB on this deployment.
-# Require ample headroom so a DDS reader cannot start with a receive buffer
-# smaller than one sample and silently degrade after a short burst.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# One XT16 PointCloud2 sample is approximately 812 KiB on this deployment.
+# CycloneDDS explicitly requests a 16 MiB reader buffer, so the host maximum
+# must permit that request.  The kernel default may remain smaller: raising it
+# would enlarge every UDP socket, while the measured navigation fix only
+# requires the DDS readers to opt into the larger maximum.
 required_bytes=16777216
 rmem_max_path="/proc/sys/net/core/rmem_max"
 rmem_default_path="/proc/sys/net/core/rmem_default"
@@ -52,12 +56,14 @@ printf 'GO2_DDS_REQUIRED_RMEM_BYTES=%s\n' "${required_bytes}"
 printf 'GO2_DDS_RMEM_MAX_BYTES=%s\n' "${rmem_max}"
 printf 'GO2_DDS_RMEM_DEFAULT_BYTES=%s\n' "${rmem_default}"
 
-if (( rmem_max < required_bytes || rmem_default < required_bytes )); then
+if (( rmem_max < required_bytes )); then
   cat >&2 <<EOF
 ERROR: Go2 DDS UDP receive buffers are too small for sustained XT16 point clouds.
-Run these commands on the host before the no-motion test:
+Apply the repository's persistent host setting before the no-motion test:
+  sudo env GO2_DDS_HOST_TUNING_CONFIRM=I_AM_CONFIGURING_GO2_DDS_HOST \
+    ${SCRIPT_DIR}/install_go2_dds_receive_buffer.sh --apply
+Or apply the equivalent setting temporarily:
   sudo sysctl -w net.core.rmem_max=${required_bytes}
-  sudo sysctl -w net.core.rmem_default=${required_bytes}
 No ROS process or physical motion output was started.
 EOF
   exit 1

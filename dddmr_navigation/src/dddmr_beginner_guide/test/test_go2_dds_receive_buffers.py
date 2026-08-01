@@ -10,6 +10,15 @@ import xml.etree.ElementTree as element_tree
 
 WORKSPACE = pathlib.Path(__file__).resolve().parents[3]
 CHECK_SCRIPT = WORKSPACE / "scripts" / "check_go2_dds_receive_buffers.sh"
+INSTALL_SCRIPT = (
+    WORKSPACE / "scripts" / "install_go2_dds_receive_buffer.sh"
+)
+ODOM_OFFSET_RESOLVER = (
+    WORKSPACE / "scripts" / "resolve_go2_odom_time_offset.sh"
+)
+HOST_SYSCTL_CONFIG = (
+    WORKSPACE / "config" / "sysctl.d" / "90-go2-dds-receive-buffer.conf"
+)
 DDS_SETUP = WORKSPACE / "scripts" / "setup_go2_dds_env.sh"
 DOCKER_WRAPPER = WORKSPACE / "scripts" / "dddmr_docker_go2_xt16.sh"
 MOUTH_MAPPING_WRAPPER = (
@@ -144,10 +153,112 @@ class Go2DdsReceiveBuffersTest(unittest.TestCase):
         self.assertIn("net.core.rmem_max=16777216", result.stderr)
         self.assertIn("No ROS process or physical motion output was started", result.stderr)
 
-    def test_small_default_buffer_fails(self):
+    def test_small_default_buffer_passes_with_large_explicit_max(self):
         result = self.run_check("16777216\n", "212992\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("GO2_DDS_RMEM_DEFAULT_BYTES=212992", result.stdout)
+        self.assertIn("GO2_DDS_RECEIVE_BUFFER_CHECK=PASS", result.stdout)
+
+    def test_persistent_config_only_raises_explicit_receive_maximum(self):
+        config = HOST_SYSCTL_CONFIG.read_text(encoding="utf-8")
+        self.assertIn("net.core.rmem_max = 16777216", config)
+        self.assertNotIn("\nnet.core.rmem_default =", config)
+
+    def test_installer_requires_explicit_confirmation_before_apply(self):
+        environment = os.environ.copy()
+        environment.pop("GO2_DDS_HOST_TUNING_CONFIRM", None)
+        result = subprocess.run(
+            [str(INSTALL_SCRIPT), "--apply"],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("net.core.rmem_default=16777216", result.stderr)
+        self.assertIn("GO2_DDS_HOST_TUNING_CONFIRM", result.stderr)
+
+    def test_installer_prints_repository_owned_config(self):
+        result = subprocess.run(
+            [str(INSTALL_SCRIPT), "--print-config"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout,
+            HOST_SYSCTL_CONFIG.read_text(encoding="utf-8"),
+        )
+
+    def test_orin_offset_resolver_checks_buffers_before_provider(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = pathlib.Path(temporary_directory)
+            provider_marker = directory / "provider_started"
+            checker = directory / "checker"
+            checker.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
+            checker.chmod(0o755)
+            provider = directory / "provider"
+            provider.write_text(
+                "#!/usr/bin/env bash\n"
+                f"touch {provider_marker}\n"
+                "printf 'CONFIRMED_ODOM_TIME_OFFSET_SEC=1.25\\n'\n",
+                encoding="utf-8",
+            )
+            provider.chmod(0o755)
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "DDDMR_PLATFORM": "orin-jp5",
+                    "GO2_DDS_BUFFER_CHECKER": str(checker),
+                    "GO2_ODOM_TIME_OFFSET_PROVIDER": str(provider),
+                }
+            )
+            result = subprocess.run(
+                [str(ODOM_OFFSET_RESOLVER)],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(provider_marker.exists())
+            self.assertIn("before odom/XT16 preflight", result.stderr)
+
+    def test_orin_offset_resolver_continues_after_buffer_check(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = pathlib.Path(temporary_directory)
+            checker = directory / "checker"
+            checker.write_text(
+                "#!/usr/bin/env bash\n"
+                "printf 'GO2_DDS_RECEIVE_BUFFER_CHECK=PASS\\n'\n",
+                encoding="utf-8",
+            )
+            checker.chmod(0o755)
+            provider = directory / "provider"
+            provider.write_text(
+                "#!/usr/bin/env bash\n"
+                "printf 'CONFIRMED_ODOM_TIME_OFFSET_SEC=1.25\\n'\n",
+                encoding="utf-8",
+            )
+            provider.chmod(0o755)
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "DDDMR_PLATFORM": "orin-jp5",
+                    "GO2_DDS_BUFFER_CHECKER": str(checker),
+                    "GO2_ODOM_TIME_OFFSET_PROVIDER": str(provider),
+                }
+            )
+            result = subprocess.run(
+                [str(ODOM_OFFSET_RESOLVER)],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "1.25")
+        self.assertIn("GO2_DDS_RECEIVE_BUFFER_CHECK=PASS", result.stderr)
 
     def test_malformed_kernel_value_fails_closed(self):
         result = self.run_check("invalid\n", "16777216\n")

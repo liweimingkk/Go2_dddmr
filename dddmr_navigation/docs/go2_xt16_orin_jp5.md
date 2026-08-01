@@ -78,12 +78,27 @@ trees are isolated in:
 .docker_go2_xt16_orin_log/
 ```
 
-The stock JetPack 5 host caps UDP receive buffers below the workspace's strict
-16 MiB x64 minimum. The Orin wrapper therefore sets
-`GO2_DDS_RCVBUF_MIN=default` inside its containers while still asking
-CycloneDDS for a 16 MiB maximum. This does not change host sysctls or robot
-network settings. The x64 default remains a fail-closed 16 MiB minimum, and
-the live point-cloud preflight below remains mandatory on Orin.
+The stock JetPack 5 host caps UDP receive buffers below the 16 MiB size that
+CycloneDDS requests for sustained XT16 traffic. A short point-cloud preflight
+can still pass at that cap, but a dense static-layer build can then overflow
+DDS readers. On the reference Orin, the same no-motion navigation load caused
+33,172 receive-buffer errors at the stock 208 KiB maximum and 27 errors after
+raising only `net.core.rmem_max` to 16 MiB; all four MCL feature streams then
+remained near 10 Hz.
+
+Install the repository-owned host setting once:
+
+```bash
+sudo env GO2_DDS_HOST_TUNING_CONFIRM=I_AM_CONFIGURING_GO2_DDS_HOST \
+  ./scripts/install_go2_dds_receive_buffer.sh --apply
+```
+
+The setting is stored in
+`/etc/sysctl.d/90-go2-dds-receive-buffer.conf` and persists across reboot.
+`net.core.rmem_default` is deliberately unchanged because CycloneDDS opts into
+the larger maximum explicitly. Orin navigation now checks this limit before
+the odom/XT16 preflight starts any ROS process. The live point-cloud preflight
+below remains mandatory after the host check passes.
 
 ## Read-only acceptance
 
