@@ -530,6 +530,12 @@ Parameters::Parameters(const rclcpp::node_interfaces::NodeLoggingInterface::Shar
       declare_nonnegative("localization_tracking_max_base_height_error", 1.0e6);
   localization_tracking_max_pose_height_error_ =
       declare_nonnegative("localization_tracking_max_pose_height_error", 1.0e6);
+  parameter_->declare_parameter(
+      "localization_slope_compensation_enabled", rclcpp::ParameterValue(false));
+  localization_slope_compensation_enabled_ = parameter_->get_parameter(
+      "localization_slope_compensation_enabled").as_bool();
+  localization_slope_min_tilt_ = std::clamp(
+      declare_nonnegative("localization_slope_min_tilt", 0.05), 0.0, 1.5707963267948966);
   parameter_->declare_parameter("localization_lost_max_xy_std", rclcpp::ParameterValue(1.50));
   localization_lost_max_xy_std_ = std::max(
       localization_tracking_max_xy_std_,
@@ -594,6 +600,11 @@ Parameters::Parameters(const rclcpp::node_interfaces::NodeLoggingInterface::Shar
       localization_tracking_max_yaw_std_, localization_tracking_good_frames_,
       localization_lost_match_ratio_, localization_lost_max_residual_,
       localization_lost_bad_frames_);
+  RCLCPP_INFO(
+      logger_->get_logger(),
+      "slope compensation: enabled=%d min_tilt=%.3f rad; slope health uses "
+      "surface tangent/normal spread and matched-point residual",
+      localization_slope_compensation_enabled_, localization_slope_min_tilt_);
   
 
   double x, y, z;

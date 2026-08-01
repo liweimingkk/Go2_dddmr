@@ -190,6 +190,11 @@ if(BUILD_TESTING)
     test/test_localization_state_machine.cpp
   )
   target_include_directories(test_localization_state_machine PRIVATE include)
+
+  ament_add_gtest(test_particle_spread
+    test/test_particle_spread.cpp
+  )
+  target_include_directories(test_particle_spread PRIVATE include)
 endif()
 
 ament_export_include_directories(include)

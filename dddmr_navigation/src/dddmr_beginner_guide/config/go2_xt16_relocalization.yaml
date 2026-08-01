@@ -68,6 +68,15 @@ mcl_3dl:
     # lower quality thresholds to provide hysteresis and avoid state flapping.
     localization_tracking_match_ratio: 0.15
     localization_lost_match_ratio: 0.08
+    # In 2.5D, particle spread is resolved along the local map-ground tangent
+    # plane and normal. On horizontal ground these remain exactly world XY/Z;
+    # on ramps, expected elevation change is retained in tangent uncertainty
+    # instead of being misclassified as off-ground Z uncertainty.
+    # Residual is likewise decoupled from coverage only on a confirmed slope:
+    # match_ratio retains the coverage gate while residual measures the points
+    # that actually matched. Flat ground keeps the legacy metrics unchanged.
+    localization_slope_compensation_enabled: true
+    localization_slope_min_tilt: 0.05
     localization_tracking_max_xy_std: 0.75
     localization_tracking_max_z_std: 0.08
     localization_tracking_max_roll_std: 0.035

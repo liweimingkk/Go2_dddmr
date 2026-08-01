@@ -29,6 +29,7 @@
 
 #include <mcl_3dl/lidar_measurement_models/lidar_measurement_model_likelihood.h>
 #include <mcl_3dl/flat_ground.h>
+#include <mcl_3dl/residual_metrics.h>
 
 namespace mcl_3dl
 {
@@ -153,8 +154,7 @@ LidarMeasurementResult LidarMeasurementModelLikelihood::measure(
     }
   }
 
-  size_t num = 0;
-  double residual_sum = 0.0;
+  ResidualAccumulator residuals(match_dist_min_);
 
   for (auto& p : pc_flat_new_type->points)
   {
@@ -165,16 +165,12 @@ LidarMeasurementResult LidarMeasurementModelLikelihood::measure(
         kdtree.radiusSearch(p, match_dist_min_, id, sqdist, 1);
     const float nearest_distance = found > 0 ?
         std::sqrt(sqdist.front()) : match_dist_min_;
-    residual_sum += std::min(nearest_distance, match_dist_min_);
-    if (found > 0)
+    const float dist = match_dist_min_ - std::max(nearest_distance, match_dist_flat_);
+    const bool matched = found > 0 && std::isfinite(nearest_distance) && dist >= 0.0f;
+    residuals.add(nearest_distance, matched);
+    if (matched)
     {
-      const float dist = match_dist_min_ - std::max(nearest_distance, match_dist_flat_);
-      if (dist < 0.0)
-      {
-        continue;
-      }
       score_like += dist * dist;
-      num++;
     }
   }
 
@@ -185,29 +181,22 @@ LidarMeasurementResult LidarMeasurementModelLikelihood::measure(
     const int found = kdtree.radiusSearch(p, match_dist_min_, id, sqdist, 1);
     const float nearest_distance = found > 0 ?
         std::sqrt(sqdist.front()) : match_dist_min_;
-    residual_sum += std::min(nearest_distance, match_dist_min_);
-    if (found > 0)
+    const float dist = match_dist_min_ - std::max(nearest_distance, match_dist_flat_);
+    const bool matched = found > 0 && std::isfinite(nearest_distance) && dist >= 0.0f;
+    residuals.add(nearest_distance, matched);
+    if (matched)
     {
-      const float dist = match_dist_min_ - std::max(nearest_distance, match_dist_flat_);
-      if (dist < 0.0)
-      {
-        continue;
-      }
       const float point_weight = std::max(0.05f, std::abs(p.intensity));
       score_like += dist * dist / point_weight;
-      num++;
     }
   }
-  const std::size_t total_points =
-      pc_flat_new_type->points.size() + pc_less_sharp_new_type->points.size();
-  const float match_ratio = total_points > 0 ?
-      static_cast<float>(num) / static_cast<float>(total_points) : 0.0f;
-  const float residual = total_points > 0 ?
-      static_cast<float>(residual_sum / static_cast<double>(total_points)) :
-      std::numeric_limits<float>::infinity();
+  const ResidualMetrics residual_metrics = residuals.metrics();
+  const float match_ratio = static_cast<float>(residual_metrics.match_ratio);
+  const float residual = static_cast<float>(residual_metrics.capped);
+  const float matched_residual = static_cast<float>(residual_metrics.matched);
 
   return LidarMeasurementResult(
-      score_like * pos_weight, match_ratio, residual, ground.valid,
+      score_like * pos_weight, match_ratio, residual, matched_residual, ground.valid,
       static_cast<float>(ground.z), ground.normal,
       static_cast<float>(ground.roughness));
 }

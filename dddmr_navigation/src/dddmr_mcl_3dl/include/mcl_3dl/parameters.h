@@ -141,6 +141,8 @@ public:
   double localization_tracking_max_ground_normal_error_;
   double localization_tracking_max_base_height_error_;
   double localization_tracking_max_pose_height_error_;
+  bool localization_slope_compensation_enabled_;
+  double localization_slope_min_tilt_;
   double localization_lost_max_xy_std_;
   double localization_lost_max_z_std_;
   double localization_lost_max_roll_std_;

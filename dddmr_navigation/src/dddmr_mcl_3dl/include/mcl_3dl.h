@@ -51,6 +51,7 @@
 #include <mcl_3dl/parameters.h>
 #include <mcl_3dl/localization_state_machine.h>
 #include <mcl_3dl/flat_ground.h>
+#include <mcl_3dl/particle_spread.h>
 
 
 #include <sensor_msgs/msg/point_cloud2.hpp>
@@ -199,6 +200,9 @@ class MCL3dlNode : public rclcpp::Node
     {
       double xy{std::numeric_limits<double>::infinity()};
       double z{std::numeric_limits<double>::infinity()};
+      double raw_xy{std::numeric_limits<double>::infinity()};
+      double raw_z{std::numeric_limits<double>::infinity()};
+      Vec3 normal{0.0, 0.0, 1.0};
       double roll{std::numeric_limits<double>::infinity()};
       double pitch{std::numeric_limits<double>::infinity()};
       double yaw{std::numeric_limits<double>::infinity()};
@@ -232,7 +236,9 @@ class MCL3dlNode : public rclcpp::Node
       std::size_t topic_index,
       const sensor_msgs::msg::PointCloud2::SharedPtr& msg);
     void publishFeatureMetrics(int64_t now_ns);
-    ParticleSpread particleSpread(const State6DOF& mean) const;
+    ParticleSpread particleSpread(
+      const State6DOF& mean,
+      const Vec3& surface_normal = Vec3(0.0, 0.0, 1.0)) const;
     bool constrainState2p5D(
       State6DOF& state,
       pcl::KdTreeFLANN<mcl_3dl::pcl_t>& ground_tree,

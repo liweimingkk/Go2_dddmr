@@ -1517,11 +1517,11 @@ bool MCL3dlNode::attemptGlobalLocalization(
   return true;
 }
 
-MCL3dlNode::ParticleSpread MCL3dlNode::particleSpread(const State6DOF& mean) const
+MCL3dlNode::ParticleSpread MCL3dlNode::particleSpread(
+    const State6DOF& mean, const Vec3& surface_normal) const
 {
   const Vec3 mean_rpy = mean.rot_.getRPY();
-  double xy_variance = 0.0;
-  double z_variance = 0.0;
+  PositionSpreadAccumulator position_spread(surface_normal);
   double roll_variance = 0.0;
   double pitch_variance = 0.0;
   double yaw_variance = 0.0;
@@ -1533,6 +1533,7 @@ MCL3dlNode::ParticleSpread MCL3dlNode::particleSpread(const State6DOF& mean) con
     const double dx = particle.pos_.x_ - mean.pos_.x_;
     const double dy = particle.pos_.y_ - mean.pos_.y_;
     const double dz = particle.pos_.z_ - mean.pos_.z_;
+    position_spread.add(Vec3(dx, dy, dz), probability);
     const Vec3 rpy = particle.rot_.getRPY();
     const auto angle_error = [](const double value, const double reference)
     {
@@ -1541,8 +1542,6 @@ MCL3dlNode::ParticleSpread MCL3dlNode::particleSpread(const State6DOF& mean) con
     const double roll_error = angle_error(rpy.x_, mean_rpy.x_);
     const double pitch_error = angle_error(rpy.y_, mean_rpy.y_);
     const double yaw_error = angle_error(rpy.z_, mean_rpy.z_);
-    xy_variance += probability * (dx * dx + dy * dy);
-    z_variance += probability * dz * dz;
     roll_variance += probability * roll_error * roll_error;
     pitch_variance += probability * pitch_error * pitch_error;
     yaw_variance += probability * yaw_error * yaw_error;
@@ -1553,9 +1552,13 @@ MCL3dlNode::ParticleSpread MCL3dlNode::particleSpread(const State6DOF& mean) con
   {
     return {};
   }
+  const PositionSpread position = position_spread.spread();
   ParticleSpread spread;
-  spread.xy = std::sqrt(std::max(0.0, xy_variance / probability_sum));
-  spread.z = std::sqrt(std::max(0.0, z_variance / probability_sum));
+  spread.xy = position.tangent;
+  spread.z = position.normal;
+  spread.raw_xy = position.raw_xy;
+  spread.raw_z = position.raw_z;
+  spread.normal = position_spread.normal();
   spread.roll = std::sqrt(std::max(0.0, roll_variance / probability_sum));
   spread.pitch = std::sqrt(std::max(0.0, pitch_variance / probability_sum));
   spread.yaw = std::sqrt(std::max(0.0, yaw_variance / probability_sum));
@@ -1812,11 +1815,25 @@ bool MCL3dlNode::measure(
       std::max(
           0.1f, static_cast<float>(params_->num_particles_) / pf_->getParticleSize()));
 
-  const auto spread = particleSpread(e);
+  const Vec3 map_ground_normal = normalizedSurfaceNormalOrUp(
+      final_result.ground_normal);
+  const double slope_tilt = surfaceTiltFromUp(final_result.ground_normal);
+  const bool slope_compensation_active = slopeCompensationActive(
+      params_->localization_slope_compensation_enabled_,
+      params_->flat_ground_enabled_, final_ground_constraint,
+      final_result.ground_valid, final_result.ground_normal,
+      params_->localization_slope_min_tilt_);
+  const Vec3 spread_normal = slope_compensation_active ?
+      map_ground_normal : Vec3(0.0, 0.0, 1.0);
+  const auto spread = particleSpread(e, spread_normal);
   const float final_match_ratio =
       std::isfinite(final_result.quality) ? final_result.quality : 0.0f;
-  const float final_residual = std::isfinite(final_result.residual) ?
+  const float capped_residual = std::isfinite(final_result.residual) ?
       final_result.residual : std::numeric_limits<float>::infinity();
+  const float matched_residual = std::isfinite(final_result.matched_residual) ?
+      final_result.matched_residual : std::numeric_limits<float>::infinity();
+  const float final_residual = slope_compensation_active ?
+      matched_residual : capped_residual;
   latest_match_ratio_.store(final_match_ratio);
   latest_residual_.store(final_residual);
   std_msgs::msg::Float32 quality_msg;
@@ -1883,13 +1900,20 @@ bool MCL3dlNode::measure(
   {
     RCLCPP_WARN_THROTTLE(
         this->get_logger(), *clock_, 3000,
-        "Localization health %s: match=%.3f residual=%.3f xyz_std=%.3f/%.3f "
+        "Localization health %s: match=%.3f residual=%.3f "
+        "capped_residual=%.3f matched_residual=%.3f "
+        "slope_compensated=%d slope_tilt=%.3f "
+        "tangent_normal_std=%.3f/%.3f raw_xyz_std=%.3f/%.3f "
+        "spread_normal=%.3f/%.3f/%.3f "
         "rpy_std=%.3f/%.3f/%.3f map_odom_tilt=%.3f ground_valid=%d "
         "ground_normal_error=%.3f observed_base_height=%.3f configured_base_height=%.3f "
         "base_height_error=%.3f pose_height_error=%.3f map_ground_z=%.3f pose_z=%.3f",
         health_reason.c_str(), observation.match_ratio, observation.residual,
-        observation.xy_std, observation.z_std, observation.roll_std,
-        observation.pitch_std, observation.yaw_std, observation.map_odom_tilt,
+        capped_residual, matched_residual, slope_compensation_active, slope_tilt,
+        observation.xy_std, observation.z_std, spread.raw_xy, spread.raw_z,
+        spread.normal.x_, spread.normal.y_, spread.normal.z_,
+        observation.roll_std, observation.pitch_std, observation.yaw_std,
+        observation.map_odom_tilt,
         observation.ground_valid, observation.ground_normal_error,
         observation_ground_.base_height, params_->flat_ground_base_link_height_,
         observation.base_height_error, observation.pose_height_error,
@@ -2001,11 +2025,18 @@ bool MCL3dlNode::measure(
     RCLCPP_WARN(
         this->get_logger(),
         "Localization state changed to %s: match=%.3f residual=%.3f "
-        "xyz_std=%.3f/%.3f rpy_std=%.3f/%.3f/%.3f map_odom_tilt=%.3f "
+        "capped_residual=%.3f matched_residual=%.3f "
+        "slope_compensated=%d slope_tilt=%.3f "
+        "tangent_normal_std=%.3f/%.3f raw_xyz_std=%.3f/%.3f "
+        "spread_normal=%.3f/%.3f/%.3f "
+        "rpy_std=%.3f/%.3f/%.3f map_odom_tilt=%.3f "
         "ground_normal_error=%.3f base_height_error=%.3f pose_height_error=%.3f "
         "health=%s particles=%lu",
         localizationStateName(new_state), final_match_ratio, final_residual,
-        spread.xy, spread.z, spread.roll, spread.pitch, spread.yaw,
+        capped_residual, matched_residual, slope_compensation_active, slope_tilt,
+        spread.xy, spread.z, spread.raw_xy, spread.raw_z,
+        spread.normal.x_, spread.normal.y_, spread.normal.z_,
+        spread.roll, spread.pitch, spread.yaw,
         observation.map_odom_tilt, observation.ground_normal_error,
         observation.base_height_error, observation.pose_height_error,
         health_reason.c_str(), pf_->getParticleSize());

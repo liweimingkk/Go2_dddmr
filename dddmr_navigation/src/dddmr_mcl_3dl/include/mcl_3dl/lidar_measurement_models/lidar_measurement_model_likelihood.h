@@ -53,6 +53,7 @@ struct LidarMeasurementResult
   float likelihood;
   float quality;
   float residual;
+  float matched_residual;
   bool ground_valid;
   float ground_z;
   Vec3 ground_normal;
@@ -62,6 +63,7 @@ struct LidarMeasurementResult
       const float likelihood_value,
       const float quality_value,
       const float residual_value,
+      const float matched_residual_value,
       const bool ground_valid_value = false,
       const float ground_z_value = std::numeric_limits<float>::quiet_NaN(),
       const Vec3& ground_normal_value = Vec3(0.0, 0.0, 1.0),
@@ -69,6 +71,7 @@ struct LidarMeasurementResult
     : likelihood(likelihood_value)
     , quality(quality_value)
     , residual(residual_value)
+    , matched_residual(matched_residual_value)
     , ground_valid(ground_valid_value)
     , ground_z(ground_z_value)
     , ground_normal(ground_normal_value)
