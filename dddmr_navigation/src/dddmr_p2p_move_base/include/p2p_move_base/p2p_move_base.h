@@ -43,6 +43,7 @@
 
 //@for call global planner action
 #include "dddmr_sys_core/action/get_plan.hpp"
+#include "p2p_move_base/goal_execution_gate.h"
 #include "p2p_move_base/global_plan_recovery_guard.h"
 #include "p2p_move_base/local_failure_debounce.h"
 #include "p2p_move_base/p2p_global_plan_manager.h"
@@ -77,6 +78,7 @@ class P2PMoveBase : public rclcpp::Node {
     rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr set_enabled_service_;
 
     std::shared_ptr<rclcpp_action::ServerGoalHandle<dddmr_sys_core::action::PToPMoveBase>> current_handle_;
+    GoalExecutionGate goal_execution_gate_;
     
     rclcpp::CallbackGroup::SharedPtr tf_listener_group_;
     rclcpp::CallbackGroup::SharedPtr action_server_group_;
@@ -111,6 +113,9 @@ class P2PMoveBase : public rclcpp::Node {
     std::shared_ptr<p2p_move_base::P2PGlobalPlanManager> GPM_;
 
     void executeCb(const std::shared_ptr<rclcpp_action::ServerGoalHandle<dddmr_sys_core::action::PToPMoveBase>> goal_handle);
+    void executeAcceptedGoal(
+      const std::shared_ptr<rclcpp_action::ServerGoalHandle<dddmr_sys_core::action::PToPMoveBase>> goal_handle,
+      GoalExecutionGate::Generation generation);
 
     bool executeCycle(const std::shared_ptr<rclcpp_action::ServerGoalHandle<dddmr_sys_core::action::PToPMoveBase>> goal_handle);
 

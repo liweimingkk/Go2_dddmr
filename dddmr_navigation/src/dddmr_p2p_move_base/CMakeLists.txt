@@ -150,6 +150,13 @@ if(BUILD_TESTING)
   target_include_directories(test_global_plan_recovery_guard PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
   )
+
+  ament_add_gtest(test_goal_execution_gate
+    test/test_goal_execution_gate.cpp
+  )
+  target_include_directories(test_goal_execution_gate PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
 endif()
 
 

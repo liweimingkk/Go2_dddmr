@@ -31,6 +31,8 @@
 #include <p2p_move_base/p2p_move_base.h>
 #include <dddmr_sys_core/action_client_compat.hpp>
 
+#include <exception>
+
 namespace p2p_move_base
 {
 
@@ -63,18 +65,64 @@ rclcpp_action::CancelResponse P2PMoveBase::handle_cancel(
 
 void P2PMoveBase::handle_accepted(const std::shared_ptr<rclcpp_action::ServerGoalHandle<dddmr_sys_core::action::PToPMoveBase>> goal_handle)
 {
-
+  const auto generation = goal_execution_gate_.acceptLatest();
   if (is_active(current_handle_)){
-    RCLCPP_INFO(this->get_logger(), "An older goal is active, cancelling current one.");
+    RCLCPP_INFO(
+      this->get_logger(),
+      "An older goal is active; preempting it before starting the new goal.");
     auto result = std::make_shared<dddmr_sys_core::action::PToPMoveBase::Result>();
+    result->status = 2;
+    result->result = "Superseded by a newer P2P goal";
     current_handle_->abort(result);
+  }
+  current_handle_ = goal_handle;
+  // this needs to return quickly to avoid blocking the executor, so spin up a new thread
+  std::thread{
+    [this, goal_handle, generation]() {
+      executeAcceptedGoal(goal_handle, generation);
+    }}.detach();
+}
+
+void P2PMoveBase::executeAcceptedGoal(
+  const std::shared_ptr<rclcpp_action::ServerGoalHandle<dddmr_sys_core::action::PToPMoveBase>> goal_handle,
+  GoalExecutionGate::Generation generation)
+{
+  if (!goal_execution_gate_.waitToStart(generation)) {
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Skipping a queued P2P goal because a newer goal superseded it.");
     return;
   }
-  else{
-    current_handle_ = goal_handle;
+
+  try {
+    if (goal_handle->is_active()) {
+      executeCb(goal_handle);
+    }
+  } catch (const std::exception & error) {
+    RCLCPP_ERROR(
+      this->get_logger(), "P2P goal execution failed: %s", error.what());
+    if (goal_handle->is_active()) {
+      auto result =
+        std::make_shared<dddmr_sys_core::action::PToPMoveBase::Result>();
+      result->status = 2;
+      result->result = "Unhandled P2P goal execution error";
+      goal_handle->abort(result);
+    }
+    publishZeroVelocity();
+    GPM_->stop();
+  } catch (...) {
+    RCLCPP_ERROR(this->get_logger(), "P2P goal execution failed with an unknown error.");
+    if (goal_handle->is_active()) {
+      auto result =
+        std::make_shared<dddmr_sys_core::action::PToPMoveBase::Result>();
+      result->status = 2;
+      result->result = "Unknown P2P goal execution error";
+      goal_handle->abort(result);
+    }
+    publishZeroVelocity();
+    GPM_->stop();
   }
-  // this needs to return quickly to avoid blocking the executor, so spin up a new thread
-  std::thread{std::bind(&P2PMoveBase::executeCb, this, std::placeholders::_1), goal_handle}.detach();
+  goal_execution_gate_.finish(generation);
 }
 
 void P2PMoveBase::initial(const std::shared_ptr<local_planner::Local_Planner>& lp
