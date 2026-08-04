@@ -133,6 +133,7 @@ public:
   double localization_lost_match_ratio_;
   double localization_tracking_max_xy_std_;
   double localization_tracking_max_z_std_;
+  double localization_tracking_max_slope_normal_std_;
   double localization_tracking_max_roll_std_;
   double localization_tracking_max_pitch_std_;
   double localization_tracking_max_yaw_std_;
@@ -145,6 +146,7 @@ public:
   double localization_slope_min_tilt_;
   double localization_lost_max_xy_std_;
   double localization_lost_max_z_std_;
+  double localization_lost_max_slope_normal_std_;
   double localization_lost_max_roll_std_;
   double localization_lost_max_pitch_std_;
   double localization_lost_max_yaw_std_;
@@ -154,6 +156,7 @@ public:
   double localization_lost_max_base_height_error_;
   double localization_lost_max_pose_height_error_;
   bool localization_require_ground_health_;
+  bool localization_require_operator_initialization_;
   int localization_tracking_good_frames_;
   int localization_lost_bad_frames_;
   double localization_measure_interval_sec_;

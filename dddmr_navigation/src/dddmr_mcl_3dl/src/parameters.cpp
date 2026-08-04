@@ -536,6 +536,11 @@ Parameters::Parameters(const rclcpp::node_interfaces::NodeLoggingInterface::Shar
       "localization_slope_compensation_enabled").as_bool();
   localization_slope_min_tilt_ = std::clamp(
       declare_nonnegative("localization_slope_min_tilt", 0.05), 0.0, 1.5707963267948966);
+  localization_tracking_max_slope_normal_std_ = std::max(
+      localization_tracking_max_z_std_,
+      declare_nonnegative(
+        "localization_tracking_max_slope_normal_std",
+        localization_tracking_max_z_std_));
   parameter_->declare_parameter("localization_lost_max_xy_std", rclcpp::ParameterValue(1.50));
   localization_lost_max_xy_std_ = std::max(
       localization_tracking_max_xy_std_,
@@ -543,6 +548,11 @@ Parameters::Parameters(const rclcpp::node_interfaces::NodeLoggingInterface::Shar
   localization_lost_max_z_std_ = std::max(
       localization_tracking_max_z_std_,
       declare_nonnegative("localization_lost_max_z_std", 1.0e6));
+  localization_lost_max_slope_normal_std_ = std::max(
+      localization_tracking_max_slope_normal_std_,
+      declare_nonnegative(
+        "localization_lost_max_slope_normal_std",
+        localization_lost_max_z_std_));
   localization_lost_max_roll_std_ = std::max(
       localization_tracking_max_roll_std_,
       declare_nonnegative("localization_lost_max_roll_std", 1.0e6));
@@ -572,6 +582,10 @@ Parameters::Parameters(const rclcpp::node_interfaces::NodeLoggingInterface::Shar
       "localization_require_ground_health", rclcpp::ParameterValue(false));
   localization_require_ground_health_ =
       parameter_->get_parameter("localization_require_ground_health").as_bool();
+  parameter_->declare_parameter(
+      "localization_require_operator_initialization", rclcpp::ParameterValue(false));
+  localization_require_operator_initialization_ = parameter_->get_parameter(
+      "localization_require_operator_initialization").as_bool();
   parameter_->declare_parameter("localization_tracking_good_frames", rclcpp::ParameterValue(4));
   localization_tracking_good_frames_ =
       std::max(1, static_cast<int>(
@@ -603,8 +617,15 @@ Parameters::Parameters(const rclcpp::node_interfaces::NodeLoggingInterface::Shar
   RCLCPP_INFO(
       logger_->get_logger(),
       "slope compensation: enabled=%d min_tilt=%.3f rad; slope health uses "
-      "surface tangent/normal spread and matched-point residual",
-      localization_slope_compensation_enabled_, localization_slope_min_tilt_);
+      "surface tangent/normal spread and matched-point residual; normal std "
+      "tracking/lost=%.3f/%.3f",
+      localization_slope_compensation_enabled_, localization_slope_min_tilt_,
+      localization_tracking_max_slope_normal_std_,
+      localization_lost_max_slope_normal_std_);
+  RCLCPP_INFO(
+      logger_->get_logger(),
+      "operator initialization required for localization tracking: %d",
+      localization_require_operator_initialization_);
   
 
   double x, y, z;

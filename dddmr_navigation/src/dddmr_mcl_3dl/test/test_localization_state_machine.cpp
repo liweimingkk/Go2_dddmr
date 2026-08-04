@@ -73,6 +73,53 @@ TEST(LocalizationStateMachine, RequiresConsecutiveConvergedObservations)
   EXPECT_EQ(machine.state(), LocalizationState::TRACKING);
 }
 
+TEST(LocalizationStateMachine, UsesSlopeSpecificNormalSpreadLimits)
+{
+  LocalizationStateConfig config = testConfig();
+  config.tracking_good_frames = 1;
+  config.lost_bad_frames = 1;
+  config.tracking_max_z_std = 0.08;
+  config.tracking_max_slope_normal_std = 0.12;
+  config.lost_max_z_std = 0.10;
+  config.lost_max_slope_normal_std = 0.15;
+  LocalizationStateMachine machine(config);
+  machine.startLocalizing();
+
+  LocalizationObservation observation = goodObservation();
+  observation.z_std = 0.10;
+  EXPECT_FALSE(machine.observe(observation));
+  EXPECT_EQ(machine.state(), LocalizationState::LOCALIZING);
+
+  observation.slope_compensated = true;
+  EXPECT_TRUE(machine.observe(observation));
+  ASSERT_EQ(machine.state(), LocalizationState::TRACKING);
+
+  observation.z_std = 0.14;
+  EXPECT_FALSE(machine.observe(observation));
+  EXPECT_EQ(machine.state(), LocalizationState::TRACKING);
+
+  observation.slope_compensated = false;
+  EXPECT_TRUE(machine.observe(observation));
+  EXPECT_EQ(machine.state(), LocalizationState::LOST);
+}
+
+TEST(LocalizationStateMachine, RequiresOperatorInitializationWhenConfigured)
+{
+  LocalizationStateConfig config = testConfig();
+  config.tracking_good_frames = 1;
+  config.require_operator_initialization = true;
+  LocalizationStateMachine machine(config);
+  machine.startLocalizing();
+
+  LocalizationObservation observation = goodObservation();
+  EXPECT_FALSE(machine.observe(observation));
+  EXPECT_EQ(machine.state(), LocalizationState::LOCALIZING);
+
+  observation.operator_initialization_confirmed = true;
+  EXPECT_TRUE(machine.observe(observation));
+  EXPECT_EQ(machine.state(), LocalizationState::TRACKING);
+}
+
 TEST(LocalizationStateMachine, ResetsGoodCountOnAmbiguousObservation)
 {
   LocalizationStateMachine machine(testConfig());

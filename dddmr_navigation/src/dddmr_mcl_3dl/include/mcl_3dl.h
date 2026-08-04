@@ -331,6 +331,7 @@ class MCL3dlNode : public rclcpp::Node
     int64_t feature_metric_window_started_ns_{0};
     std::atomic_bool local_recovery_pending_;
     std::atomic_bool operator_global_confirmed_;
+    std::atomic_bool operator_initialization_confirmed_;
     std::atomic_bool has_last_trusted_pose_{false};
     State6DOF last_trusted_state_;
     State6DOF last_trusted_odom_;

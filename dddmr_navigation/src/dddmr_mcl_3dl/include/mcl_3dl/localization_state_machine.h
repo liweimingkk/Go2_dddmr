@@ -88,6 +88,7 @@ struct LocalizationStateConfig
   double lost_match_ratio{0.08};
   double tracking_max_xy_std{0.75};
   double tracking_max_z_std{1.0e6};
+  double tracking_max_slope_normal_std{1.0e6};
   double tracking_max_roll_std{1.0e6};
   double tracking_max_pitch_std{1.0e6};
   double tracking_max_yaw_std{0.35};
@@ -98,6 +99,7 @@ struct LocalizationStateConfig
   double tracking_max_pose_height_error{1.0e6};
   double lost_max_xy_std{1.50};
   double lost_max_z_std{1.0e6};
+  double lost_max_slope_normal_std{1.0e6};
   double lost_max_roll_std{1.0e6};
   double lost_max_pitch_std{1.0e6};
   double lost_max_yaw_std{0.80};
@@ -107,6 +109,7 @@ struct LocalizationStateConfig
   double lost_max_base_height_error{1.0e6};
   double lost_max_pose_height_error{1.0e6};
   bool require_ground_health{false};
+  bool require_operator_initialization{false};
   std::size_t tracking_good_frames{4};
   std::size_t lost_bad_frames{3};
 };
@@ -125,6 +128,8 @@ struct LocalizationObservation
   double base_height_error{0.0};
   double pose_height_error{0.0};
   bool ground_valid{true};
+  bool slope_compensated{false};
+  bool operator_initialization_confirmed{false};
   bool particle_count_converged{false};
 };
 
@@ -250,6 +255,10 @@ public:
 
   bool observe(const LocalizationObservation& observation)
   {
+    const double tracking_max_normal_std = observation.slope_compensated ?
+      config_.tracking_max_slope_normal_std : config_.tracking_max_z_std;
+    const double lost_max_normal_std = observation.slope_compensated ?
+      config_.lost_max_slope_normal_std : config_.lost_max_z_std;
     const bool observation_finite =
         std::isfinite(observation.match_ratio) &&
         std::isfinite(observation.xy_std) &&
@@ -267,10 +276,12 @@ public:
     {
       const bool good =
         observation_finite &&
+        (!config_.require_operator_initialization ||
+          observation.operator_initialization_confirmed) &&
         observation.particle_count_converged &&
         observation.match_ratio >= config_.tracking_match_ratio &&
         observation.xy_std <= config_.tracking_max_xy_std &&
-        observation.z_std <= config_.tracking_max_z_std &&
+        observation.z_std <= tracking_max_normal_std &&
         observation.roll_std <= config_.tracking_max_roll_std &&
         observation.pitch_std <= config_.tracking_max_pitch_std &&
         observation.yaw_std <= config_.tracking_max_yaw_std &&
@@ -294,9 +305,11 @@ public:
     {
       const bool bad =
         !observation_finite ||
+        (config_.require_operator_initialization &&
+          !observation.operator_initialization_confirmed) ||
         observation.match_ratio < config_.lost_match_ratio ||
         observation.xy_std > config_.lost_max_xy_std ||
-        observation.z_std > config_.lost_max_z_std ||
+        observation.z_std > lost_max_normal_std ||
         observation.roll_std > config_.lost_max_roll_std ||
         observation.pitch_std > config_.lost_max_pitch_std ||
         observation.yaw_std > config_.lost_max_yaw_std ||

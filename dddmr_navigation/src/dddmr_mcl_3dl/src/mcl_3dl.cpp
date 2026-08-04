@@ -61,6 +61,7 @@ MCL3dlNode::MCL3dlNode(std::string name) : Node(name)
   , feature_last_header_age_ns_(0)
   , local_recovery_pending_(false)
   , operator_global_confirmed_(false)
+  , operator_initialization_confirmed_(false)
 {
   for (auto& count : feature_received_counts_)
   {
@@ -95,6 +96,8 @@ bool MCL3dlNode::configure(const std::shared_ptr<mcl_3dl::SubMaps>& sub_maps)
   state_config.lost_match_ratio = params_->localization_lost_match_ratio_;
   state_config.tracking_max_xy_std = params_->localization_tracking_max_xy_std_;
   state_config.tracking_max_z_std = params_->localization_tracking_max_z_std_;
+  state_config.tracking_max_slope_normal_std =
+      params_->localization_tracking_max_slope_normal_std_;
   state_config.tracking_max_roll_std = params_->localization_tracking_max_roll_std_;
   state_config.tracking_max_pitch_std = params_->localization_tracking_max_pitch_std_;
   state_config.tracking_max_yaw_std = params_->localization_tracking_max_yaw_std_;
@@ -108,6 +111,8 @@ bool MCL3dlNode::configure(const std::shared_ptr<mcl_3dl::SubMaps>& sub_maps)
       params_->localization_tracking_max_pose_height_error_;
   state_config.lost_max_xy_std = params_->localization_lost_max_xy_std_;
   state_config.lost_max_z_std = params_->localization_lost_max_z_std_;
+  state_config.lost_max_slope_normal_std =
+      params_->localization_lost_max_slope_normal_std_;
   state_config.lost_max_roll_std = params_->localization_lost_max_roll_std_;
   state_config.lost_max_pitch_std = params_->localization_lost_max_pitch_std_;
   state_config.lost_max_yaw_std = params_->localization_lost_max_yaw_std_;
@@ -120,6 +125,8 @@ bool MCL3dlNode::configure(const std::shared_ptr<mcl_3dl::SubMaps>& sub_maps)
   state_config.lost_max_pose_height_error =
       params_->localization_lost_max_pose_height_error_;
   state_config.require_ground_health = params_->localization_require_ground_health_;
+  state_config.require_operator_initialization =
+      params_->localization_require_operator_initialization_;
   state_config.tracking_good_frames = params_->localization_tracking_good_frames_;
   state_config.lost_bad_frames = params_->localization_lost_bad_frames_;
   localization_state_machine_ = std::make_unique<LocalizationStateMachine>(state_config);
@@ -1572,6 +1579,11 @@ std::string MCL3dlNode::localizationHealthReason(
   {
     return !std::isfinite(value) || value > limit;
   };
+  if (params_->localization_require_operator_initialization_ &&
+      !observation.operator_initialization_confirmed)
+  {
+    return "OPERATOR_INITIALIZATION_REQUIRED";
+  }
   if (!observation.particle_count_converged)
   {
     return "PARTICLES_NOT_CONVERGED";
@@ -1590,7 +1602,10 @@ std::string MCL3dlNode::localizationHealthReason(
   {
     return "PARTICLE_XY_SPREAD";
   }
-  if (invalid_or_above(observation.z_std, params_->localization_tracking_max_z_std_))
+  const double normal_std_limit = observation.slope_compensated ?
+      params_->localization_tracking_max_slope_normal_std_ :
+      params_->localization_tracking_max_z_std_;
+  if (invalid_or_above(observation.z_std, normal_std_limit))
   {
     return "PARTICLE_Z_SPREAD";
   }
@@ -1894,6 +1909,13 @@ bool MCL3dlNode::measure(
   {
     observation.ground_valid = true;
   }
+  observation.slope_compensated = slope_compensation_active;
+  observation.operator_initialization_confirmed =
+      operator_initialization_confirmed_.load();
+
+  const double tracking_normal_std_limit = slope_compensation_active ?
+      params_->localization_tracking_max_slope_normal_std_ :
+      params_->localization_tracking_max_z_std_;
 
   const std::string health_reason = localizationHealthReason(observation);
   if (health_reason != "HEALTHY")
@@ -1903,14 +1925,16 @@ bool MCL3dlNode::measure(
         "Localization health %s: match=%.3f residual=%.3f "
         "capped_residual=%.3f matched_residual=%.3f "
         "slope_compensated=%d slope_tilt=%.3f "
-        "tangent_normal_std=%.3f/%.3f raw_xyz_std=%.3f/%.3f "
+        "tangent_normal_std=%.3f/%.3f normal_std_limit=%.3f "
+        "raw_xyz_std=%.3f/%.3f "
         "spread_normal=%.3f/%.3f/%.3f "
         "rpy_std=%.3f/%.3f/%.3f map_odom_tilt=%.3f ground_valid=%d "
         "ground_normal_error=%.3f observed_base_height=%.3f configured_base_height=%.3f "
         "base_height_error=%.3f pose_height_error=%.3f map_ground_z=%.3f pose_z=%.3f",
         health_reason.c_str(), observation.match_ratio, observation.residual,
         capped_residual, matched_residual, slope_compensation_active, slope_tilt,
-        observation.xy_std, observation.z_std, spread.raw_xy, spread.raw_z,
+        observation.xy_std, observation.z_std, tracking_normal_std_limit,
+        spread.raw_xy, spread.raw_z,
         spread.normal.x_, spread.normal.y_, spread.normal.z_,
         observation.roll_std, observation.pitch_std, observation.yaw_std,
         observation.map_odom_tilt,
@@ -2027,14 +2051,16 @@ bool MCL3dlNode::measure(
         "Localization state changed to %s: match=%.3f residual=%.3f "
         "capped_residual=%.3f matched_residual=%.3f "
         "slope_compensated=%d slope_tilt=%.3f "
-        "tangent_normal_std=%.3f/%.3f raw_xyz_std=%.3f/%.3f "
+        "tangent_normal_std=%.3f/%.3f normal_std_limit=%.3f "
+        "raw_xyz_std=%.3f/%.3f "
         "spread_normal=%.3f/%.3f/%.3f "
         "rpy_std=%.3f/%.3f/%.3f map_odom_tilt=%.3f "
         "ground_normal_error=%.3f base_height_error=%.3f pose_height_error=%.3f "
         "health=%s particles=%lu",
         localizationStateName(new_state), final_match_ratio, final_residual,
         capped_residual, matched_residual, slope_compensation_active, slope_tilt,
-        spread.xy, spread.z, spread.raw_xy, spread.raw_z,
+        spread.xy, spread.z, tracking_normal_std_limit,
+        spread.raw_xy, spread.raw_z,
         spread.normal.x_, spread.normal.y_, spread.normal.z_,
         spread.roll, spread.pitch, spread.yaw,
         observation.map_odom_tilt, observation.ground_normal_error,
@@ -2277,6 +2303,7 @@ void MCL3dlNode::requestGlobalLocalization(const std::string& reason)
     // transition as one transaction. Otherwise the status timer can clear a
     // request between the individual atomic stores.
     std::lock_guard<std::mutex> lock(localization_state_mutex_);
+    operator_initialization_confirmed_.store(true);
     operator_global_confirmed_.store(true);
     global_localization_requested_.store(true);
     local_recovery_pending_.store(false);
@@ -2649,6 +2676,7 @@ void MCL3dlNode::cbPosition(const geometry_msgs::msg::PoseWithCovarianceStamped:
 
   state_prev_ = mean;
   last_measure_ns_.store(0);
+  operator_initialization_confirmed_.store(true);
   startLocalizing(
     "fixed/manual initial pose received; global search blocked",
     LocalizationAttemptKind::FIXED_POSE);

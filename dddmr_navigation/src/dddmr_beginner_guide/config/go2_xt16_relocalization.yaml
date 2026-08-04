@@ -77,8 +77,18 @@ mcl_3dl:
     # that actually matched. Flat ground keeps the legacy metrics unchanged.
     localization_slope_compensation_enabled: true
     localization_slope_min_tilt: 0.05
+    # A live goal is not eligible for motion until this process has received
+    # either a manual /initial_3d_pose or an explicit operator-confirmed global
+    # localization request. A configured zero seed is only a visualization
+    # fallback and must not unlock the command gate.
+    localization_require_operator_initialization: true
     localization_tracking_max_xy_std: 0.75
+    # Keep the strict flat-ground vertical spread threshold. The 2026-08-04
+    # ramp run measured 0.080..0.099 m along the confirmed surface normal while
+    # match, residual, normal, and height checks remained healthy, so admit
+    # that band only when slope compensation is active.
     localization_tracking_max_z_std: 0.08
+    localization_tracking_max_slope_normal_std: 0.12
     localization_tracking_max_roll_std: 0.035
     localization_tracking_max_pitch_std: 0.035
     localization_tracking_max_yaw_std: 0.35
@@ -94,6 +104,7 @@ mcl_3dl:
     localization_tracking_max_pose_height_error: 0.04
     localization_lost_max_xy_std: 1.50
     localization_lost_max_z_std: 0.15
+    localization_lost_max_slope_normal_std: 0.15
     localization_lost_max_roll_std: 0.08
     localization_lost_max_pitch_std: 0.08
     localization_lost_max_yaw_std: 0.80
