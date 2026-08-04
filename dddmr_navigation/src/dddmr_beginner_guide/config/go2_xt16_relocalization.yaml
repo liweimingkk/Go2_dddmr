@@ -97,9 +97,11 @@ mcl_3dl:
     # Admit that measured band while retaining a 0.03 margin below LOST.
     localization_tracking_max_residual: 0.22
     localization_tracking_max_map_odom_tilt: 0.035
-    # XT16 ground-normal noise reached 0.118 rad with otherwise healthy
-    # geometry. Preserve a fail-closed gap to the 0.175 rad LOST threshold.
-    localization_tracking_max_ground_normal_error: 0.14
+    # The 2026-08-04 live run repeatedly measured 0.142..0.161 rad while the
+    # match, residual, and height checks were healthy. Admit that observed band
+    # for this controlled trial while retaining a fail-closed gap to the
+    # 0.175 rad LOST threshold.
+    localization_tracking_max_ground_normal_error: 0.165
     localization_tracking_max_base_height_error: 0.06
     localization_tracking_max_pose_height_error: 0.04
     localization_lost_max_xy_std: 1.50
