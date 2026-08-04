@@ -72,21 +72,22 @@ mcl_3dl:
     # plane and normal. On horizontal ground these remain exactly world XY/Z;
     # on ramps, expected elevation change is retained in tangent uncertainty
     # instead of being misclassified as off-ground Z uncertainty.
-    # Residual is likewise decoupled from coverage only on a confirmed slope:
-    # match_ratio retains the coverage gate while residual measures the points
-    # that actually matched. Flat ground keeps the legacy metrics unchanged.
+    # Resolve spread and residual in the measured ground frame whenever the
+    # 2.5D ground constraint and its surface normal are valid. Keeping this
+    # active through nearly-flat indoor sections avoids 0.05-rad classification
+    # chatter; match_ratio still enforces coverage and invalid ground remains
+    # fail-closed.
     localization_slope_compensation_enabled: true
-    localization_slope_min_tilt: 0.05
+    localization_slope_min_tilt: 0.0
     # A live goal is not eligible for motion until this process has received
     # either a manual /initial_3d_pose or an explicit operator-confirmed global
     # localization request. A configured zero seed is only a visualization
     # fallback and must not unlock the command gate.
     localization_require_operator_initialization: true
     localization_tracking_max_xy_std: 0.75
-    # Keep the strict flat-ground vertical spread threshold. The 2026-08-04
-    # ramp run measured 0.080..0.099 m along the confirmed surface normal while
-    # match, residual, normal, and height checks remained healthy, so admit
-    # that band only when slope compensation is active.
+    # Retain the strict world-Z threshold for the uncompensated fallback. Valid
+    # ground measurements continuously use the surface-normal threshold; the
+    # 2026-08-04 ramp run measured 0.080..0.099 m with the other gates healthy.
     localization_tracking_max_z_std: 0.08
     localization_tracking_max_slope_normal_std: 0.12
     localization_tracking_max_roll_std: 0.035

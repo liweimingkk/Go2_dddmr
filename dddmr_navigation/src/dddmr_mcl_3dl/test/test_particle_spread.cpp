@@ -72,7 +72,7 @@ TEST(PositionSpreadAccumulator, InvalidNormalFallsBackToWorldAxes)
   }
 }
 
-TEST(SlopeCompensation, ActivatesOnlyForConfirmedSlope)
+TEST(SlopeCompensation, HonorsMinimumTiltAndGroundValidity)
 {
   constexpr double minimum_tilt = 0.05;
   const Vec3 horizontal(0.0, 0.0, 1.0);
@@ -81,6 +81,8 @@ TEST(SlopeCompensation, ActivatesOnlyForConfirmedSlope)
 
   EXPECT_FALSE(slopeCompensationActive(
       true, true, true, true, horizontal, minimum_tilt));
+  EXPECT_TRUE(slopeCompensationActive(
+      true, true, true, true, horizontal, 0.0));
   EXPECT_FALSE(slopeCompensationActive(
       true, true, true, true, below_threshold, minimum_tilt));
   EXPECT_TRUE(slopeCompensationActive(
