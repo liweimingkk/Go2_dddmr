@@ -10,8 +10,9 @@ import yaml
 
 
 MAX_LOCAL_LIDAR_FRESHNESS_SEC = 0.35
-LOCKED_LATERAL_VELOCITY = 0.0
+MAX_LATERAL_VELOCITY = 0.20
 LOCKED_LATERAL_SAMPLES = 1.0
+ENABLED_LATERAL_SAMPLES = 3.0
 
 
 def _finite_float(raw_value, label: str) -> float:
@@ -53,14 +54,37 @@ def build_exact_runtime_parameters(
         )
     if minimum_y > maximum_y:
         raise ValueError("omni_min_vel_y must not exceed omni_max_vel_y")
-    if (
-        minimum_y != LOCKED_LATERAL_VELOCITY
-        or maximum_y != LOCKED_LATERAL_VELOCITY
+    lateral_disabled = math.isclose(
+        maximum_y, 0.0, rel_tol=0.0, abs_tol=1e-9
+    )
+    lateral_enabled = math.isclose(
+        maximum_y,
+        MAX_LATERAL_VELOCITY,
+        rel_tol=0.0,
+        abs_tol=1e-9,
+    )
+    if not lateral_disabled and not lateral_enabled:
+        raise ValueError(
+            "omni_max_vel_y must be either 0 or "
+            f"{MAX_LATERAL_VELOCITY}; intermediate limits remove the "
+            "tested pure-lateral trajectory"
+        )
+    if not math.isclose(
+        minimum_y,
+        -maximum_y,
+        rel_tol=0.0,
+        abs_tol=1e-9,
     ):
         raise ValueError(
-            "Go2 XT16 P2P lateral motion is disabled; "
-            "omni_min_vel_y and omni_max_vel_y must both be 0"
+            "omni_min_vel_y and omni_max_vel_y must be symmetric"
         )
+    maximum_y = 0.0 if lateral_disabled else MAX_LATERAL_VELOCITY
+    minimum_y = -maximum_y
+    lateral_samples = (
+        LOCKED_LATERAL_SAMPLES
+        if lateral_disabled
+        else ENABLED_LATERAL_SAMPLES
+    )
 
     # Foxy converts anonymous-node inline launch parameters into a /** rule.
     # P2PMoveBase hosts several named rclcpp::Node instances in one process,
@@ -75,9 +99,9 @@ def build_exact_runtime_parameters(
         },
         "/trajectory_generators": {
             "ros__parameters": {
-                "omni_drive_simple.min_vel_y": LOCKED_LATERAL_VELOCITY,
-                "omni_drive_simple.max_vel_y": LOCKED_LATERAL_VELOCITY,
-                "omni_drive_simple.linear_y_sample": LOCKED_LATERAL_SAMPLES,
+                "omni_drive_simple.min_vel_y": minimum_y,
+                "omni_drive_simple.max_vel_y": maximum_y,
+                "omni_drive_simple.linear_y_sample": lateral_samples,
             },
         },
         "/p2p_move_base": {

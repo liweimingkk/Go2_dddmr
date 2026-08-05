@@ -91,6 +91,16 @@ if(BUILD_TESTING)
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/test/test_go2_xt16_p2p_runtime_parameters.py
   )
+  add_test(
+    NAME test_go2_xt16_lateral_avoidance
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/test/test_go2_xt16_lateral_avoidance.py
+  )
+  add_test(
+    NAME test_go2_lateral_command_chain
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/test/test_go2_lateral_command_chain.py
+  )
 endif()
 
 install(DIRECTORY

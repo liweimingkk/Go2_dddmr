@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
+import os
 import pathlib
+import subprocess
 import unittest
 import xml.etree.ElementTree as element_tree
 
@@ -43,16 +45,16 @@ MCL_IMPLEMENTATION = (
 )
 
 
-class Go2Xt16LateralLockoutTest(unittest.TestCase):
-    def test_planner_has_only_one_zero_lateral_sample(self):
+class Go2Xt16LateralAvoidanceContractTest(unittest.TestCase):
+    def test_planner_has_tested_symmetric_lateral_envelope(self):
         config = yaml.safe_load(NAVIGATION_CONFIG.read_text(encoding="utf-8"))
         planner = config["trajectory_generators"]["ros__parameters"][
             "omni_drive_simple"
         ]
 
-        self.assertEqual(planner["min_vel_y"], 0.0)
-        self.assertEqual(planner["max_vel_y"], 0.0)
-        self.assertEqual(planner["linear_y_sample"], 1.0)
+        self.assertEqual(planner["min_vel_y"], -0.20)
+        self.assertEqual(planner["max_vel_y"], 0.20)
+        self.assertEqual(planner["linear_y_sample"], 3.0)
 
     def test_all_direct_launch_command_limits_default_to_zero(self):
         root = element_tree.parse(NAVIGATION_LAUNCH).getroot()
@@ -71,15 +73,113 @@ class Go2Xt16LateralLockoutTest(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(arguments[name], "0.0")
 
-    def test_supervised_wrapper_rejects_nonzero_lateral_limit(self):
+    def test_temporary_obstacle_holds_stopped_without_rotation_recovery(self):
+        config = yaml.safe_load(NAVIGATION_CONFIG.read_text(encoding="utf-8"))
+        p2p = config["p2p_move_base"]["ros__parameters"]
+
+        self.assertFalse(p2p["rotate_recovery_enabled"])
+        self.assertTrue(
+            p2p["hold_position_on_plan_loss_after_valid_plan"]
+        )
+        self.assertGreater(p2p["no_plan_retry_num"], 0)
+
+    def test_live_wrapper_requires_explicit_bounded_lateral_choice(self):
         script = NAVIGATION_WRAPPER.read_text(encoding="utf-8")
 
-        self.assertIn('MAX_Y_VALUE="${MAX_Y:-0.0}"', script)
+        self.assertIn('if [[ -n "${MAX_Y+x}" ]]; then', script)
+        self.assertIn('elif [[ "${live_mode}" == "true" ]]; then', script)
         self.assertIn(
-            'die "Lateral motion is disabled: MAX_Y must be exactly 0."',
+            "Live navigation requires explicit MAX_Y=0 (no sidestep) or "
+            "MAX_Y=0.20 (bounded lateral avoidance).",
             script,
         )
-        self.assertNotIn('MAX_Y_VALUE="0.20"', script)
+        self.assertIn('MAX_Y_VALUE="0.20"', script)
+        self.assertIn(
+            "'BEGIN { exit !(value == 0.0 || value == 0.20) }'",
+            script,
+        )
+        self.assertIn(
+            'die "MAX_Y must be exactly 0 (disabled) or 0.20m/s ',
+            script,
+        )
+        self.assertNotIn(
+            "'BEGIN { exit !(value >= 0.0 && value <= 0.20) }'",
+            script,
+        )
+
+    def test_live_wrapper_rejects_missing_lateral_choice_before_startup(self):
+        environment = os.environ.copy()
+        environment.pop("MAX_Y", None)
+        result = subprocess.run(
+            ["bash", str(NAVIGATION_WRAPPER), "--quick", "--live"],
+            cwd=WORKSPACE,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(
+            "Live navigation requires explicit MAX_Y=0",
+            result.stderr,
+        )
+        self.assertNotIn("Starting navigation container", result.stdout)
+
+    def test_supervised_wrapper_passes_one_symmetric_limit_end_to_end(self):
+        script = NAVIGATION_WRAPPER.read_text(encoding="utf-8")
+
+        self.assertIn(
+            """OMNI_MIN_Y_VALUE="$(
+    awk -v value="${MAX_Y_VALUE}" 'BEGIN { printf "%.6f", -value }'
+  )\"""",
+            script,
+        )
+        for launch_argument, expected_value in (
+            ("omni_min_vel_y", "${OMNI_MIN_Y_VALUE}"),
+            ("omni_max_vel_y", "${MAX_Y_VALUE}"),
+            ("go2_nav_cmd_gate_max_y", "${MAX_Y_VALUE}"),
+            ("sport_dry_run_max_y", "${MAX_Y_VALUE}"),
+            ("go2_sport_max_y", "${MAX_Y_VALUE}"),
+        ):
+            with self.subTest(launch_argument=launch_argument):
+                self.assertIn(
+                    f'\\"{launch_argument}:={expected_value}\\"',
+                    script,
+                )
+
+        self.assertIn(
+            "if awk -v value=\"${MAX_Y_VALUE}\" "
+            "'BEGIN { exit !(value == 0.0) }'; then",
+            script,
+        )
+        self.assertIn('expected_samples="1.0"', script)
+        self.assertIn('expected_samples="3.0"', script)
+        for node in (
+            "/go2_nav_cmd_gate",
+            "/go2_sport_cmd_vel_dry_run",
+            "/go2_sport_cmd_vel_adapter_live",
+        ):
+            with self.subTest(node=node):
+                self.assertIn(f"require_lateral_parameter {node}", script)
+
+        live_adapter_start = script.index("start_live_adapter()")
+        live_adapter_end = script.index("\n\nprint_status()", live_adapter_start)
+        live_adapter = script[live_adapter_start:live_adapter_end]
+        self.assertIn("-p max_y:=${MAX_Y_VALUE}", live_adapter)
+        self.assertIn("-p axis_mode:=standard", live_adapter)
+        self.assertIn("-p x_sign:=1.0", live_adapter)
+        self.assertIn("-p y_sign:=1.0", live_adapter)
+        self.assertIn("-p yaw_sign:=1.0", live_adapter)
+        self.assertIn(
+            "require_sport_axis_contract /go2_sport_cmd_vel_dry_run",
+            script,
+        )
+        self.assertIn(
+            "require_sport_axis_contract /go2_sport_cmd_vel_adapter_live",
+            script,
+        )
+        self.assertIn("ros2 param dump '${node}' --print", script)
 
     def test_local_observation_gate_retries_without_relaxing_freshness(self):
         script = NAVIGATION_WRAPPER.read_text(encoding="utf-8")
@@ -209,7 +309,7 @@ class Go2Xt16LateralLockoutTest(unittest.TestCase):
         )
         self.assertEqual(
             config["localization_tracking_max_ground_normal_error"],
-            0.14,
+            0.165,
         )
         self.assertLess(
             config["localization_tracking_max_ground_normal_error"],

@@ -42,7 +42,8 @@ Modes:
 Common environment overrides:
   DDDMR_PLATFORM=x64|orin-jp5
   MAX_X=0.50
-  MAX_Y=0.0              Lateral motion is locked out; nonzero values are rejected.
+  MAX_Y=0|0.20           Required explicitly for live; dry-run defaults to 0.20.
+                         Use 0.20 only after a supervised lateral-direction probe.
   MAX_YAW=0.50
   RVIZ=true
   PUBLISH_STATIC_TF=true
@@ -80,18 +81,18 @@ Examples:
   scripts/run_go2_xt16_navigation_test.sh --quick --dry-run
   MAP=/root/dddmr_bags/go2_xt16_mouth_mapping_20260723_153831_cleaned_20260724_130438 \
     scripts/run_go2_xt16_navigation_test.sh --quick --dry-run
-  GO2_NAV_LIVE_CONFIRM=I_AM_SUPERVISING_GO2_NAV \
-    scripts/run_go2_xt16_navigation_test.sh --live
   GO2_NAV_LIVE_CONFIRM=I_AM_SUPERVISING_GO2_NAV MAX_Y=0.0 \
     scripts/run_go2_xt16_navigation_test.sh --live
-  GO2_NAV_LIVE_CONFIRM=I_AM_SUPERVISING_GO2_NAV STOP_EXISTING=true \
+  GO2_NAV_LIVE_CONFIRM=I_AM_SUPERVISING_GO2_NAV MAX_Y=0.20 \
+    scripts/run_go2_xt16_navigation_test.sh --live
+  GO2_NAV_LIVE_CONFIRM=I_AM_SUPERVISING_GO2_NAV STOP_EXISTING=true MAX_Y=0.0 \
     scripts/run_go2_xt16_navigation_test.sh --live
   scripts/run_go2_xt16_navigation_test.sh --record \
     bags/p2p_missions/route_a.json --initial-pose \
     bags/p2p_missions/go2_start.json
   scripts/run_go2_xt16_navigation_test.sh --multi-dry-run \
     bags/p2p_missions/route_a.json
-  GO2_NAV_LIVE_CONFIRM=I_AM_SUPERVISING_GO2_NAV \
+  GO2_NAV_LIVE_CONFIRM=I_AM_SUPERVISING_GO2_NAV MAX_Y=0.20 \
     scripts/run_go2_xt16_navigation_test.sh --quick --multi-live \
     bags/p2p_missions/route_a.json
   scripts/run_go2_xt16_navigation_test.sh --stop
@@ -260,7 +261,14 @@ RVIZ_VALUE="${RVIZ:-true}"
 PUBLISH_STATIC_TF_VALUE="${PUBLISH_STATIC_TF:-true}"
 MAX_X_VALUE="${MAX_X:-0.50}"
 MAX_YAW_VALUE="${MAX_YAW:-0.50}"
-MAX_Y_VALUE="${MAX_Y:-0.0}"
+if [[ -n "${MAX_Y+x}" ]]; then
+  MAX_Y_VALUE="${MAX_Y}"
+elif [[ "${live_mode}" == "true" ]]; then
+  echo "Live navigation requires explicit MAX_Y=0 (no sidestep) or MAX_Y=0.20 (bounded lateral avoidance)." >&2
+  exit 2
+else
+  MAX_Y_VALUE="0.20"
+fi
 OMNI_MIN_Y_VALUE=""
 RUN_SECONDS_VALUE="${RUN_SECONDS:-}"
 STOP_EXISTING_VALUE="${STOP_EXISTING:-false}"
@@ -560,10 +568,15 @@ is_positive_number() {
 validate_lateral_limit() {
   is_nonnegative_number "${MAX_Y_VALUE}" || \
     die "MAX_Y must be a finite nonnegative number."
-  awk -v value="${MAX_Y_VALUE}" 'BEGIN { exit !(value == 0.0) }' || \
-    die "Lateral motion is disabled: MAX_Y must be exactly 0."
-  MAX_Y_VALUE="0.000000"
-  OMNI_MIN_Y_VALUE="0.000000"
+  awk -v value="${MAX_Y_VALUE}" \
+    'BEGIN { exit !(value == 0.0 || value == 0.20) }' || \
+    die "MAX_Y must be exactly 0 (disabled) or 0.20m/s (bounded lateral avoidance)."
+  MAX_Y_VALUE="$(
+    awk -v value="${MAX_Y_VALUE}" 'BEGIN { printf "%.6f", value }'
+  )"
+  OMNI_MIN_Y_VALUE="$(
+    awk -v value="${MAX_Y_VALUE}" 'BEGIN { printf "%.6f", -value }'
+  )"
 }
 
 validate_perception_settings() {
@@ -1032,7 +1045,7 @@ read_local_lidar_freshness_limit() {
 }
 
 require_planner_lateral_limits() {
-  local minimum_y maximum_y lateral_samples
+  local minimum_y maximum_y lateral_samples expected_samples
   minimum_y="$(
     read_runtime_double_parameter \
       /trajectory_generators \
@@ -1052,22 +1065,30 @@ require_planner_lateral_limits() {
       "the planner lateral sample count"
   )"
 
+  if awk -v value="${MAX_Y_VALUE}" 'BEGIN { exit !(value == 0.0) }'; then
+    expected_samples="1.0"
+  else
+    expected_samples="3.0"
+  fi
   awk \
     -v actual="${minimum_y}" \
-    'BEGIN { exit !(actual == 0.0) }' || \
-    die "Planner minimum lateral limit must be 0m/s, got ${minimum_y}m/s."
+    -v requested="${OMNI_MIN_Y_VALUE}" \
+    'BEGIN { delta=actual-requested; if(delta<0) delta=-delta; exit !(delta <= 1e-6) }' || \
+    die "Planner minimum lateral limit ${minimum_y}m/s does not match requested ${OMNI_MIN_Y_VALUE}m/s."
   awk \
     -v actual="${maximum_y}" \
-    'BEGIN { exit !(actual == 0.0) }' || \
-    die "Planner maximum lateral limit must be 0m/s, got ${maximum_y}m/s."
+    -v requested="${MAX_Y_VALUE}" \
+    'BEGIN { delta=actual-requested; if(delta<0) delta=-delta; exit !(delta <= 1e-6) }' || \
+    die "Planner maximum lateral limit ${maximum_y}m/s does not match requested ${MAX_Y_VALUE}m/s."
   awk \
     -v actual="${lateral_samples}" \
-    'BEGIN { exit !(actual == 1.0) }' || \
-    die "Planner lateral sample count must be 1, got ${lateral_samples}."
-  log "P2P lateral lockout: min_y=${minimum_y}m/s max_y=${maximum_y}m/s samples=${lateral_samples}"
+    -v expected="${expected_samples}" \
+    'BEGIN { exit !(actual == expected) }' || \
+    die "Planner lateral sample count must be ${expected_samples}, got ${lateral_samples}."
+  log "P2P lateral envelope: min_y=${minimum_y}m/s max_y=${maximum_y}m/s samples=${lateral_samples}"
 }
 
-require_zero_lateral_parameter() {
+require_lateral_parameter() {
   local node="$1"
   local value
   value="$(
@@ -1076,17 +1097,58 @@ require_zero_lateral_parameter() {
       max_y \
       "the lateral command limit"
   )"
-  awk -v actual="${value}" 'BEGIN { exit !(actual == 0.0) }' || \
-    die "${node} lateral command limit must be 0m/s, got ${value}m/s."
-  log "${node} lateral command lockout: max_y=${value}m/s"
+  awk \
+    -v actual="${value}" \
+    -v requested="${MAX_Y_VALUE}" \
+    'BEGIN { delta=actual-requested; if(delta<0) delta=-delta; exit !(delta <= 1e-6) }' || \
+    die "${node} lateral command limit ${value}m/s does not match requested ${MAX_Y_VALUE}m/s."
+  log "${node} lateral command envelope: max_y=${value}m/s"
+}
+
+require_sport_axis_contract() {
+  local node="$1"
+  local report="" axis_mode="" sign="" parameter="" attempt
+  for (( attempt = 1; attempt <= 6; attempt++ )); do
+    if report="$(docker_ros \
+      "timeout 15 ros2 param dump '${node}' --print" \
+      2>&1)"; then
+      axis_mode="$(
+        awk '$1 == "axis_mode:" {print $2; exit}' <<<"${report}"
+      )"
+      if [[ -n "${axis_mode}" ]]; then
+        break
+      fi
+    fi
+    if (( attempt < 6 )); then
+      log "Sport axis contract for ${node} is not readable yet (attempt ${attempt}/6); keeping navigation blocked and retrying." >&2
+      sleep 2
+    fi
+  done
+  axis_mode="${axis_mode//\'/}"
+  axis_mode="${axis_mode//\"/}"
+  [[ "${axis_mode}" == "standard" ]] || \
+    die "${node} axis_mode must be standard, got ${axis_mode:-unreadable}."
+
+  for parameter in x_sign y_sign yaw_sign; do
+    sign="$(
+      awk -v key="${parameter}:" '$1 == key {print $2; exit}' <<<"${report}"
+    )"
+    is_number "${sign}" || \
+      die "${node} ${parameter} is not a readable number."
+    awk -v actual="${sign}" \
+      'BEGIN { delta=actual-1.0; if(delta<0) delta=-delta; exit !(delta <= 1e-6) }' || \
+      die "${node} ${parameter} must be +1.0, got ${sign}."
+  done
+  log "${node} axis contract: standard, x/y/yaw signs=+1"
 }
 
 require_navigation_runtime_parameters() {
   log "Reading back exact P2P runtime safety parameters..."
   read_local_lidar_freshness_limit
   require_planner_lateral_limits
-  require_zero_lateral_parameter /go2_nav_cmd_gate
-  require_zero_lateral_parameter /go2_sport_cmd_vel_dry_run
+  require_lateral_parameter /go2_nav_cmd_gate
+  require_lateral_parameter /go2_sport_cmd_vel_dry_run
+  require_sport_axis_contract /go2_sport_cmd_vel_dry_run
   log "Exact P2P runtime safety parameters match the requested launch limits."
 }
 
@@ -1483,9 +1545,13 @@ nohup python3 /root/dddmr_navigation/src/dddmr_beginner_guide/scripts/go2_sport_
   -p request_topic:=/api/sport/request \
   -p enable_sport_output:=true \
   -p allow_real_request_topic:=true \
+  -p axis_mode:=standard \
   -p max_x:=${MAX_X_VALUE} \
   -p max_y:=${MAX_Y_VALUE} \
   -p max_yaw:=${MAX_YAW_VALUE} \
+  -p x_sign:=1.0 \
+  -p y_sign:=1.0 \
+  -p yaw_sign:=1.0 \
   -p publish_rate_hz:=50.0 \
   -p cmd_timeout_sec:=0.20 \
   -p zero_epsilon:=0.001 \
@@ -1613,7 +1679,8 @@ main() {
     check_topic_contract /sportmodestate unitree_go/msg/SportModeState 1 0
     start_live_adapter
     sleep 2
-    require_zero_lateral_parameter /go2_sport_cmd_vel_adapter_live
+    require_lateral_parameter /go2_sport_cmd_vel_adapter_live
+    require_sport_axis_contract /go2_sport_cmd_vel_adapter_live
   fi
 
   if [[ "${STARTUP_PROFILE_VALUE}" == "full" ]]; then

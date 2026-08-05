@@ -153,6 +153,12 @@ void P2PMoveBase::initial(const std::shared_ptr<local_planner::Local_Planner>& l
   RCLCPP_WARN(
     this->get_logger(), "rotate_recovery_enabled: %s",
     rotate_recovery_enabled_ ? "true" : "false");
+  hold_position_on_plan_loss_after_valid_plan_ = this->declare_parameter(
+    "hold_position_on_plan_loss_after_valid_plan", false);
+  RCLCPP_WARN(
+    this->get_logger(),
+    "hold_position_on_plan_loss_after_valid_plan: %s",
+    hold_position_on_plan_loss_after_valid_plan_ ? "true" : "false");
 
   command_topic_ = this->declare_parameter("command_topic", std::string("cmd_vel"));
   stamped_command_topic_ = this->declare_parameter(
@@ -416,13 +422,17 @@ bool P2PMoveBase::executeCycle(const std::shared_ptr<rclcpp_action::ServerGoalHa
     }
 
     else if(STATE_->isCurrentDecision("d_planning")){
+      publishZeroVelocity();
       GPM_->queryThread();
       STATE_->setDecision("d_planning_waitdone");
       return false;
     }
 
     else if(STATE_->isCurrentDecision("d_planning_waitdone")){
-      
+      // Do not depend on downstream stale-command timeouts while a global
+      // connector is unavailable. Planning states always command a stop.
+      publishZeroVelocity();
+
       //@If global planner keep return empty plan, we will enter this state for n seconds, then abort
       //@see: decision_planning
       std::vector<geometry_msgs::msg::PoseStamped> plan;
@@ -438,6 +448,7 @@ bool P2PMoveBase::executeCycle(const std::shared_ptr<rclcpp_action::ServerGoalHa
           RCLCPP_DEBUG(this->get_logger(), "Found a plan with its final position: (%.2f, %.2f, %.2f)", 
               plan.back().pose.position.x, plan.back().pose.position.y, plan.back().pose.position.z);
           global_plan_recovery_guard_.recordValidPlan();
+          STATE_->no_plan_recovery_count_ = 0;
           STATE_->last_valid_plan_ = clock_->now();
           LP_->setPlan(plan);
           STATE_->setDecision("d_align_heading");  
@@ -448,7 +459,13 @@ bool P2PMoveBase::executeCycle(const std::shared_ptr<rclcpp_action::ServerGoalHa
         RCLCPP_WARN(this->get_logger(), "Time out to find a plan to point (%.2f, %.2f, %.2f)", 
             STATE_->current_goal_.pose.position.x, STATE_->current_goal_.pose.position.y, STATE_->current_goal_.pose.position.z);
         publishZeroVelocity();
-        if (!global_plan_recovery_guard_.shouldAttemptRecovery()) {
+        const PlanningTimeoutAction timeout_action =
+          global_plan_recovery_guard_.timeoutAction(
+          hold_position_on_plan_loss_after_valid_plan_,
+          rotate_recovery_enabled_,
+          STATE_->no_plan_recovery_count_,
+          STATE_->no_plan_retry_num_);
+        if (timeout_action == PlanningTimeoutAction::ABORT_NO_VALID_PLAN) {
           RCLCPP_ERROR(
             this->get_logger(),
             "Aborting goal without recovery motion because it never produced a valid global plan.");
@@ -457,6 +474,35 @@ bool P2PMoveBase::executeCycle(const std::shared_ptr<rclcpp_action::ServerGoalHa
           result->status = 2;
           result->result =
             "No valid global plan; recovery rotation suppressed";
+          goal_handle->abort(result);
+          return true;
+        }
+        if (timeout_action == PlanningTimeoutAction::HOLD_AND_REPLAN) {
+          ++STATE_->no_plan_recovery_count_;
+          STATE_->last_valid_plan_ = clock_->now();
+          STATE_->setDecision("d_planning");
+          RCLCPP_WARN(
+            this->get_logger(),
+            "Previously valid route is temporarily blocked; holding zero "
+            "velocity and retrying global planning without recovery motion "
+            "(%d/%d).",
+            STATE_->no_plan_recovery_count_, STATE_->no_plan_retry_num_);
+          return false;
+        }
+        if (
+          timeout_action ==
+          PlanningTimeoutAction::ABORT_RETRIES_EXHAUSTED)
+        {
+          RCLCPP_ERROR(
+            this->get_logger(),
+            "Aborting goal after %d stopped global-planning retries; "
+            "no recovery motion was sent.",
+            STATE_->no_plan_recovery_count_);
+          auto result =
+            std::make_shared<dddmr_sys_core::action::PToPMoveBase::Result>();
+          result->status = 2;
+          result->result =
+            "Previously valid route remained blocked while holding position";
           goal_handle->abort(result);
           return true;
         }

@@ -131,6 +131,7 @@ class P2PMoveBase : public rclcpp::Node {
     bool is_recoverying_;
     bool is_recoverying_succeed_;
     bool rotate_recovery_enabled_{true};
+    bool hold_position_on_plan_loss_after_valid_plan_{false};
     void startRecoveryBehaviors(std::string behavior_name);
     GlobalPlanRecoveryGuard global_plan_recovery_guard_;
     LocalFailureDebounce local_failure_debounce_;

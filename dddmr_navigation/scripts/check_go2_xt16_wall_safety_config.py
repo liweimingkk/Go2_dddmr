@@ -146,6 +146,36 @@ def validate(config: dict[str, Any]) -> dict[str, float]:
             "narrow-gate Go2 profile"
         )
     report["rotate_recovery_enabled"] = 0.0
+    if (
+        p2p_params.get("hold_position_on_plan_loss_after_valid_plan")
+        is not True
+    ):
+        raise ValueError(
+            "p2p_move_base.hold_position_on_plan_loss_after_valid_plan must "
+            "be true so temporary obstacles cause a stopped replan instead "
+            "of recovery motion or immediate mission failure"
+        )
+    no_plan_retries = p2p_params.get("no_plan_retry_num")
+    if (
+        not isinstance(no_plan_retries, int)
+        or isinstance(no_plan_retries, bool)
+        or no_plan_retries <= 0
+    ):
+        raise ValueError(
+            "p2p_move_base.no_plan_retry_num must be a positive integer"
+        )
+    planner_patience = require_positive(
+        p2p_params, "planner_patience", "p2p_move_base"
+    )
+    # The first planner window precedes the configured stopped retries.
+    stopped_replan_budget = (no_plan_retries + 1) * planner_patience
+    if stopped_replan_budget > 120.0 + 1e-9:
+        raise ValueError(
+            "p2p_move_base stopped-replan budget must not exceed 120 seconds"
+        )
+    report["hold_position_on_plan_loss_after_valid_plan"] = 1.0
+    report["no_plan_retry_num"] = float(no_plan_retries)
+    report["stopped_replan_budget_sec"] = stopped_replan_budget
     main_generator = p2p_params.get("main_trajectory_generator")
     if main_generator != "omni_drive_simple":
         raise ValueError(

@@ -15,6 +15,11 @@ p2p_move_base:
     # A lost plan at a narrow gate is fail-closed. Rotating the Go2 can sweep
     # its legs into a door frame and cannot repair an invalid static-map start.
     rotate_recovery_enabled: false
+    # If a route was valid before a person temporarily blocked it, stay stopped
+    # and retry global planning instead of treating the disabled rotation
+    # recovery as an immediate mission failure. Ten additional 10-second
+    # windows keep a permanently blocked route bounded to about 110 seconds.
+    hold_position_on_plan_loss_after_valid_plan: true
     no_plan_retry_num: 10
     waiting_patience: 10.0
     # Pure yaw is responsive on this Go2; the previous 0.10 m/s heading arc
@@ -287,13 +292,14 @@ trajectory_generators:
     
     omni_drive_simple:
       plugin: "trajectory_generators::OmniSimpleTrajectoryGeneratorTheory"
-      # This Go2 navigation profile is forward/yaw only. Keep the planner
-      # envelope at zero lateral velocity so it cannot select a trajectory that
-      # the downstream command lockout will refuse to execute.
+      # The supervised launcher applies the same bounded lateral envelope to
+      # this generator, the navigation command gate, and the Sport adapter.
+      # Direct launches remain fail-closed at zero unless they override all
+      # three consumers through the launch arguments.
       max_vel_x: 0.40
       min_vel_x: 0.0
-      max_vel_y: 0.0
-      min_vel_y: 0.0
+      max_vel_y: 0.20
+      min_vel_y: -0.20
       min_vel_trans: 0.20
       max_vel_trans: 0.45
       max_vel_theta: 0.50
@@ -311,9 +317,9 @@ trajectory_generators:
 
       controller_frequency: 10.0
       sim_time: 1.5
-      # Sample the single permitted y=0 value only.
+      # Explicitly cover right, zero, and left sidestep candidates.
       linear_x_sample: 2.0
-      linear_y_sample: 1.0
+      linear_y_sample: 3.0
       angular_z_sample: 5.0
       sim_granularity: 0.05
       angular_sim_granularity: 0.025

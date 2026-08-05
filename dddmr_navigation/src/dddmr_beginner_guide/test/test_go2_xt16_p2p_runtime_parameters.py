@@ -187,6 +187,19 @@ class Go2Xt16P2PRuntimeParametersTest(unittest.TestCase):
         )
         self.assertNotIn("/**", parameters)
 
+    def test_builds_tested_symmetric_lateral_avoidance_envelope(self):
+        parameters = build_exact_runtime_parameters(
+            "0.35",
+            "-0.20",
+            "0.20",
+            "true",
+        )
+
+        planner = parameters["/trajectory_generators"]["ros__parameters"]
+        self.assertEqual(planner["omni_drive_simple.min_vel_y"], -0.20)
+        self.assertEqual(planner["omni_drive_simple.max_vel_y"], 0.20)
+        self.assertEqual(planner["omni_drive_simple.linear_y_sample"], 3.0)
+
     def test_written_yaml_preserves_exact_rules_and_double_values(self):
         with tempfile.TemporaryDirectory() as directory:
             path = write_exact_runtime_parameters(
@@ -230,9 +243,13 @@ class Go2Xt16P2PRuntimeParametersTest(unittest.TestCase):
         invalid_cases = (
             (0.0, -0.1, 0.1, True),
             (0.351, -0.1, 0.1, True),
-            (0.2, -0.2, 0.2, True),
+            (0.2, -0.1, 0.1, True),
+            (0.2, -0.21, 0.21, True),
+            (0.2, -0.19, 0.20, True),
+            (0.2, 0.0, 0.20, True),
             (0.2, 0.2, -0.2, True),
             (0.2, float("nan"), 0.2, True),
+            (0.2, -0.2, float("nan"), True),
             (0.2, -0.2, 0.2, "maybe"),
         )
         for values in invalid_cases:
