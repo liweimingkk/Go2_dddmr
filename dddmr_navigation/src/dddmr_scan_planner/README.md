@@ -1,5 +1,10 @@
 # DDDMR SCAN-Planner integration
 
+> Status: experimental/optional. The stable deployment default is the
+> single-XT16 map with the ordinary DDDMR P2P local planner. SCAN-Planner is
+> started only through its separate `scan-navigation-*` commands and has not
+> completed the same outdoor acceptance run as the P2P baseline.
+
 This package integrates the Go2-oriented SCAN-Planner local planner with the
 existing DDDMR Go2 + Hesai XT16 stack.
 

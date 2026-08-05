@@ -77,9 +77,10 @@ dddmr_pg_map_server_manager:
 
 map1:
   ros__parameters:
-    # Route A completed both recorded waypoints with this cleaned map on
-    # 2026-07-24; keep the path and immutable key-frame count paired.
-    pose_graph_dir: "/root/dddmr_bags/go2_xt16_mouth_mapping_20260723_153831_cleaned_20260724_130438"
+    # Stable 2026-08-04 outdoor baseline: geometry was built from the top XT16
+    # point cloud with the Unitree lidar cloud excluded. Keep this deployed
+    # directory and the immutable 144-key-frame contract paired.
+    pose_graph_dir: "/root/dddmr_bags/go2_xt16_mapping_20260804_141647_xt16_only"
     complete_map_voxel_size: 0.2
     complete_ground_voxel_size: 0.1
     merge_non_ground_surface_into_mapcloud: true
@@ -94,9 +95,9 @@ map1:
 sub_maps:
   ros__parameters:
     pg_map_server_name: "map1" #options from line#56
-    # This deployed pose graph is immutable and contains exactly 169 frames.
+    # This deployed pose graph is immutable and contains exactly 144 frames.
     # Fail closed if the pose snapshot and cloud service do not agree.
-    expected_key_frame_count: 169
+    expected_key_frame_count: 144
     sub_map_search_radius: 50.0
     sub_map_warmup_trigger_distance: 20.0
 

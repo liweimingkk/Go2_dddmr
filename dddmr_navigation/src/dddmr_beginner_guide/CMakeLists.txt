@@ -91,6 +91,11 @@ if(BUILD_TESTING)
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/test/test_go2_xt16_p2p_runtime_parameters.py
   )
+  add_test(
+    NAME test_go2_xt16_stable_profile
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/test/test_go2_xt16_lateral_lockout.py
+  )
 endif()
 
 install(DIRECTORY

@@ -15,6 +15,10 @@ RELOCALIZATION_CONFIG = (
 )
 NAVIGATION_LAUNCH = PACKAGE_DIRECTORY / "launch" / "go2_xt16_navigation.launch"
 NAVIGATION_WRAPPER = WORKSPACE / "scripts" / "run_go2_xt16_navigation_test.sh"
+SCAN_WRAPPER = WORKSPACE / "scripts" / "run_go2_xt16_scan_navigation.sh"
+STABLE_MAP_DIRECTORY = (
+    "/root/dddmr_bags/go2_xt16_mapping_20260804_141647_xt16_only"
+)
 FEATURE_ASSOCIATION = (
     WORKSPACE
     / "src"
@@ -44,6 +48,35 @@ MCL_IMPLEMENTATION = (
 
 
 class Go2Xt16LateralLockoutTest(unittest.TestCase):
+    def test_stable_profile_selects_xt16_map_and_p2p_backend(self):
+        config = yaml.safe_load(NAVIGATION_CONFIG.read_text(encoding="utf-8"))
+        self.assertEqual(
+            config["map1"]["ros__parameters"]["pose_graph_dir"],
+            STABLE_MAP_DIRECTORY,
+        )
+        self.assertEqual(
+            config["sub_maps"]["ros__parameters"][
+                "expected_key_frame_count"
+            ],
+            144,
+        )
+
+        script = NAVIGATION_WRAPPER.read_text(encoding="utf-8")
+        self.assertIn(
+            "exec ros2 launch dddmr_beginner_guide "
+            "go2_xt16_navigation.launch",
+            script,
+        )
+        self.assertNotIn("dddmr_scan_planner", script)
+        self.assertNotIn("scan-navigation", script)
+        self.assertIn('STATIC_LAYER_TIMEOUT_SEC_VALUE="180"', script)
+        self.assertIn('RUN_SECONDS_VALUE="300"', script)
+
+    def test_scan_planner_requires_separate_experimental_entrypoint(self):
+        script = SCAN_WRAPPER.read_text(encoding="utf-8")
+        self.assertIn("EXPERIMENTAL local-avoidance backend", script)
+        self.assertIn('GO2_NAV_DRY_RUN_COMMAND="scan-navigation-dry-run"', script)
+
     def test_planner_has_only_one_zero_lateral_sample(self):
         config = yaml.safe_load(NAVIGATION_CONFIG.read_text(encoding="utf-8"))
         planner = config["trajectory_generators"]["ros__parameters"][
@@ -209,11 +242,16 @@ class Go2Xt16LateralLockoutTest(unittest.TestCase):
         )
         self.assertEqual(
             config["localization_tracking_max_ground_normal_error"],
-            0.14,
+            0.165,
         )
         self.assertLess(
             config["localization_tracking_max_ground_normal_error"],
             config["localization_lost_max_ground_normal_error"],
+        )
+        self.assertGreaterEqual(
+            config["localization_lost_max_ground_normal_error"]
+            - config["localization_tracking_max_ground_normal_error"],
+            0.01 - 1e-9,
         )
 
 

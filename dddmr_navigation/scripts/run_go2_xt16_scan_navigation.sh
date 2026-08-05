@@ -12,6 +12,7 @@ Usage:
   ./scripts/run_go2_xt16_scan_navigation.sh --multi-live MISSION.json
 
 One-command launcher for the Go2 XT16 SCAN-Planner integration.
+EXPERIMENTAL local-avoidance backend; the stable default remains DDDMR P2P.
 
   --live     Start the existing supervised live-navigation workflow after an
              interactive onsite-supervision confirmation.

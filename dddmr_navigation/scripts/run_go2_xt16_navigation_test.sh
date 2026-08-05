@@ -78,7 +78,7 @@ Common environment overrides:
 Examples:
   scripts/run_go2_xt16_navigation_test.sh --dry-run
   scripts/run_go2_xt16_navigation_test.sh --quick --dry-run
-  MAP=/root/dddmr_bags/go2_xt16_mouth_mapping_20260723_153831_cleaned_20260724_130438 \
+  MAP=/root/dddmr_bags/go2_xt16_mapping_20260804_141647_xt16_only \
     scripts/run_go2_xt16_navigation_test.sh --quick --dry-run
   GO2_NAV_LIVE_CONFIRM=I_AM_SUPERVISING_GO2_NAV \
     scripts/run_go2_xt16_navigation_test.sh --live
@@ -332,7 +332,9 @@ if [[ -n "${GO2_NAV_STATIC_LAYER_TIMEOUT_SEC+x}" ]]; then
   STATIC_LAYER_TIMEOUT_SEC_VALUE="${GO2_NAV_STATIC_LAYER_TIMEOUT_SEC}"
   STATIC_LAYER_TIMEOUT_EXPLICIT="true"
 else
-  STATIC_LAYER_TIMEOUT_SEC_VALUE="90"
+  # The stable 2026-08-04 XT16 map contains 86,749 ground points. Its measured
+  # map contract recommends 180 seconds for static-layer construction.
+  STATIC_LAYER_TIMEOUT_SEC_VALUE="180"
   STATIC_LAYER_TIMEOUT_EXPLICIT="false"
 fi
 
