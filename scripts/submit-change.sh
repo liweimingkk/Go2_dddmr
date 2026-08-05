@@ -7,7 +7,7 @@ Usage:
   ./scripts/submit-change.sh "<commit message>" -- <path> [<path> ...]
 
 Stages only the explicit paths, runs repository checks, creates one commit,
-and pushes the current feature branch to origin.
+and pushes the current work branch to origin.
 EOF
 }
 
@@ -33,9 +33,9 @@ if [[ -z "$current_branch" ]]; then
 fi
 
 case "$current_branch" in
-  main|master)
+  main|master|develop)
     echo "error: refusing to commit directly to protected branch '$current_branch'" >&2
-    echo "Create an agent/<topic> feature branch and run the command again." >&2
+    echo "Create feature/*, experiment/*, fix/*, or release/* and run the command again." >&2
     exit 1
     ;;
 esac

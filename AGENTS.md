@@ -11,8 +11,12 @@
 - Start work by checking `git status --short --branch` and the current branch.
 - Do not mix unrelated working-tree changes into a commit. Stage explicit paths instead of using `git add -A` in a mixed worktree.
 - After completing a coherent user-requested change, inspect the diff and run the relevant checks before committing.
-- Unless the user asks for local-only changes, commit completed changes with a concise message that explains the purpose, then push the current feature branch.
-- When starting from `main` or `master`, create a descriptive `agent/<topic>` branch and open a pull request instead of pushing directly to the default branch.
+- Unless the user asks for local-only changes, commit completed changes with a concise message that explains the purpose, then push the current work branch.
+- Do not develop directly on `main`, `master`, or `develop`. Create a descriptive branch and open a pull request instead.
+- Use `feature/<topic>` for normal development, `experiment/<topic>` for exploratory work, `fix/<topic>` for a correction based on `main`, and `release/<version-or-date>` for a frozen acceptance candidate. Existing `agent/*` branches are legacy branches and do not need history rewrites.
+- Merge completed `feature/*` work into `develop`. Promote a tested `develop` snapshot through `release/*` before merging it into `main` and creating a version tag.
+- Migrate only the useful commits from a successful `experiment/*` branch, preferably by cherry-picking or refactoring them into a clean `feature/*` branch.
+- Merge an accepted `fix/*` branch back into both `main` and `develop` so the correction is not lost from the next release.
 - Prefer the repository helper for the final commit and push:
 
   ```bash
