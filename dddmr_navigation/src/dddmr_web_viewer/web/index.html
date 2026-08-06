@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>DDDMR 3D Console</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="./vendor/roslib.min.js"></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="control-panel">
+        <header class="brand-block">
+          <div class="eyebrow">GO2 · XT16</div>
+          <h1>DDDMR <span>3D Console</span></h1>
+          <p>原生点云地图、定位与路径规划监看</p>
+        </header>
+
+        <section class="connection-card" aria-live="polite">
+          <div class="status-row">
+            <span id="connection-dot" class="status-dot"></span>
+            <div>
+              <strong id="connection-status">未连接</strong>
+              <small id="bridge-status">等待 ROSBridge</small>
+            </div>
+            <span id="execution-badge" class="safety-badge">无运动</span>
+          </div>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-heading">
+            <h2>图层</h2>
+            <button id="reset-view" class="text-button" type="button">重置视角</button>
+          </div>
+          <div class="layer-grid">
+            <label class="layer-toggle obstacle">
+              <input id="toggle-map" type="checkbox" checked />
+              <span></span>障碍地图
+            </label>
+            <label class="layer-toggle ground">
+              <input id="toggle-ground" type="checkbox" checked />
+              <span></span>可通行地面
+            </label>
+            <label class="layer-toggle global-path">
+              <input id="toggle-global-path" type="checkbox" checked />
+              <span></span>全局路径
+            </label>
+            <label class="layer-toggle local-path">
+              <input id="toggle-local-path" type="checkbox" checked />
+              <span></span>局部跟踪
+            </label>
+          </div>
+          <div class="metrics">
+            <div><strong id="map-count">—</strong><span>地图点</span></div>
+            <div><strong id="ground-count">—</strong><span>地面点</span></div>
+            <div><strong id="tf-state">等待</strong><span>机器人 TF</span></div>
+          </div>
+        </section>
+
+        <section class="panel-section operator-section">
+          <div class="section-heading">
+            <h2>操作</h2>
+            <span class="guard-label">预览优先</span>
+          </div>
+          <div class="button-grid">
+            <button id="set-initial-pose" class="secondary-button" type="button">
+              <span class="button-icon">◎</span>
+              设置初始姿态
+            </button>
+            <button id="set-goal" class="primary-button" type="button">
+              <span class="button-icon">◇</span>
+              选择导航目标
+            </button>
+          </div>
+          <p id="placement-help" class="placement-help">
+            在绿色地面点上按下并拖动，拖动方向为目标朝向。
+          </p>
+          <button id="execute-preview" class="execute-button" type="button" disabled>
+            确认后执行
+          </button>
+          <button id="cancel-navigation" class="cancel-button" type="button">
+            停止网页启动的导航
+          </button>
+        </section>
+
+        <section class="status-card" aria-live="polite">
+          <span>系统消息</span>
+          <p id="operator-status">等待连接。</p>
+        </section>
+
+        <details class="advanced-settings">
+          <summary>连接设置</summary>
+          <label for="websocket-url">ROSBridge WebSocket</label>
+          <div class="connection-input-row">
+            <input id="websocket-url" type="text" spellcheck="false" />
+            <button id="connect-button" type="button">连接</button>
+          </div>
+          <p>远程使用推荐通过 SSH 转发 8080 与 9090 端口。</p>
+        </details>
+      </aside>
+
+      <main class="viewport-shell">
+        <div class="viewport-toolbar">
+          <div>
+            <span class="toolbar-label">坐标系</span>
+            <strong>map · Z UP</strong>
+          </div>
+          <div class="toolbar-legend">
+            <span><i class="legend-map"></i>障碍</span>
+            <span><i class="legend-ground"></i>地面</span>
+            <span><i class="legend-robot"></i>Go2</span>
+          </div>
+        </div>
+        <canvas id="viewport" aria-label="DDDMR 三维地图"></canvas>
+        <div class="view-hint">左键旋转 · 右键平移 · 滚轮缩放</div>
+      </main>
+    </div>
+
+    <div id="preview-modal" class="modal-backdrop" hidden>
+      <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="preview-title">
+        <div class="modal-kicker">ROUTE PREVIEW</div>
+        <h2 id="preview-title">路径预览已完成</h2>
+        <p id="preview-summary">请检查紫色路径，确认后才能启动导航。</p>
+        <div class="modal-warning">
+          网页确认不会绕过定位健康检查、命令门或 Sport 输出门。
+        </div>
+        <div class="modal-actions">
+          <button id="modal-dismiss" class="secondary-button" type="button">仅查看路径</button>
+          <button id="modal-execute" class="execute-button" type="button" disabled>确认执行</button>
+        </div>
+      </section>
+    </div>
+
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>
