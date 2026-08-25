@@ -68,6 +68,12 @@ ENV HTTP_PROXY= \
     ALL_PROXY= \
     all_proxy=
 
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    iproute2 \
+    "ros-${ROS_DISTRO}-rosbridge-server" \
+  && rm -rf /var/lib/apt/lists/*
+
 LABEL org.opencontainers.image.title="DDDMR Go2 XT16 JetPack 5" \
       org.opencontainers.image.description="ROS 2 Foxy DDDMR runtime for Unitree Go2 on L4T R35.3.1" \
       dddmr.platform="orin-jp5" \

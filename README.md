@@ -29,3 +29,6 @@ GitHub Actions 会在拉取请求以及 `main`/`develop` 分支更新时重复�
 
 Go2 当前稳定导航基线和地图指纹见
 [`dddmr_navigation/docs/go2_xt16_p2p_release_20260804.md`](dddmr_navigation/docs/go2_xt16_p2p_release_20260804.md)。
+
+现场建图、地图保存、导航 dry-run 和真实导航的脚本命令见
+[`dddmr_navigation/docs/go2_xt16_field_handover.md`](dddmr_navigation/docs/go2_xt16_field_handover.md)。

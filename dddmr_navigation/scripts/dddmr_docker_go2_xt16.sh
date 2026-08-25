@@ -19,6 +19,8 @@ Commands:
   mapping-bag  Run offline Go2 XT16 LeGO-LOAM mapping from a rosbag2 directory.
   build-navigation
                Build the Go2 XT16 DDDMR navigation test chain inside Docker.
+  web-viewer   Run the browser viewer and guarded bridge. Navigation execution
+               stays disabled unless WEB_ALLOW_NAVIGATION_EXECUTION=true.
   pose-graph-editor <editor_map.pcd> <editor_ground.pcd>
                Open the no-motion RViz point selector for exported pose-graph clouds.
   mapcloud-editor [map_topic ground_topic]
@@ -88,6 +90,10 @@ Environment:
   RVIZ=false
   PUBLISH_STATIC_TF=true
   RUN_SECONDS=<empty for no timeout>
+  WEB_BIND_ADDRESS=127.0.0.1
+  WEB_HTTP_PORT=8080
+  WEB_SOCKET_PORT=9090
+  WEB_ALLOW_NAVIGATION_EXECUTION=false
   CONFIG_FILE=<container path for mapping-bag params file>
   DDDMR_MAPPING_DIR=<container output dir prefix for saved map, default under /root/dddmr_bags>
 EOF
@@ -412,7 +418,42 @@ colcon test-result --test-result-base \"\${DDDMR_BUILD_BASE}\" --verbose"
 
   build-navigation)
     run_docker "${IMAGE}" bash -lc "${source_prefix}
-colcon --log-base \"\${DDDMR_LOG_BASE}\" build ${COLCON_EXECUTOR_ARGS_VALUE} --base-paths src --symlink-install --packages-up-to lego_loam_bor dddmr_glass_filter dddmr_pg_map_server mcl_3dl global_planner p2p_move_base perception_3d dddmr_beginner_guide dddmr_rviz_default_plugins map_delete_panel scan_planner dddmr_scan_planner --build-base \"\${DDDMR_BUILD_BASE}\" --install-base \"\${DDDMR_INSTALL_BASE}\" --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPython3_EXECUTABLE=/usr/bin/python3 -DTRT_ENABLED=OFF"
+colcon --log-base \"\${DDDMR_LOG_BASE}\" build ${COLCON_EXECUTOR_ARGS_VALUE} --base-paths src --symlink-install --packages-up-to lego_loam_bor dddmr_glass_filter dddmr_pg_map_server mcl_3dl global_planner p2p_move_base perception_3d dddmr_beginner_guide dddmr_web_viewer dddmr_rviz_default_plugins map_delete_panel scan_planner dddmr_scan_planner --build-base \"\${DDDMR_BUILD_BASE}\" --install-base \"\${DDDMR_INSTALL_BASE}\" --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPython3_EXECUTABLE=/usr/bin/python3 -DTRT_ENABLED=OFF"
+    ;;
+
+  web-viewer)
+    web_bind_address="${WEB_BIND_ADDRESS:-127.0.0.1}"
+    web_http_port="${WEB_HTTP_PORT:-8080}"
+    web_socket_port="${WEB_SOCKET_PORT:-9090}"
+    web_allow_navigation_execution="${WEB_ALLOW_NAVIGATION_EXECUTION:-false}"
+    run_seconds="${RUN_SECONDS:-}"
+    [[ "${web_bind_address}" =~ ^[A-Za-z0-9._:-]+$ ]] || {
+      echo "WEB_BIND_ADDRESS contains unsupported characters." >&2
+      exit 2
+    }
+    for web_port in "${web_http_port}" "${web_socket_port}"; do
+      [[ "${web_port}" =~ ^[0-9]+$ ]] &&
+        (( web_port >= 1 && web_port <= 65535 )) || {
+        echo "WEB_HTTP_PORT and WEB_SOCKET_PORT must be in 1..65535." >&2
+        exit 2
+      }
+    done
+    [[ "${web_allow_navigation_execution}" == "true" ||
+       "${web_allow_navigation_execution}" == "false" ]] || {
+      echo "WEB_ALLOW_NAVIGATION_EXECUTION must be true or false." >&2
+      exit 2
+    }
+    launch_cmd="set +u
+source \"\${DDDMR_INSTALL_BASE}/setup.bash\"
+set -u
+ros2 launch dddmr_web_viewer go2_xt16_web_viewer.launch.py bind_address:=${web_bind_address} http_port:=${web_http_port} websocket_port:=${web_socket_port} allow_navigation_execution:=${web_allow_navigation_execution} \"\$@\""
+    if [[ -n "${run_seconds}" ]]; then
+      run_docker "${IMAGE}" bash -lc "${source_prefix}
+timeout -s TERM -k 5s ${run_seconds}s bash -lc '${launch_cmd}' bash \"\$@\"" bash "$@"
+    else
+      run_docker -it "${IMAGE}" bash -lc "${source_prefix}
+${launch_cmd}" bash "$@"
+    fi
     ;;
 
   pose-graph-editor)
